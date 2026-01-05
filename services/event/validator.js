@@ -1,9 +1,10 @@
-import * as secp256k1 from '@noble/secp256k1'
+import { schnorr } from '@noble/curves/secp256k1'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { eventTags, eventKinds } from '#constants/event.js'
 import { webSocketRegExp } from '#constants/web-socket.js'
 import { hostnameRegExp, urlRegExp, imageDataUrlRegExp } from '#constants/url.js'
 import { nostrClientMessages } from '#constants/message.js'
-import { isKnownEventKind, serializeEvent, isParameterizedReplaceableEvent } from '#helpers/event.js'
+import { isKnownEventKind, serializeEvent, isAddressableEvent } from '#helpers/event.js'
 import { isType } from '#helpers/shared.js'
 
 export default class EventValidator {
@@ -30,8 +31,11 @@ export default class EventValidator {
     if (!isKnownEventKind(event.kind)) return 'unknown event kind'
     if (!this.hasValidEventId()) return 'wrong event id'
     if (!this.hasValidEventSignature()) return 'wrong event sig'
-    if (!this.hasValidKnownTags()) return 'wrong tag(s)'
-    if (!this.hasValidData()) return 'wrong data'
+    // There are no known tags as each event kind may give different meaning to tags
+    // Although we could say 'd', 'l', 't', 'expiration' and 'content-warning' are known global tags
+    // if (!this.hasValidKnownTags()) return 'wrong tag(s)'
+    // For now, we consider that isn't none of relay's business to validate event data
+    // if (!this.hasValidData()) return 'wrong data'
 
     return ''
   }
@@ -75,7 +79,7 @@ export default class EventValidator {
   hasValidEventId () {
     try {
       const { event } = this
-      const eventHash = secp256k1.utils.sha256Sync(Buffer.from(serializeEvent(event)))
+      const eventHash = sha256(Buffer.from(serializeEvent(event)))
       return Buffer.from(eventHash).toString('hex') === event.id
     } catch (err) {
       return false
@@ -85,7 +89,7 @@ export default class EventValidator {
   hasValidEventSignature () {
     try {
       const { event: { id: eventHash, sig, pubkey } } = this
-      return secp256k1.schnorr.verifySync(sig, eventHash, pubkey)
+      return schnorr.verify(sig, eventHash, pubkey)
     } catch (err) {
       return false
     }
@@ -110,7 +114,7 @@ export default class EventValidator {
           let [kind, pubkey, ...deduplicationId] = tag[1]?.split?.(':') ?? []
           deduplicationId = deduplicationId.join(':')
           try { kind = parseInt(kind, 10) } catch (err) { return false }
-          if (!isParameterizedReplaceableEvent({ kind }) || !/^[0-9a-f]{64}$/.test(pubkey) || !deduplicationId) return false
+          if (!isAddressableEvent({ kind }) || !/^[0-9a-f]{64}$/.test(pubkey) || !deduplicationId) return false
           break
         }
         case eventTags.CHALLENGE: { if (++tagCount[eventTags.CHALLENGE] > 1 || tag.length !== 2 || !isType(tag[1], 'string') || tag[1] === '') return false; break }
@@ -154,8 +158,8 @@ export default class EventValidator {
           function hasValidDelegationSignature () {
             try {
               const delegationToken = `nostr:${tagName}:${pubkey}:${conditionsQueryString}`
-              const msgHash = secp256k1.utils.sha256Sync(Buffer.from(delegationToken))
-              return secp256k1.schnorr.verifySync(delegationSig, msgHash, delegatorPubkey)
+              const msgHash = sha256(Buffer.from(delegationToken))
+              return schnorr.verify(delegationSig, msgHash, delegatorPubkey)
             } catch (err) {
               return false
             }

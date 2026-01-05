@@ -4,32 +4,57 @@ import { pick } from '#helpers/object.js'
 import EventValidator from '#services/event/validator.js'
 import { generateKey } from '#services/db/index.js'
 
-// NIP-16: Event Treatment - https://github.com/nostr-protocol/nips/blob/master/16.md
-function isRegularEvent (event) { return isType(event.kind, 'number') && event.kind >= 1000 && event.kind < 10000 }
+function isRegularEvent (event,
+  isReplaceable = isReplaceableEvent(event),
+  isAddressable = isAddressableEvent(event)
+} = {}) {
+  return !isReplaceable && !isAddressable
+}
 function isReplaceableEvent (event) {
-  return isType(event.kind, 'number') && (
+  return
     event.kind === eventKinds.METADATA ||
-    event.kind === eventKinds.RECOMMEND_RELAY || // because it is not the best tool for the job, we let just 1 per pubkey
+    // event.kind === eventKinds.RECOMMEND_RELAY || // because it is not the best tool for the job, we let just 1 per pubkey
     event.kind === eventKinds.FOLLOWS ||
     // event.kind === eventKinds.CHANNEL_METADATA || // one per pubkey per e tag value
-    (event.kind >= 10000 && event.kind < 20000)
+    (event.kind >= 10000 && event.kind < 20000) ||
+    // experimental: for replaceable check based on d tag,
+    // consider just the first tags to avoid processing too many tags
+    (event.tags[0]?.[0] === 'd' && event.tags[0][1] === '')
+}
+function isAddressableEvent (event) {
+  return isType(event.kind, 'number') && (
+    (event.kind >= 30000 && event.kind < 40000) ||
+    (event.tags[0]?.[0] === 'd' && event.tags[0][1].length > 0)
   )
 }
-function isEphemeralEvent (event) { return isType(event.kind, 'number') && event.kind >= 20000 && event.kind < 30000 }
-function isParameterizedReplaceableEvent (event) { return isType(event.kind, 'number') && (event.kind === eventKinds.REACTION || (event.kind >= 30000 && event.kind < 40000)) }
+function isEphemeralEvent (event) {
+  if (event.kind >= 20000 && event.kind < 30000) return true
+  let expiration
+  // experimental: for ephemeral check based on expiration tag,
+  // consider just the first two tags to avoid processing too many tags
+  expirationTag = event.tags.slice(0, 2).find(v => v[0] === eventTags.EXPIRATION)
+  if (!expirationTag) return false
+  return isExpiredEvent(event, { expirationTag })
+}
+// Limited by nip19 or else it could be 64bit unsigned int
+// Good thing is we don't need to convert to string on json nor use BigInt
+// Bad thing is collision resistance is lower
+const kindLimit = 2 ** 32 - 1
 function isKnownEventKind (kind) {
   return isType(kind, 'number') &&
-    (
-      (kind >= 0 && kind < 8) ||
-      (kind >= 40 && kind < 50) ||
-      (kind >= 1000 && kind < 30000)
-    )
+    kind >= 0 &&
+    kind <= kindLimit
 }
 
-function isExpiredEvent (event) {
+function isExpiredEvent (event, { expirationTag }) {
   let expiration
-  try { expiration = parseInt(event.tags.find(v => v[0] === eventTags.EXPIRATION)?.[1], 10) } catch (err) {}
-  if (!isType(expiration, 'number') || expiration <= (Date.now() / 1000)) return false
+  try { expiration = parseInt(expirationTag || event.tags.find(v => v[0] === eventTags.EXPIRATION)?.[1], 10) } catch (err) {}
+  return (
+    isType(expiration, 'number') && (
+      expiration <= event.created_at ||
+      expiration <= (Date.now() / 1000)
+    )
+  )
 }
 
 function serializeEvent (event) {
@@ -55,7 +80,7 @@ function isEventCopy (event) { return false }
 
 function getPublishedAt (event) {
   // instead of event.kind === eventKinds.LONG_FORM_CONTENT we will extend it to all parameterized replaceable events
-  const publishedAt = (isEventCopy(event) || isParameterizedReplaceableEvent(event)) && event.tags.find(v => v[0] === eventTags.PUBLISHED_AT)?.[1]
+  const publishedAt = (isEventCopy(event) || isAddressableEvent(event)) && event.tags.find(v => v[0] === eventTags.PUBLISHED_AT)?.[1]
   return publishedAt ? parseInt(publishedAt, 10) : event.created_at
 }
 
@@ -124,7 +149,7 @@ function dbEventToEvent ({ dbEvent }) {
 export {
   isRegularEvent,
   isReplaceableEvent,
-  isParameterizedReplaceableEvent,
+  isAddressableEvent,
   isEphemeralEvent,
   isKnownEventKind,
   isExpiredEvent,

@@ -1,5 +1,5 @@
 import deta from '#services/db/index.js'
-import { isReplaceableEvent, isParameterizedReplaceableEvent, getPublishedAt, dbEventToEvent } from '#helpers/event.js'
+import { isReplaceableEvent, isAddressableEvent, getPublishedAt, dbEventToEvent } from '#helpers/event.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
 import { eventTags } from '#constants/event.js'
 
@@ -12,7 +12,7 @@ class ReplaceableStrategy {
       filter.authors.every(v => regex.test(v)) && (
       (
         filter.kinds?.length === 1 &&
-        isParameterizedReplaceableEvent({ kind: filter.kinds[0] }) &&
+        isAddressableEvent({ kind: filter.kinds[0] }) &&
         [0, 1].includes(filter[`#${eventTags.DEDUPLICATION}`] || []).length
       ) || (
         !!filter.kinds?.length &&
@@ -37,7 +37,7 @@ class ReplaceableStrategy {
 
     const isParameterized =
       filter.kinds?.length === 1 &&
-      isParameterizedReplaceableEvent({ kind: filter.kinds[0] }) &&
+      isAddressableEvent({ kind: filter.kinds[0] }) &&
       [0, 1].includes(filter[`#${eventTags.DEDUPLICATION}`] || []).length
     const keySuffix = isParameterized ? `:d:${(filter[`#${eventTags.DEDUPLICATION}`] || [])[0] ?? ''}` : ''
 

@@ -17,13 +17,15 @@
     "#services/*": "./services/*"
   },
   "dependencies": {
-    "@noble/secp256k1": "^1.7.0",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
     "deta": "^1.1.0",
     "dotenv": "^16.0.3",
     "ws": "^8.11.0"
   },
   "devDependencies": {
-    "eslint": "^8.30.0",
-    "eslint-config-standard": "^17.0.0"
+    "eslint": "^9.39.2",
+    "globals": "^17.0.0",
+    "neostandard": "^0.12.2"
   }
 }

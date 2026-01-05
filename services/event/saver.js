@@ -1,4 +1,4 @@
-import { isReplaceableEvent, isParameterizedReplaceableEvent, eventToDbEvent, getAuthorPubkey, getDbEventKey } from '#helpers/event.js'
+import { isReplaceableEvent, isAddressableEvent, eventToDbEvent, getAuthorPubkey, getDbEventKey } from '#helpers/event.js'
 import { eventKinds, eventTags } from '#constants/event.js'
 import deta from '#services/db/index.js'
 import { getReplaceableEventsTableKey, createEventMeta, deleteEventMeta, keepTrackOfPubkey } from '#models/event.js'
@@ -41,7 +41,7 @@ export default class EventSaver {
         //   const dbEvent = await deta.Base(`events${author}`).get(keyToDelete) || await deta.Base('events').get(keyToDelete)
         //   if (!dbEvent) continue
 
-        //   if (isReplaceableEvent(dbEvent) || isParameterizedReplaceableEvent(dbEvent)) {
+        //   if (isReplaceableEvent(dbEvent) || isAddressableEvent(dbEvent)) {
         //     const shortcutTableName = `replaceableEvents${author}`
         //     const shortcutTableKey = getReplaceableEventsTableKey(dbEvent)
         //     await deta.Base(shortcutTableName).delete(shortcutTableKey)
@@ -71,7 +71,7 @@ export default class EventSaver {
     }
 
     let errorMessage
-    if (isReplaceableEvent(event) || isParameterizedReplaceableEvent(event)) {
+    if (isReplaceableEvent(event) || isAddressableEvent(event)) {
       const isReaction = event.kind === eventKinds.REACTION
       let softDTag
       if (isReaction) {
@@ -203,7 +203,7 @@ export default class EventSaver {
     const { event, event: { kind, tags } } = this
     const author = getAuthorPubkey(event)
     const query = { kind, author } //, 'created_at?lt': event.created_at } do this check outside at .save
-    if (isParameterizedReplaceableEvent(event)) {
+    if (isAddressableEvent(event)) {
       const dTag = tags.find(v => v[0] === eventTags.DEDUPLICATION)?.[1]
       // won't fallback to '' dTag cause db event won't have #d attr
       if (dTag !== undefined) query['#d?contains'] = dTag

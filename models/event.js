@@ -1,10 +1,10 @@
 import deta, { generateKey, keyToDate } from '#services/db/index.js'
-import { isReplaceableEvent, isParameterizedReplaceableEvent, getAuthorPubkey } from '#helpers/event.js'
+import { isReplaceableEvent, isAddressableEvent, getAuthorPubkey } from '#helpers/event.js'
 
 async function getReplaceableEventsTableKey (event) {
   const { kind, tags } = event
   let keySuffix = ''
-  if (isParameterizedReplaceableEvent(event)) {
+  if (isAddressableEvent(event)) {
     const dTag = tags.find(v => v[0] === 'd')?.[1] || ''
     keySuffix = `:d:${dTag}`
   }
@@ -13,7 +13,7 @@ async function getReplaceableEventsTableKey (event) {
 
 async function createEventMeta (nextDbEvent) {
   let replaceable_event_key
-  if (isReplaceableEvent(nextDbEvent) || isParameterizedReplaceableEvent(nextDbEvent)) {
+  if (isReplaceableEvent(nextDbEvent) || isAddressableEvent(nextDbEvent)) {
     replaceable_event_key = getReplaceableEventsTableKey(nextDbEvent)
     if (!replaceable_event_key) throw new Error('Missing replaceable_event_key')
   }
