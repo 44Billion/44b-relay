@@ -1,0 +1,29 @@
+{
+  "name": "social-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": "18.12.1"
+  },
+  "imports": {
+    "#config/*": "./config/*",
+    "#constants/*": "./constants/*",
+    "#helpers/*": "./helpers/*",
+    "#models/*": "./models/*",
+    "#services/*": "./services/*"
+  },
+  "dependencies": {
+    "@noble/secp256k1": "^1.7.0",
+    "deta": "^1.1.0",
+    "dotenv": "^16.0.3",
+    "ws": "^8.11.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.30.0",
+    "eslint-config-standard": "^17.0.0"
+  }
+}
