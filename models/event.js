@@ -1,4 +1,4 @@
-import deta, { generateKey, keyToDate } from '#services/db/index.js'
+import deta, { generateKey, keyToDate } from '#services/db/deta.js'
 import { isReplaceableEvent, isAddressableEvent, getAuthorPubkey } from '#helpers/event.js'
 
 async function getReplaceableEventsTableKey (event) {

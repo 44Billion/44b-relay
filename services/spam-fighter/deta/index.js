@@ -1,4 +1,4 @@
-import deta from '#services/db/index.js'
+import deta from '#services/db/deta.js'
 import { eventKinds } from '#constants/event.js'
 import { getUrls } from '#helpers/string.js'
 import { toUrlId } from '#helpers/url.js'

@@ -1,11 +1,13 @@
-import { isExpiredEvent, isReplaceableEvent, isEphemeralEvent, isValidEvent, getPublishedAt } from '#helpers/event.js'
-import { sendCommandResult, sendEvent } from '#helpers/message.js'
+import { isExpiredEvent, /* isReplaceableEvent, */ isEphemeralEvent, isValidEvent, getPublishedAt } from '#helpers/event.js'
+import { sendCommandResult, sendEvent, sendClosed } from '#helpers/message.js'
 import { nostrClientMessages } from '#constants/message.js'
 import { eventKinds } from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
-import { fightSpamOnNostrEvent } from '#services/spam-fighter/index.js'
-import EventSaver from '#services/event/saver.js'
+import { fightSpamOnNostrEvent } from '#services/spam-fighter/deta/index.js'
+import { isAuthenticated } from '#services/relay/authenticator.js'
+import EventSaver from '#services/event/saver/deta/index.js'
+import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
 
 class EventHandler {
   static run ({ wss, ws, nostrMessage }) {
@@ -50,36 +52,50 @@ class EventHandler {
   }
 
   isBlockedEventKind = (() => {
-    const allowlist = {
-      [eventKinds.METADATA]: true,
-      [eventKinds.TEXT_NOTE]: true,
-      [eventKinds.RECOMMEND_RELAY]: true,
-      [eventKinds.FOLLOWS]: true,
-      // ENCRYPTED_DIRECT_MESSAGE: 4,
-      // DELETION: 5,
-      // REPOST: 6, // also add to aggregates table? { key: eventid }
-      // REACTION: 7, // also add to aggregates table?
-      // CHANNEL_CREATE: 40,
-      // CHANNEL_METADATA: 41,
-      // CHANNEL_MESSAGE: 42,
-      // CHANNEL_HIDE_MESSAGE: 43,
-      // CHANNEL_MUTE_USER: 44,
-      // AUTH: 22242,
-      [eventKinds.LONG_FORM_CONTENT]: true
-    }
-    return event => !allowlist[event.kind]
+    // const allowlist = {
+    //   [eventKinds.METADATA]: true,
+    //   [eventKinds.TEXT_NOTE]: true,
+    //   [eventKinds.RECOMMEND_RELAY]: true,
+    //   [eventKinds.FOLLOWS]: true,
+    //   // ENCRYPTED_DIRECT_MESSAGE: 4,
+    //   // DELETION: 5,
+    //   // REPOST: 6, // also add to aggregates table? { key: eventid }
+    //   // REACTION: 7, // also add to aggregates table?
+    //   // CHANNEL_CREATE: 40,
+    //   // CHANNEL_METADATA: 41,
+    //   // CHANNEL_MESSAGE: 42,
+    //   // CHANNEL_HIDE_MESSAGE: 43,
+    //   // CHANNEL_MUTE_USER: 44,
+    //   // AUTH: 22242,
+    //   [eventKinds.LONG_FORM_CONTENT]: true
+    // }
+    // For now allow all kinds
+    // TODO: Later we should change expiration defaults
+    return _event => false // !allowlist[event.kind]
   })()
 
   applyCustomRelayRestrictionsToNostrEvent ({ event }) {
     const { ws } = this
-    if (event.pubkey !== ws.nostr.pubkey) return { isBlocked: true, message: 'invalid: we do not publish events not signed by yourself' }
-
-    // NIP-22: Event created_at Limits - https://github.com/nostr-protocol/nips/blob/master/22.md
     if (
-      event.created_at < (Math.floor(Date.now / 1000) - 60 * 60 * 10) ||
-      event.created_at > (Math.ceil(Date.now / 1000) + 60 * 60 * 10) ||
-      getPublishedAt(event) > (Math.ceil(Date.now / 1000) + 60 * 60 * 10)
-    ) return { isBlocked: true, message: 'invalid: the event created_at field is out of the acceptable range (-10min, +10min) for this relay and was not stored.' }
+      event.created_at < (Math.floor(Date.now / 1000) - 60 * 10) &&
+      event.pubkey !== ws.nostr.pubkey
+    ) {
+      return { isBlocked: true, message: 'auth-required: we do not publish past events not signed by yourself' }
+    }
+    if (event.created_at < (Math.floor(Date.now / 1000) - 60 * 10)) {
+      if (!isAuthenticated({ ws })) return { isBlocked: true, message: 'auth-required: the event created_at field is too old and was not stored.' }
+      else if (event.pubkey !== ws.nostr.pubkey) {
+        return { isBlocked: true, message: 'restricted: the event created_at field is too old and was not stored.' }
+      }
+    }
+    const TWO_DAYS_AHEAD = Math.ceil(Date.now() / 1000) + 60 * 60 * 24 * 2
+    if (
+      // TODO: if too old, allow just after AUTH proves it is the author publishing it
+      // event.created_at < (Math.floor(Date.now / 1000) - 60 * 10) ||
+      // Allow posting in the future to work as scheduled posts, but with a limit
+      event.created_at > TWO_DAYS_AHEAD ||
+      getPublishedAt(event) > TWO_DAYS_AHEAD
+    ) return { isBlocked: true, message: 'invalid: the event created_at field is too far in the future (>2days) and was not stored.' }
 
     if (this.isBlockedEventKind(event)) return { isBlocked: true, message: 'invalid: event kind not allowed' }
 
@@ -92,16 +108,36 @@ class EventHandler {
   }
 
   async sendToClientsWithAMatchingFilter ({ wss, event }) {
-    if (isReplaceableEvent(event)) return
+    // Better to relay for those who may have subscribed to (e.g.: online status update)
+    // if (isReplaceableEvent(event)) return
+
+    const maxUntil = Math.floor(Date.now() / 1000) + 10 * 60
+    const isFutureEvent = event.created_at > maxUntil
 
     for (const ws of wss.clients) {
-      if (ws.readyState !== webSocketReadyState.OPEN) return
-      const subscriptionIds = Object.entries(ws.nostr.subscriptions)
-        .filter(([, { filters }]) => doesMatchASubscriptionFilter({ filters, event }))
-        .map(([k]) => k)
+      if (ws.readyState !== webSocketReadyState.OPEN) continue
+      if (isFutureEvent && ws.nostr.pubkey !== event.pubkey) continue
 
-      for (const subscriptionId of subscriptionIds) {
+      for (const [subscriptionId, { filters }] of Object.entries(ws.nostr.subscriptions)) {
+        if (!doesMatchASubscriptionFilter({ filters, event })) continue
+
         await sendEvent({ ws, subscriptionId, event })
+
+        const nowSecs = Math.floor(Date.now() / 1000)
+        ws.nostr.subscriptions[subscriptionId].filters = filters.filter(filter => {
+          if (filter.until !== undefined && filter.until < nowSecs) return false
+          if (filter.ids?.includes(event.id)) {
+            filter.ids = filter.ids.filter(id => id !== event.id)
+            if (filter.ids.length === 0) return false
+          }
+          return true
+        })
+
+        if (ws.nostr.subscriptions[subscriptionId].filters.length === 0) {
+          delete ws.nostr.subscriptions[subscriptionId]
+          sendClosed({ ws, subscriptionId, message: 'completed: subscription ended' })
+          if (Object.keys(ws.nostr.subscriptions).length === 0) disconnectWhenInactive(ws)
+        }
       }
     }
   }

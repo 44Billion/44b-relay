@@ -1,5 +1,5 @@
 const nostrClientMessages = { AUTH: 'AUTH', EVENT: 'EVENT', REQ: 'REQ', CLOSE: 'CLOSE' }
-const nostrServerMessages = { AUTH: 'AUTH', EVENT: 'EVENT', NOTICE: 'NOTICE', EOSE: 'EOSE', OK: 'OK' }
+const nostrServerMessages = { AUTH: 'AUTH', EVENT: 'EVENT', NOTICE: 'NOTICE', EOSE: 'EOSE', OK: 'OK', CLOSED: 'CLOSED' }
 
 export {
   nostrClientMessages,

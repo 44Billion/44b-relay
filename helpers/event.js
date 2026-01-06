@@ -2,17 +2,16 @@ import { eventKinds, eventTags } from '#constants/event.js'
 import { isType } from '#helpers/shared.js'
 import { pick } from '#helpers/object.js'
 import EventValidator from '#services/event/validator.js'
-import { generateKey } from '#services/db/index.js'
+import { generateKey } from '#services/db/deta.js'
 
-function isRegularEvent (event,
+function isRegularEvent (event, {
   isReplaceable = isReplaceableEvent(event),
   isAddressable = isAddressableEvent(event)
 } = {}) {
   return !isReplaceable && !isAddressable
 }
 function isReplaceableEvent (event) {
-  return
-    event.kind === eventKinds.METADATA ||
+  return event.kind === eventKinds.METADATA ||
     // event.kind === eventKinds.RECOMMEND_RELAY || // because it is not the best tool for the job, we let just 1 per pubkey
     event.kind === eventKinds.FOLLOWS ||
     // event.kind === eventKinds.CHANNEL_METADATA || // one per pubkey per e tag value
@@ -29,10 +28,9 @@ function isAddressableEvent (event) {
 }
 function isEphemeralEvent (event) {
   if (event.kind >= 20000 && event.kind < 30000) return true
-  let expiration
   // experimental: for ephemeral check based on expiration tag,
   // consider just the first two tags to avoid processing too many tags
-  expirationTag = event.tags.slice(0, 2).find(v => v[0] === eventTags.EXPIRATION)
+  const expirationTag = event.tags.slice(0, 2).find(v => v[0] === eventTags.EXPIRATION)
   if (!expirationTag) return false
   return isExpiredEvent(event, { expirationTag })
 }
@@ -48,7 +46,7 @@ function isKnownEventKind (kind) {
 
 function isExpiredEvent (event, { expirationTag }) {
   let expiration
-  try { expiration = parseInt(expirationTag || event.tags.find(v => v[0] === eventTags.EXPIRATION)?.[1], 10) } catch (err) {}
+  try { expiration = parseInt(expirationTag || event.tags.find(v => v[0] === eventTags.EXPIRATION)?.[1], 10) } catch (_err) {}
   return (
     isType(expiration, 'number') && (
       expiration <= event.created_at ||
@@ -76,12 +74,19 @@ function getAuthorPubkey (event) {
   return event.tags.find(v => v[0] === eventTags.DELEGATION)?.[1] ?? event.pubkey
 }
 
-function isEventCopy (event) { return false }
+function isEventCopy (_event) { return false }
 
 function getPublishedAt (event) {
   // instead of event.kind === eventKinds.LONG_FORM_CONTENT we will extend it to all parameterized replaceable events
   const publishedAt = (isEventCopy(event) || isAddressableEvent(event)) && event.tags.find(v => v[0] === eventTags.PUBLISHED_AT)?.[1]
-  return publishedAt ? parseInt(publishedAt, 10) : event.created_at
+  return publishedAt
+    ? (() => {
+        let result
+        try { result = parseInt(publishedAt, 10) } catch (_err) {}
+        if (Number.isNaN(result)) return event.created_at
+        return result
+      })()
+    : event.created_at
 }
 
 function getExpiration (event) {
@@ -93,7 +98,7 @@ function getExpiration (event) {
     // temp while we figure out how we will handle event durability
     // if (expiration === undefined || expiration > threeWeeks) expiration = threeWeeks
     return expiration
-  } catch (err) {
+  } catch (_err) {
     // don't expire
     // expiration = threeWeeks // temp while we figure out how we will handle event durability
   }

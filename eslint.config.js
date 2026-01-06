@@ -1,13 +1,11 @@
 import neostandard from 'neostandard'
 import globals from 'globals'
-import html from 'eslint-plugin-html'
 
 export default [
   ...neostandard({
     // options
   }), {
     files: ['**/*.js'],
-    plugins: { html },
     languageOptions: {
       sourceType: 'module',
       globals: {

@@ -11,7 +11,7 @@ import {
   rateLimitNostrReqMessageByPubkey,
   rateLimitNostrEventMessageByPubkey
 } from '#services/rate-limiting/nostr-message-limiter.js'
-import { isAuthenticated } from '#services/relay/authenticator.js'
+// import { isAuthenticated } from '#services/relay/authenticator.js'
 import { imageDataUrlRegExp } from '#constants/url.js'
 import { eventKinds } from '#constants/event.js'
 
@@ -39,8 +39,9 @@ class NostrMessageHandler {
   applyCustomRelayRestrictionsToNostrMessage ({ wss, ws, nostrMessage }) {
     // Maybe don't let someone elses events be added
     // As down side one would not be able to mirror event it is reacting to for instance
-    const { isRestricted } = restrictUnauthenticatedMessage({ ws, nostrMessage })
-    if (isRestricted) return { isBlocked: true }
+    // In fact, we won't require authentication anymore as it's bad for privacy
+    // const { isRestricted } = restrictUnauthenticatedMessage({ ws, nostrMessage })
+    // if (isRestricted) return { isBlocked: true }
     const { isRateLimited } = rateLimitNostrMessage({ wss, ws, nostrMessage })
     if (isRateLimited) return { isBlocked: true }
     const { isInvalid } = limitNostrMessageLength({ ws, nostrMessage })
@@ -98,28 +99,28 @@ function limitNostrMessageLength ({ ws, nostrMessage }) {
   return { isInvalid: true }
 }
 
-function restrictUnauthenticatedMessage ({ ws, nostrMessage }) {
-  if (isAuthenticated({ ws })) return { isBlocked: false }
+// function restrictUnauthenticatedMessage ({ ws, nostrMessage }) {
+//   if (isAuthenticated({ ws })) return { isBlocked: false }
 
-  let event
-  let message
-  const nostrClientMessage = nostrMessage[0]
+//   let event
+//   let message
+//   const nostrClientMessage = nostrMessage[0]
 
-  switch (nostrClientMessage) {
-    case nostrClientMessages.EVENT:
-      ([, event = {}] = nostrMessage)
-      message = 'we do not accept events from unauthenticated users'
-      break
-    case nostrClientMessages.REQ: // we need this, cause we will limit sub count by pubkey (by ip will be higher)
-      event = {}
-      message = 'we do not accept subscriptions from unauthenticated users'
-      break
-  }
-  if (!message) return { isBlocked: false }
+//   switch (nostrClientMessage) {
+//     case nostrClientMessages.EVENT:
+//       ([, event = {}] = nostrMessage)
+//       message = 'we do not accept events from unauthenticated users'
+//       break
+//     case nostrClientMessages.REQ: // we need this, cause we will limit sub count by pubkey (by ip will be higher)
+//       event = {}
+//       message = 'we do not accept subscriptions from unauthenticated users'
+//       break
+//   }
+//   if (!message) return { isBlocked: false }
 
-  sendCommandResult({ ws, event, isSuccess: false, message: `restricted: ${message}` })
-  return { isBlocked: true }
-}
+//   sendCommandResult({ ws, event, isSuccess: false, message: `restricted: ${message}` })
+//   return { isBlocked: true }
+// }
 
 function rateLimitNostrMessage ({ wss, ws, nostrMessage }) {
   const nostrClientMessage = nostrMessage[0]

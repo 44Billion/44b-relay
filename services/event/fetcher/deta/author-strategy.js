@@ -1,8 +1,8 @@
-import deta from '#services/db/index.js'
+import deta from '#services/db/deta.js'
 import { isReplaceableEvent, getPublishedAt, dbEventToEvent } from '#helpers/event.js'
 import { shuffle } from '#helpers/array.js'
-import CartesianProductBuilder from '#services/event/fetcher/helpers/cartesian-product-builder.js'
-import getQueryKeyWithOperator from '#services/event/fetcher/helpers/get-query-key-with-operator.js'
+import CartesianProductBuilder from '#services/event/fetcher/deta/helpers/cartesian-product-builder.js'
+import getQueryKeyWithOperator from '#services/event/fetcher/deta/helpers/get-query-key-with-operator.js'
 
 const DEFAULT_LIMIT = 5
 const MAX_LIMIT = 200

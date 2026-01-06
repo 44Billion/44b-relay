@@ -19,8 +19,10 @@ async function authenticate ({ ws, event }) {
     relay.replace(/\/$/, '') === `wss://${process.env.RELAY_HOST}`
   const message = isSuccess ? '' : 'restricted: couldn\'t authenticate'
 
-  ws.nostr.subscriptions = {} // reset subs
   if (isSuccess) {
+    if (isAuthenticated({ ws }) && ws.nostr.pubkey !== event.pubkey) {
+      ws.nostr.subscriptions = {} // reset subs
+    }
     ws.nostr.pubkey = event.pubkey
     await keepTrackOfPubkey({ ws, action: 'authenticate' })
   } else delete ws.nostr.pubkey

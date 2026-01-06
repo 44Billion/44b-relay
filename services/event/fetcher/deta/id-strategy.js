@@ -1,4 +1,4 @@
-import deta from '#services/db/index.js'
+import deta from '#services/db/deta.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
 import { dbEventToEvent } from '#helpers/event.js'
 

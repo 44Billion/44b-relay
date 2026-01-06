@@ -1,7 +1,7 @@
-import IdStrategy from '#services/event/fetcher/id-strategy.js'
-import ReplaceableStrategy from '#services/event/fetcher/replaceable-strategy.js'
-import AuthorStrategy from '#services/event/fetcher/author-strategy.js'
-import BroadStrategy from '#services/event/fetcher/broad-strategy.js'
+import IdStrategy from '#services/event/fetcher/deta/id-strategy.js'
+import ReplaceableStrategy from '#services/event/fetcher/deta/replaceable-strategy.js'
+import AuthorStrategy from '#services/event/fetcher/deta/author-strategy.js'
+import BroadStrategy from '#services/event/fetcher/deta/broad-strategy.js'
 
 // TODO: add extra __expires to events with directly requested ids on 'events' table
 // TODO: update 'activePubkeys' metadata_requested_at and __expires from directly requested pubkey METADATA

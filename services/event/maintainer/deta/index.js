@@ -1,4 +1,4 @@
-import deta, { keyToDate, keyToId } from '#services/db/index.js'
+import deta, { keyToDate, keyToId } from '#services/db/deta.js'
 import { deleteEventMeta } from '#models/event.js'
 const ONE_DAY = 1000 * 60 * 60 * 24
 

@@ -8,7 +8,7 @@ class Relay {
     Object.assign(this, { wss })
   }
 
-  handleConnection (ws, req) {
+  handleConnection (ws, _req) {
     this.decorateClient(ws)
     this.attachMessageHandler(ws)
     this.requestAuthentication(ws)
@@ -37,7 +37,7 @@ class Relay {
         nostrMessage = JSON.parse(wsMessage)
         nostrMessage.byteLength = message.byteLength // buffer
         if (!nostrClientMessages[nostrMessage?.[0]]) nostrMessage = null
-      } catch (err) {
+      } catch (_err) {
         console.error(`[NOTICE]: Wrong client message (not nostr): ${wsMessage}`)
         nostrMessage = null
       }

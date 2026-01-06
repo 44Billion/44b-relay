@@ -1,3 +1,9 @@
+/* eslint-disable camelcase */
+import { maxDateNowSeconds } from '#config/mdb.js'
+import { bytesToBase64 } from '#helpers/base64.js'
+import { base16ToBytes } from '#helpers/base16.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+
 const textEncoder = new TextEncoder()
 export function eventToRecord (event, { language, expiresAt, lastAccessedAt, receivedAt, isContentSearchable = false, fts } = {}) {
   const { id, kind, pubkey, created_at, sig } = event
@@ -18,6 +24,7 @@ export function eventToRecord (event, { language, expiresAt, lastAccessedAt, rec
     switch (k) {
       case 'd': { if (v !== undefined || (kind >= 10000 && kind < 20000)) dTag ??= v ?? ''; break }
       case 'expiration': {
+        if (![null, undefined].includes(expiresAt)) break
         try {
           const expUint = parseInt(v, 10); if (!Number.isNaN(expUint) && expUint >= 0) { expiresAt ??= Math.min(maxDateNowSeconds, expUint) }
         } catch (_err) {}; break
@@ -30,8 +37,15 @@ export function eventToRecord (event, { language, expiresAt, lastAccessedAt, rec
       case 0:
       case 3:
         dTag = ''; break
-      case 7:
-        dTag = content; break
+      // Although spec says reactions can be many for the same reference,
+      // we won't allow it, to save db space
+      case 7: {
+        const reversedTags = [...event.tags].reverse()
+        const softDTag = reversedTags.find(v => ['e', 'a'].includes(v[0])) ||
+          reversedTags.find(v => v[0] === 'p')
+        dTag = softDTag?.[1] ?? ''
+        break
+      }
     }
   }
   const now = Math.floor(Date.now() / 1000)

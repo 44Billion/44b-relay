@@ -1,9 +1,4 @@
-/* eslint-disable camelcase */
 import { db } from '#services/db/mdb.js'
-import { maxDateNowSeconds } from '#config/mdb.js'
-import { bytesToBase64 } from '#helpers/base64.js'
-import { base16ToBytes } from '#helpers/base16.js'
-import { sha256 } from '@noble/hashes/sha2.js'
 import { eventToRecord, recordToEvent } from './mapper.js'
 
 export async function getEventByRef (ref, options = {}) {
@@ -29,7 +24,7 @@ export async function patchEventByRef (ref, patch) {
 
 // Adds doc if it doesn't exist, i.e., may create a record
 // missing fields for not being present on the patch arg
-export async function putEventByRef(ref, patch) {
+export async function putEventByRef (ref, patch) {
   return db.index('events').updateDocuments([{
     ref,
     ...patch

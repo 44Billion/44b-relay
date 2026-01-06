@@ -1,4 +1,4 @@
-import deta from '#services/db/index.js'
+import deta from '#services/db/deta.js'
 import { isReplaceableEvent, isAddressableEvent, getPublishedAt, dbEventToEvent } from '#helpers/event.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
 import { eventTags } from '#constants/event.js'

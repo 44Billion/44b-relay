@@ -1,6 +1,6 @@
 import { isReplaceableEvent, isAddressableEvent, eventToDbEvent, getAuthorPubkey, getDbEventKey } from '#helpers/event.js'
 import { eventKinds, eventTags } from '#constants/event.js'
-import deta from '#services/db/index.js'
+import deta from '#services/db/deta.js'
 import { getReplaceableEventsTableKey, createEventMeta, deleteEventMeta, keepTrackOfPubkey } from '#models/event.js'
 
 export default class EventSaver {
