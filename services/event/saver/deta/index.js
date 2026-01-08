@@ -1,3 +1,4 @@
+/* eslint-disable camelcase */
 import { isReplaceableEvent, isAddressableEvent, eventToDbEvent, getAuthorPubkey, getDbEventKey } from '#helpers/event.js'
 import { eventKinds, eventTags } from '#constants/event.js'
 import deta from '#services/db/deta.js'
@@ -127,7 +128,7 @@ export default class EventSaver {
     let dbEvent = await deta.Base(`events${author}`).get(dbEventKey)
     if (dbEvent) return { isSuccess: true, isDuplicate: true, message: 'duplicate: id already in use' }
     else if ((dbEvent = await deta.Base('events').get(dbEventKey))) {
-      try { await deta.Base(`events${author}`).insert(dbEvent) } catch (err) { console.log('Race condition. Moving on') }
+      try { await deta.Base(`events${author}`).insert(dbEvent) } catch (_err) { console.log('Race condition. Moving on') }
       return { isSuccess: true, isDuplicate: true, message: 'duplicate: id already in use' }
     }
     if ((errorMessage = this.getValidationErrorMessage())) return { isSuccess: false, isDuplicate: false, message: errorMessage }
@@ -141,7 +142,7 @@ export default class EventSaver {
       await deta.Base(`events${author}`).insert(nextDbEvent)
       await this.keepTrackOfPubkey({ isPublishing: true })
       return { isSuccess: true, isDuplicate: false, message: '' }
-    } catch (err) {
+    } catch (_err) {
       // in fact, deta key already in use
       return { isSuccess: true, isDuplicate: true, message: 'duplicate: id already in use' }
     }

@@ -1,3 +1,4 @@
+/* eslint-disable camelcase */
 import deta, { keyToDate, keyToId } from '#services/db/deta.js'
 import { deleteEventMeta } from '#models/event.js'
 const ONE_DAY = 1000 * 60 * 60 * 24
@@ -15,7 +16,7 @@ async function deleteStaleEvents (ltDays = 30 * 3) {
       if (publishedAt.getTime() > (Date.now() - ONE_DAY * ltDays)) { didntFindTooRecent = false; break }
 
       // TODO: filter out premium pubkeys and maybe filter out some kinds like metadata
-      const isPayingCustomerOrWhitelisted = pubkey => false
+      const isPayingCustomerOrWhitelisted = _pubkey => false
       if (isPayingCustomerOrWhitelisted(author)) continue
 
       const id = keyToId(eventPublishedAtKey)
@@ -72,7 +73,7 @@ async function deleteStaleAccounts (ltDays = 15) {
       if (activeAt.getTime() > (Date.now() - ONE_DAY * ltDays)) { didntFindTooRecent = false; break }
 
       // TODO: filter out premium pubkeys
-      const isPayingCustomerOrWhitelisted = pubkey => false
+      const isPayingCustomerOrWhitelisted = _pubkey => false
       if (isPayingCustomerOrWhitelisted(author)) continue
       const delta = Date.now() - activeAt.getTime()
       // v won't delete accounts too fast
@@ -80,7 +81,12 @@ async function deleteStaleAccounts (ltDays = 15) {
       if (active_days > 1 && active_days < 30 * 6) { active_days = 30 * 6 }
       // ^ won't delete accounts too fast
 
-      const maxDelta = ONE_DAY * 3 + Math.min(ONE_DAY * 30 * 6 - 3, (active_days - 1))
+      // maxDelta represents the maximum inactivity period allowed before deletion
+      //
+      // New accounts (active_days === 1) are safe for 62 days of inactivity. 3 days + Math.min(177 days, 59 days)
+      // Once Active users (1 < active_days < 180) are safe for up to 180 days of inactivity. 3 days + Math.min(177 days, 179 days)
+      // Once Really Active users (active_days >=180) are safe for 180 days of inactivity 3 days + Math.min(177 days, > 179 days)
+      const maxDelta = ONE_DAY * 3 + Math.min(ONE_DAY * 30 * 6 - ONE_DAY * 3, (active_days - 1) * ONE_DAY)
       if (delta <= maxDelta) continue
 
       await deleteAccountEvents(author)

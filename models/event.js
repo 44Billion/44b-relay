@@ -1,3 +1,4 @@
+/* eslint-disable camelcase */
 import deta, { generateKey, keyToDate } from '#services/db/deta.js'
 import { isReplaceableEvent, isAddressableEvent, getAuthorPubkey } from '#helpers/event.js'
 
@@ -58,6 +59,19 @@ async function deleteEventMeta ({ key, eventPublishedAtKey }) {
 }
 
 // Used at saver and when authenticating and subscribing
+// Intention is to keep data of active users longer than for inactive ones
+// by using its generated metadata at the
+// services/event/maintainer/deta/index.js#deleteStaleAccounts
+// maintenance function
+//
+// Behavior depends on action:
+// - authenticate/subscribe: skip if user hasn't published events before, else update (last) active at and active days sum
+// - create|update event: if first seen user (author), init (active days = 1 and active at) or update active at and active days
+// - delete: skip
+//
+// If more than 14 days passed since last active at, halve active days (but at least 1) and return
+// If between 1 and 14 days passed since last active at, increment active days by 1 and return
+// Else (active multiple times within same day) don't add to active days
 const keepTrackOfPubkey = (() => {
   const ONE_DAY = 1000 * 60 * 60 * 24
 
