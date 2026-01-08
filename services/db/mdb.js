@@ -66,8 +66,9 @@
 // https://www.meilisearch.com/docs/learn/update_and_migration/updating#create-the-dump
 // --dump-dir /var/opt/meilisearch/dumps
 import { MeiliSearch } from 'meilisearch'
-import eventSchema from '../models/event/schema'
-import { typeof2 } from '../helpers/operator'
+import eventSchema from '#models/event/schema.js'
+import jobSchema from '#models/job/schema.js'
+import { typeof2 } from '#helpers/operator.js'
 
 // Remember if deleting by filter, that filtering by <primaryKey> = xyz
 // would match XyZ xyZ too cause it is case-insensitive on strings
@@ -137,7 +138,8 @@ export default db
 async function migrate (db) {
   console.log('Running migration...')
   const idxs = [
-    eventSchema
+    eventSchema,
+    jobSchema
   ]
   const idxsByUid = idxs.reduce((r, v) => ({ ...r, [v.uid]: v }), {})
   const currentIdxsByUid = await db.getIndexes({ limit: db.constants.maxBigIndexes })
