@@ -1,11 +1,13 @@
+import { getFilterInterests, uninterestedIn, trackRequestedPubkeys } from '#services/event/tracker/mdb/index.js'
+import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import { sendEvent, sendEose, sendClosed } from '#helpers/message.js'
 // import { isAuthenticated, requestAuthentication } from '#services/relay/authenticator.js'
-import { parseSubscriptionFilters } from '#helpers/subscription.js'
+import { parseSubscriptionFilters, isAllowedBroadFilter } from '#helpers/subscription.js'
 // import { eventKinds } from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { isType } from '#helpers/shared.js'
 import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
-import EventFetcher from '#services/event/fetcher/deta/index.js'
+import EventFetcher from '#services/event/fetcher/mdb/index.js'
 import { keepTrackOfPubkey } from '#models/event.js'
 
 class ReqHandler {
@@ -39,7 +41,8 @@ class ReqHandler {
 
       let isBlocked, message
       for (const filter of filters) {
-        ({ isBlocked, message } = applyCustomRelayRestrictionsToNostrFilter({ ws, filter }))
+        filter.isBroad = isAllowedBroadFilter(filter)
+        ;({ isBlocked, message } = applyCustomRelayRestrictionsToNostrFilter({ ws, filter, _isAllowedBroadFilter: filter.isBroad }))
         if (isBlocked) {
           // hasn't awaited anything (not async), so won't check replaceAtMs (hasNoFutureSubscriptionReplaceRequest)
           deleteSubscription({ ws, subscriptionId })
@@ -92,12 +95,20 @@ function deleteSubscription ({ ws, subscriptionId }) {
 async function sendFilteredEvents ({ ws, subscriptionId, filters }) {
   const generator = EventFetcher.run(filters)
   let sentEventCount = 0
-  // tb olhe os comments do fetcher e no saver como apagar eventos desnecessarios?
+  const interestedIn = getFilterInterests({ filters })
+  // tb olhe os comments do fetcher e no saver (do deta) como apagar eventos desnecessarios?
   // acho que kda 24 de distancia, soma 1 dia. se tiver 3 dias, ok, senao, nops
   for await (const event of generator) {
+    if (
+      !uninterestedIn.kinds[event.kind] &&
+      interestedIn.ids[event.id]
+    ) interestedIn.pubkeys.add(event.pubkey)
+
     await sendEvent({ ws, subscriptionId, event })
     sentEventCount++
   }
+  trackRequestedPubkeys({ pubkeys: [...interestedIn.pubkeys], ip: ws.req.socket.remoteAddress })
+  trackIpActivity({ ip: ws.req.socket.remoteAddress })
   return { sentEventCount }
 }
 
@@ -109,6 +120,8 @@ function blockHighFilterCount ({ ws, subscriptionId, filters }) {
   return { isBlocked }
 }
 
+// Commented out because same connection may be shared by different napps
+// thus same filters may be used again legitimately
 // const filtersDiffer = (() => {
 //   function arrayToObject (array) { return array.reduce((memo, item, i) => ({ ...memo, [i]: item }), {}) }
 //   function filterDiffer (a, b) {
@@ -141,13 +154,13 @@ function isScraper (filter) {
   return precision < 2
 }
 
-function applyCustomRelayRestrictionsToNostrFilter ({ /* ws, */ filter }) {
-  if (isScraper(filter)) return { isBlocked: true, message: 'error: overly broad filters are not allowed.' }
+function applyCustomRelayRestrictionsToNostrFilter ({ /* ws, */ filter, _isAllowedBroadFilter = isAllowedBroadFilter(filter) }) {
+  if (isScraper(filter) && !_isAllowedBroadFilter) return { isBlocked: true, message: 'error: overly broad filters are not allowed.' }
 
   // For now, Ignore Harvest Now, Decrypt Later (HNDL) attacks
   // (storing encrypted DMs for later decryption when having the key)
   // because quantum computers won't happen soon enough or ever
-  // - Post-quantum cryptography reduces funding for cryptographically relevant quantum computer
+  // - Post-quantum cryptography reduces funding for cryptographically relevant quantum computers
   // (If the world successfully migrates to PQC before such a computer exists, the "bounty" for building it vanishes)
   // - Money has already moved elsewhere (LLM)
   // - https://eprint.iacr.org/2025/1237.pdf - "Replication of Quantum Factorisation Records with an 8-bit Home Computer, an Abacus, and a Dog"

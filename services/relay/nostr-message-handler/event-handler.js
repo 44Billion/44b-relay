@@ -4,8 +4,10 @@ import { nostrClientMessages } from '#constants/message.js'
 import { eventKinds } from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
-import { fightSpamOnNostrEvent } from '#services/spam-fighter/deta/index.js'
+// import { fightSpamOnNostrEvent } from '#services/spam-fighter/deta/index.js'
 import { isAuthenticated } from '#services/relay/authenticator.js'
+import { loadPopularityFilters, getPopularityLevel } from '#services/event/maintainer/mdb/index.js'
+import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import EventSaver from '#services/event/saver/deta/index.js'
 import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
 
@@ -21,11 +23,13 @@ class EventHandler {
   async run () {
     const { wss, ws, nostrMessage } = this
     const [, event = {}] = nostrMessage
+    trackIpActivity({ ip: ws.ip })
     let { isSuccess, message } = await isValidEvent({ event, clientMessage: nostrClientMessages.EVENT })
     if (!isSuccess) return sendCommandResult({ ws, event, isSuccess, message })
 
-    const { isSpam } = await fightSpamOnNostrEvent(ws, event)
-    if (isSpam) return sendCommandResult({ ws, event, isSuccess: false, message: 'blocked: your IP is involved with spam' })
+    // TODO: Check impact on performance then move from deta to mdb
+    // const { isSpam } = await fightSpamOnNostrEvent(ws, event)
+    // if (isSpam) return sendCommandResult({ ws, event, isSuccess: false, message: 'blocked: your IP is involved with spam' })
 
     // if is duplicate, must start with 'duplicate:' see this and others at https://github.com/nostr-protocol/nips/blob/master/20.md
     let shouldRelay // e.g.: don't relay duplicates
@@ -76,22 +80,14 @@ class EventHandler {
 
   applyCustomRelayRestrictionsToNostrEvent ({ event }) {
     const { ws } = this
-    if (
-      event.created_at < (Math.floor(Date.now / 1000) - 60 * 10) &&
-      event.pubkey !== ws.nostr.pubkey
-    ) {
-      return { isBlocked: true, message: 'auth-required: we do not publish past events not signed by yourself' }
-    }
     if (event.created_at < (Math.floor(Date.now / 1000) - 60 * 10)) {
       if (!isAuthenticated({ ws })) return { isBlocked: true, message: 'auth-required: the event created_at field is too old and was not stored.' }
       else if (event.pubkey !== ws.nostr.pubkey) {
-        return { isBlocked: true, message: 'restricted: the event created_at field is too old and was not stored.' }
+        return { isBlocked: true, message: 'restricted: we do not publish past events not signed by yourself.' }
       }
     }
     const TWO_DAYS_AHEAD = Math.ceil(Date.now() / 1000) + 60 * 60 * 24 * 2
     if (
-      // TODO: if too old, allow just after AUTH proves it is the author publishing it
-      // event.created_at < (Math.floor(Date.now / 1000) - 60 * 10) ||
       // Allow posting in the future to work as scheduled posts, but with a limit
       event.created_at > TWO_DAYS_AHEAD ||
       getPublishedAt(event) > TWO_DAYS_AHEAD
@@ -114,12 +110,28 @@ class EventHandler {
     const maxUntil = Math.floor(Date.now() / 1000) + 10 * 60
     const isFutureEvent = event.created_at > maxUntil
 
+    await loadPopularityFilters()
+    const authorPopularityLevel = getPopularityLevel(event.pubkey)
+
     for (const ws of wss.clients) {
       if (ws.readyState !== webSocketReadyState.OPEN) continue
       if (isFutureEvent && ws.nostr.pubkey !== event.pubkey) continue
 
       for (const [subscriptionId, { filters }] of Object.entries(ws.nostr.subscriptions)) {
-        if (!doesMatchASubscriptionFilter({ filters, event })) continue
+        // Check popularity for broad filters
+        // If the matching filter is broad, we only relay if popularity <= 6
+        // If MULTIPLE filters match, and at least ONE is NOT broad/restricted, we should relay.
+        let shouldRelay = false
+        for (const filter of filters) {
+          if (doesMatchASubscriptionFilter({ filters: [filter], event })) {
+            if (!filter.isBroad || authorPopularityLevel <= 6) {
+              shouldRelay = true
+              break
+            }
+          }
+        }
+
+        if (!shouldRelay) continue
 
         await sendEvent({ ws, subscriptionId, event })
 

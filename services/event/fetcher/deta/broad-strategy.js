@@ -10,7 +10,7 @@ class BroadStrategy {
   static doesWorkFor () { return true }
 
   static run (filter) {
-    new this(filter).run()
+    return new this(filter).run()
   }
 
   constructor (filter) {
@@ -18,7 +18,7 @@ class BroadStrategy {
   }
 
   async * run () {
-    const filter = this
+    const { filter } = this
     const limit = Math.min(MAX_LIMIT, filter.limit ?? DEFAULT_LIMIT)
     const eventTable = 'events'
 

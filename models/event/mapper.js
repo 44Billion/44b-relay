@@ -8,6 +8,7 @@ const textEncoder = new TextEncoder()
 export function eventToRecord (event, { language, expiresAt, lastAccessedAt, receivedAt, isContentSearchable = false, fts } = {}) {
   const { id, kind, pubkey, created_at, sig } = event
   const record = { id, kind, pubkey, created_at, sig }
+  const now = Math.floor(Date.now() / 1000)
 
   let dTag
   let tagIndex = 0
@@ -32,6 +33,12 @@ export function eventToRecord (event, { language, expiresAt, lastAccessedAt, rec
     }
     tagIndex++
   }
+
+  if (kind === 5 || kind === 7) {
+    const maxExpiration = now + 60 * 60 * 24 * 3
+    if (!expiresAt || expiresAt > maxExpiration) expiresAt = maxExpiration
+  }
+
   if (!dTag) {
     switch (kind) {
       case 0:
@@ -48,7 +55,6 @@ export function eventToRecord (event, { language, expiresAt, lastAccessedAt, rec
       }
     }
   }
-  const now = Math.floor(Date.now() / 1000)
   Object.assign(record, {
     ref: dTag
       ? bytesToBase64(sha256(textEncoder.encode(`${kind}:${pubkey}:${dTag}`)))

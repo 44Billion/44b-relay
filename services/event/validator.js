@@ -81,7 +81,7 @@ export default class EventValidator {
       const { event } = this
       const eventHash = sha256(Buffer.from(serializeEvent(event)))
       return Buffer.from(eventHash).toString('hex') === event.id
-    } catch (err) {
+    } catch (_err) {
       return false
     }
   }
@@ -90,7 +90,7 @@ export default class EventValidator {
     try {
       const { event: { id: eventHash, sig, pubkey } } = this
       return schnorr.verify(sig, eventHash, pubkey)
-    } catch (err) {
+    } catch (_err) {
       return false
     }
   }
@@ -113,7 +113,7 @@ export default class EventValidator {
           if (tag.length < 2 || tag.length > 3 || (![undefined, ''].includes(tag[2]) && !webSocketRegExp.test(tag[2]))) return false
           let [kind, pubkey, ...deduplicationId] = tag[1]?.split?.(':') ?? []
           deduplicationId = deduplicationId.join(':')
-          try { kind = parseInt(kind, 10) } catch (err) { return false }
+          try { kind = parseInt(kind, 10) } catch (_err) { return false }
           if (!isAddressableEvent({ kind }) || !/^[0-9a-f]{64}$/.test(pubkey) || !deduplicationId) return false
           break
         }
@@ -160,7 +160,7 @@ export default class EventValidator {
               const delegationToken = `nostr:${tagName}:${pubkey}:${conditionsQueryString}`
               const msgHash = sha256(Buffer.from(delegationToken))
               return schnorr.verify(delegationSig, msgHash, delegatorPubkey)
-            } catch (err) {
+            } catch (_err) {
               return false
             }
           }
@@ -171,7 +171,7 @@ export default class EventValidator {
         case eventTags.EXPIRATION: {
           if (++tagCount[eventTags.EXPIRATION] > 1 || tag.length !== 2) return false
           let expiration
-          try { expiration = parseInt(tag[1], 10) } catch (err) {}
+          try { expiration = parseInt(tag[1], 10) } catch (_err) {}
           if (!isType(expiration, 'number') || expiration < -8640000000000 || expiration > 8640000000000) return false
           break
         }
@@ -184,7 +184,7 @@ export default class EventValidator {
           if (++tagCount[eventTags.PUBLISHED_AT] > 1) return false
           if (tag.length !== 2 || !isType(tag[1], 'string') || tag[1] === '') return false
           let publishedAt
-          try { publishedAt = parseInt(tag[1]) } catch (err) { return false }
+          try { publishedAt = parseInt(tag[1]) } catch (_err) { return false }
           if (!isType(publishedAt, 'number') || publishedAt < event.created_at || publishedAt < -8640000000000 || publishedAt > 8640000000000) return false
           break
         }
@@ -216,11 +216,12 @@ export default class EventValidator {
         try {
           const json = JSON.parse(content)
           if (!['null', '[]', '{}'].includes(json)) return false
-        } catch (err) {}
+        } catch (_err) {}
         break
       }
       case eventKinds.METADATA: {
         try {
+          // eslint-disable-next-line camelcase
           const { name: username, about, picture, nip05, nip05valid, npub, followersCount, iris, display_name, displayName, banner, website, lud06, lud16 /*, ...rest */ } = JSON.parse(content)
           // if (Object.keys(rest).length > 0) return false
           if (![undefined, ''].includes(username) && (!isType(username, 'string') || username.length > 70)) return false
@@ -235,14 +236,15 @@ export default class EventValidator {
           if (![undefined, ''].includes(npub) && !/^npub1[ac-hj-np-z02-9]{58}$/.test(npub)) return false
           if (![undefined, ''].includes(followersCount)) {
             let count
-            try { count = parseInt(followersCount) } catch (err) { return false }
+            try { count = parseInt(followersCount) } catch (_err) { return false }
             if (!isType(count, 'number')) return false
           }
           // iris nostr (and other protocols) client
           if (![undefined, ''].includes(iris)) {
             // e.g.: iris: "{\"pub\":\"ZSPElwznsNYf953qlQX8ZH8Dral81Z0EEQ-bsRcW_j8._OIQ2hiLV-YY4lFk6iCVMUS-BDB4BuoN6ZIUnNl96U8\",\"sig\":\"aSEA{\\\"m\\\":\\\"0695cb75dbb27d935a9b97e1a8b7ccd335076b0ced0ec88aa8d3a3bf129ee74f\\\",\\\"s\\\":\\\"hqBAuzcrwk8+yrOLQm4oOGKiYIU7AWbh6zcGKtvH6QQA+w6ik3K1dxiRL3qnVGkDniKl3GTBWjJlj6NFrqaJNA==\\\"}\"}"
-            try { if (!isType(JSON.parse(iris), 'object')) return false } catch (err) { return false }
+            try { if (!isType(JSON.parse(iris), 'object')) return false } catch (_err) { return false }
           }
+          // eslint-disable-next-line camelcase
           if (![undefined, ''].includes(display_name) && (!isType(display_name, 'string') || display_name.length > 70)) return false
           if (![undefined, ''].includes(displayName) && (!isType(displayName, 'string') || displayName.length > 70)) return false
           if (![undefined, ''].includes(banner) && !urlRegExp.test(banner) && !imageDataUrlRegExp.test(banner)) return false
@@ -253,7 +255,7 @@ export default class EventValidator {
             const [username, hostname] = lud16.split('@')
             if (!/[a-z0-9-_.]+/.test(username) || !hostnameRegExp.test(hostname)) return false
           }
-        } catch (err) {
+        } catch (_err) {
           return false
         }
         break

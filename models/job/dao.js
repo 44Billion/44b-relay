@@ -23,7 +23,7 @@ export async function patchJobByKey (key, patch) {
 
 // Adds doc if it doesn't exist
 export async function putJobByKey (key, patch) {
-  // MeiliSearch updateDocuments acts as upsert
+  // MeiliSearch updateDocuments (also addDocuments) acts as upsert
   return db.index('jobs').updateDocuments([{
     key,
     ...patch

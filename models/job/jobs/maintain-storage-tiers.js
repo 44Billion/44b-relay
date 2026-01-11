@@ -1,0 +1,227 @@
+import mdb from '#services/db/mdb.js'
+import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
+import { CuckooFilter } from 'bloom-filters'
+
+async function run () {
+  console.log('Running storage tiers maintenance...')
+
+  // 1. Get Reference Info (last calc job)
+  let calcJob
+  try {
+    calcJob = await mdb.index('jobs').getDocument('calcPopularPubkeys')
+  } catch (err) {
+    if (err.code !== 'document_not_found') throw err
+  }
+
+  if (!calcJob || !calcJob.endedAt) {
+    console.log('No calcPopularPubkeys run found. Skipping.')
+    return
+  }
+
+  const referenceDesc = `calc-${calcJob.endedAt}`
+  const stateKey = `maintenanceState:${calcJob.endedAt}`
+
+  // 2. Load or Create State
+  let state
+  try {
+    state = await mdb.index('maintenanceState').getDocument(stateKey)
+    state.levelUpdatedCuckooRaw = state.levelUpdatedCuckoo
+      ? CuckooFilter.fromJSON(JSON.parse(state.levelUpdatedCuckoo))
+      : new CuckooFilter(100000, 4, 3) // Large filter for processed PKs
+    state.maintenanceDoneCuckooRaw = state.maintenanceDoneCuckoo
+      ? CuckooFilter.fromJSON(JSON.parse(state.maintenanceDoneCuckoo))
+      : new CuckooFilter(100000, 4, 3)
+    state.eventsProcessedCuckooRaw = state.eventsProcessedCuckoo
+      ? CuckooFilter.fromJSON(JSON.parse(state.eventsProcessedCuckoo))
+      : new CuckooFilter(1000000, 4, 3) // 1 Million events capacity
+  } catch (err) {
+    if (err.code === 'document_not_found') {
+      state = {
+        key: stateKey,
+        jobKey: 'calcPopularPubkeys',
+        createdAt: calcJob.endedAt,
+        levelUpdatedCuckooRaw: new CuckooFilter(100000, 4, 3),
+        maintenanceDoneCuckooRaw: new CuckooFilter(100000, 4, 3),
+        eventsProcessedCuckooRaw: new CuckooFilter(1000000, 4, 3)
+      }
+    } else {
+      throw err
+    }
+  }
+
+  await loadPopularityFilters()
+
+  const BATCH_SIZE = 100
+  let offset = 0
+  let processed = 0
+
+  while (true) {
+    // Iterate storedEventOwners where entity='pk'
+    const { results } = await mdb.index('storedEventOwners').getDocuments({
+      offset,
+      limit: BATCH_SIZE,
+      filter: 'entity = "pk"',
+      sort: ['key:asc'] // Stable sort
+    })
+
+    if (results.length === 0) break
+
+    for (const ownerDoc of results) {
+      const pubkey = ownerDoc.key
+      let { popularityLevel } = ownerDoc
+
+      // --- Step 2: Update Popularity Level (if not done) ---
+      if (!state.levelUpdatedCuckooRaw.has(pubkey)) {
+        const newLevel = getPopularityLevel(pubkey)
+
+        // Update DB if changed (or even if not, to sync fields?)
+        // The requirement: "turn the current popularityLevel into the previousPopularityLevel field"
+        // This implies we ALWAYS update if we haven't processed this step yet.
+        await mdb.index('storedEventOwners').updateDocuments([{
+          ...ownerDoc,
+          previousPopularityLevel: popularityLevel,
+          popularityLevel: newLevel
+        }])
+
+        // Update local vars for next step
+        popularityLevel = newLevel
+
+        state.levelUpdatedCuckooRaw.add(pubkey)
+      }
+
+      // --- Step 3: Maintenance (if not done) ---
+      if (!state.maintenanceDoneCuckooRaw.has(pubkey)) {
+        // Check for Relegation
+        if (popularityLevel > 5) {
+          // Relegation Logic: Move 'pk' events to 'ip'
+          await relegateEvents(pubkey, state, popularityLevel)
+        } else {
+          // Still popular (1-5)
+          // Just prune
+          const { ops } = await checkStorageLimitAndPrune({ pubkey, ip: null, newEventSize: 0, popularityLevel })
+          await queueOps(ops)
+        }
+
+        state.maintenanceDoneCuckooRaw.add(pubkey)
+      }
+    }
+
+    // Save State periodically
+    await saveState(state)
+
+    offset += BATCH_SIZE
+    processed += results.length
+    console.log(`Processed ${processed} owners...`)
+  }
+
+  // Cleanup old states? Optional.
+  console.log(`Maintenance job done for ${referenceDesc}.`)
+}
+
+async function relegateEvents (pubkey, state, popularityLevel) {
+  // Find events for this pubkey with owner='pk'
+  // and switch them to owner='ip'
+  // Also need to handle 'ip' usage update.
+
+  const BATCH = 50
+
+  while (true) {
+    const filter = `pubkey = ${mdb.toMeiliValue(pubkey)} AND owner = "pk"`
+    const { results: events } = await mdb.index('events').search('', {
+      filter,
+      limit: BATCH,
+      offset: 0
+    })
+
+    if (events.length === 0) break
+
+    // Filter out already processed events (due to Meilisearch async indexing lag or restart)
+    const newEvents = events.filter(ev => {
+      const id = ev.ref || ev.id // Use ref (DB ID) if available
+      return !state.eventsProcessedCuckooRaw.has(id)
+    })
+
+    if (newEvents.length === 0) {
+      // If we found events but they are all in Cuckoo, it means Index hasn't updated yet.
+      // We should probably wait or break to avoid infinite loop if index is stuck?
+      // Or just continue and hope next batch (offset?) -- No, we use offset 0.
+      // If we are stuck on offset 0 with processed events, we are in an infinite loop until index updates.
+      // We can sleep briefly.
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      continue
+    }
+
+    // Group by IP to batch updates
+    const eventsByIp = {}
+    for (const ev of newEvents) {
+      if (!ev.ip) continue // Should have IP
+      if (!eventsByIp[ev.ip]) eventsByIp[ev.ip] = []
+      eventsByIp[ev.ip].push(ev)
+    }
+
+    // ... Processing ...
+    const allOps = []
+
+    for (const [ip, ipEvents] of Object.entries(eventsByIp)) {
+      // Update Usage for IP
+      const sizeToAdd = ipEvents.reduce((acc, ev) => acc + (ev.byteSize || 0), 0)
+      const { ops } = await checkStorageLimitAndPrune({ pubkey, ip, newEventSize: sizeToAdd, popularityLevel })
+
+      // Queue event updates (changing owner to 'ip') atomically with usage update
+      const updates = ipEvents.map(ev => ({ ...ev, owner: 'ip' }))
+      updates.forEach(ev => {
+        ops.push({
+          targetKey: ip,
+          type: 'save_event',
+          data: { event: ev, ownerType: 'ip' }
+        })
+      })
+
+      allOps.push(...ops)
+    }
+
+    // Decrement usage for PK
+    const totalBytesRemoved = newEvents.reduce((acc, ev) => acc + (ev.byteSize || 0), 0)
+    if (totalBytesRemoved > 0) {
+      allOps.push({
+        targetKey: pubkey,
+        type: 'delta_usage',
+        data: { delta: -totalBytesRemoved, ownerType: 'pk' }
+      })
+    }
+
+    // Flush all ops in one batch
+    await queueOps(allOps)
+
+    // Mark as processed only after successful queueing
+    for (const ev of newEvents) {
+      const id = ev.ref || ev.id
+      state.eventsProcessedCuckooRaw.add(id)
+    }
+
+    // Periodically save state here too?
+    // If we process many batches, we should save state so we don't lose the cuckoo filter additions.
+    await saveState(state)
+  }
+}
+
+async function saveState (state) {
+  await mdb.index('maintenanceState').updateDocuments([{
+    key: state.key,
+    jobKey: state.jobKey,
+    createdAt: state.createdAt,
+    levelUpdatedCuckoo: JSON.stringify(state.levelUpdatedCuckooRaw.saveAsJSON()),
+    maintenanceDoneCuckoo: JSON.stringify(state.maintenanceDoneCuckooRaw.saveAsJSON()),
+    eventsProcessedCuckoo: JSON.stringify(state.eventsProcessedCuckooRaw.saveAsJSON())
+  }])
+}
+
+const config = {
+  key: 'maintainStorageTiers',
+  frequency: 60 * 60 * 24, // Not used
+  manual: true, // Manual trigger only
+  shouldUseLock: true,
+  run
+}
+
+export default config

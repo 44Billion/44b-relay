@@ -53,7 +53,10 @@ export default {
       'created_at',
       'receivedAt',
       'lastAccessedAt',
-      'expiresAt'
+      'expiresAt',
+      'owner',
+      'ip',
+      'popularityLevel'
     ],
     sortableAttributes: [
       'created_at',

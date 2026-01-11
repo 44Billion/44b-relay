@@ -4,6 +4,16 @@ import { isKnownEventKind, getPublishedAt } from '#helpers/event.js'
 const isSingleLetterTagRegExp = /^#[A-Za-z]$/
 const isTagQuery = key => isSingleLetterTagRegExp.test(key)
 
+// We allow these broad filters now by returning less spammy events (of popularity <= 6)
+export function isAllowedBroadFilter (filter) {
+  return (
+    // specific kinds or
+    !!filter.kinds?.length ||
+    // referencing authors, ids, addresses, or external entities
+    Object.entries(filter).some(([k, v]) => v?.length && /^#[aeiu]$/i.test(k))
+  )
+}
+
 function parseSubscriptionFilters ({ filters }) {
   return filters
     .flat() // in case filters[0] is wrongly [] instead of {}

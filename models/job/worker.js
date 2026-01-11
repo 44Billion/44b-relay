@@ -2,6 +2,10 @@ import jobs from './jobs/index.js'
 import { getRandomId } from '#helpers/misc.js'
 import { getJobByKey, patchJobByKey, putJobByKey } from './dao.js'
 
+const HEARTBEAT_INTERVAL = 30 // seconds
+const HEARTBEAT_TOLERANCE = 90 // seconds
+const DEFAULT_MAX_DURATION = 12 * 60 * 60 // 12 hours
+
 // For each job:
 // - If job has shouldUseLock=true,
 // check if there is a record with this key
@@ -50,6 +54,7 @@ function scheduleJob (job, options = {}) {
 
   setTimeout(async () => {
     const { retriggerAfter } = await maybeTriggerJob(job)
+    if (retriggerAfter === null) return
     scheduleJob(job, { retriggerAfter })
   }, timeout)
 }
@@ -57,35 +62,41 @@ function scheduleJob (job, options = {}) {
 // Find the job by key
 // - If it ended too long ago (as of frequency), start it
 // - If endedAt is before startedAt (it is probably already running)
-// and it is taking too long to end (as of maxDuration), start it
+// and it is taking too long to end (as of maxDuration) or stalled (heartbeat), start it
 //
 // Returns { retriggerAfter: seconds }
 // To calculate retriggerAfter (when to call maybeTriggerJob again),
 // - If it has ended recently, retrigger after endedAt + frequency + jitter
 // - If it has ended too long ago, right now + jitter
-// - If it is running, retrigger after startedAt + maxDuration + jitter
-// which will end up checking if other worker was unable to set endedAt in time
+// - If it is running, retrigger after the soonest of maxDuration expiry or heartbeat timeout
 async function maybeTriggerJob (job) {
+  const jitter = Math.random() * 5
   if (!job.shouldUseLock) {
     try {
       await job.run()
     } catch (err) {
       console.error(err)
     }
-    return { retriggerAfter: job.frequency }
+    // Manual job with job.shouldUseLock=false won't automatically
+    // re-run in case of getting stalled or running too long.
+    return { retriggerAfter: job.manual ? null : job.frequency + jitter }
   }
 
   const { result: record } = await getJobByKey(job.key)
   const now = Math.floor(Date.now() / 1000)
-  const jitter = Math.random() * 5
 
-  const isExpired = (now - record.endedAt) >= job.frequency
-  const isRunningTooLong = record.endedAt < record.startedAt &&
-    (now - record.startedAt) >= job.maxDuration
+  const maxDuration = job.maxDuration || DEFAULT_MAX_DURATION
+
+  const isExpired = !job.manual && ((now - record.endedAt) >= job.frequency)
+  const isRequested = record.requestedAt && record.requestedAt > record.endedAt
+  const isRunning = record.endedAt < record.startedAt
+  const isRunningTooLong = isRunning && (now - record.startedAt) >= maxDuration
+  const isStalled = isRunning &&
+    (now - (record.heartbeatedAt || record.startedAt)) >= HEARTBEAT_TOLERANCE
 
   let started = false
   let freshRecord = record
-  if (isExpired || isRunningTooLong) {
+  if (isExpired || isRequested || isRunningTooLong || isStalled) {
     const result = await startJob(job)
     started = result.started
     if (result.record) freshRecord = result.record
@@ -94,13 +105,19 @@ async function maybeTriggerJob (job) {
   if (started) {
     return { retriggerAfter: job.frequency + jitter }
   } else {
-    const { startedAt, endedAt } = freshRecord
+    const { startedAt, endedAt, heartbeatedAt } = freshRecord
 
     if (endedAt >= startedAt) {
+      // This allows the worker to detect if the manual job was started by another
+      // process/mechanism and subsequently stalled or ran too long.
+      if (job.manual) return { retriggerAfter: (job.frequency || 60) + jitter }
+
       const diff = (endedAt + job.frequency) - now
       return { retriggerAfter: Math.max(0, diff) + jitter }
     } else {
-      const diff = (startedAt + job.maxDuration) - now
+      const diffMaxDuration = (startedAt + maxDuration) - now
+      const diffHeartbeat = ((heartbeatedAt || startedAt) + HEARTBEAT_TOLERANCE) - now
+      const diff = Math.min(diffMaxDuration, diffHeartbeat)
       return { retriggerAfter: Math.max(0, diff) + jitter }
     }
   }
@@ -115,12 +132,27 @@ async function startJob (job) {
   const now = Math.floor(Date.now() / 1000)
   const lockKey = getRandomId()
 
-  await patchJobByKey(job.key, { startedAt: now, lockKey })
+  await patchJobByKey(job.key, { startedAt: now, lockKey, heartbeatedAt: now })
 
   await new Promise(resolve => setTimeout(resolve, 2000))
 
   const { result: record } = await getJobByKey(job.key)
   if (record.lockKey === lockKey) {
+    let heartbeatTimeout
+    let stopHeartbeat = false
+
+    const heartbeatLoop = async () => {
+      try {
+        await patchJobByKey(job.key, { heartbeatedAt: Math.floor(Date.now() / 1000) })
+      } catch (err) {
+        console.error(err)
+      }
+      if (stopHeartbeat) return
+      heartbeatTimeout = setTimeout(heartbeatLoop, HEARTBEAT_INTERVAL * 1000)
+    }
+
+    heartbeatTimeout = setTimeout(heartbeatLoop, HEARTBEAT_INTERVAL * 1000)
+
     let error
     try {
       await job.run()
@@ -128,6 +160,8 @@ async function startJob (job) {
       console.error(err)
       error = err
     } finally {
+      stopHeartbeat = true
+      clearTimeout(heartbeatTimeout)
       const patch = { endedAt: Math.floor(Date.now() / 1000) }
       if (error) {
         patch.lastError = (error.stack || error.message || String(error)).slice(0, 1000)

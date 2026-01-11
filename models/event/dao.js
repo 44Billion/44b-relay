@@ -34,20 +34,6 @@ export async function putEventByRef (ref, patch) {
 }
 
 export async function getEvents (filter, { fields } = {}) {
-  if (fields === undefined) {
-    fields = [
-      'id',
-      'pubkey',
-      'kind',
-      'nonIndexableTags',
-      'indexableTags',
-      'indexableTagExtras',
-      'nonFtsContent',
-      'ftsContent',
-      'created_at',
-      'sig'
-    ]
-  }
   return searchByNostrFilter(filter, { fields })
     .then(v => ({ result: v.hits.map(recordToEvent), error: null, success: true }))
     .catch(error => ({ result: null, error, success: false }))
@@ -61,7 +47,8 @@ export async function countEvents (filter) {
 
 async function searchByNostrFilter ({
   ids, authors, kinds, tags, since, until, limit,
-  search = '' // nip50
+  search = '', // nip50
+  popularityLevel // not part of nostr spec
 }, { metadataOnly = false, fields } = { }) {
   limit = Math.min(limit || 20, 100)
   let language
@@ -79,7 +66,7 @@ async function searchByNostrFilter ({
   }
 
   return db.index('events').search(q, {
-    ...(fields && { fields }),
+    ...(fields && { attributesToRetrieve: fields }),
     limit,
     filter: [
       // inner array is OR clause
@@ -89,7 +76,8 @@ async function searchByNostrFilter ({
       ...(tags ? Object.entries(tags).map(([k, vs]) => vs.map(v => `indexableTags = ${db.toMeiliValue(`${k} ${v}`)}`)) : []),
       ...(since ? [`created_at >= ${db.toMeiliValue(since)}`] : []),
       ...(until ? [`created_at <= ${db.toMeiliValue(until)}`] : []),
-      ...(language ? [`language = ${db.toMeiliValue(language)}`] : [])
+      ...(language ? [`language = ${db.toMeiliValue(language)}`] : []),
+      ...(popularityLevel ? [`popularityLevel <= ${db.toMeiliValue(popularityLevel)}`] : [])
     ],
     sort: ['created_at:desc'],
     offset: metadataOnly

@@ -5,9 +5,11 @@ export default {
     'key',
     'startedAt',
     'endedAt',
+    'requestedAt',
     'lockKey',
     'lastError',
-    'erroedAt'
+    'erroedAt',
+    'heartbeatedAt'
   ],
   settings: {
     displayedAttributes: [
