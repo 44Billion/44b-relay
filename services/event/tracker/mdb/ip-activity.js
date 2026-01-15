@@ -32,30 +32,32 @@ export async function flushIpActivityToMDB () {
   localCMS = new CountMinSketch(CMS_EPSILON, CMS_DELTA)
   lastActiveAtSubmissions.clear()
 
-  // 2. Queue Merge Operation for CMS
-  try {
-    await queueOps([{
-      targetKey: 'global_cms',
-      type: 'merge_cms',
-      data: { cms: currentCMS.saveAsJSON() }
-    }])
-  } catch (err) {
-    console.error('Failed to queue CMS merge', err)
+  // 2. Prepare Ops
+  const ops = []
+
+  // CMS Merge Op
+  ops.push({
+    targetKey: 'globalCms',
+    type: 'mergeCms',
+    data: { cms: currentCMS.saveAsJSON() }
+  })
+
+  // IP Activity Updates
+  for (const [ip, ts] of currentActiveAts) {
+    ops.push({
+      targetKey: ip,
+      type: 'patchDocumentIfExists',
+      data: {
+        index: 'storedEventOwners',
+        document: { key: ip, entityType: 'ip', lastActiveAt: ts }
+      }
+    })
   }
 
-  // 3. Update lastActiveAt for IPs
-  // We do updates directly because timestamps are LWW (safe-ish for concurrency)
-  // And it decouples metadata update from stats merge.
-  const updates = Array.from(currentActiveAts.entries()).map(([ip, ts]) => ({
-    key: ip,
-    entity: 'ip',
-    lastActiveAt: ts
-  }))
-
   try {
-    await mdb.index('storedEventOwners').updateDocuments(updates)
+    await queueOps(ops)
   } catch (err) {
-    console.error('Failed to update lastActiveAt for IPs', err)
+    console.error('Failed to queue IP activity ops', err)
   }
 }
 
@@ -68,7 +70,7 @@ const ONE_DAY = 1000 * 60 * 60 * 24
 export async function deleteStaleIps () {
   let globalCMS
   try {
-    const doc = await mdb.index('ipActivity').getDocument('global_cms')
+    const doc = await mdb.index('ipActivity').getDocument('globalCms')
     globalCMS = CountMinSketch.fromJSON(JSON.parse(doc.json))
   } catch (err) {
     if (err.code === 'document_not_found') return // Nothing to clean
@@ -76,7 +78,7 @@ export async function deleteStaleIps () {
     return
   }
 
-  // Iterate over storedEventOwners where entity = 'ip'
+  // Iterate over storedEventOwners where entityType = 'ip'
   // We can't easily filter by "lastActiveAt < X" because X depends on the IP's score.
   // So we iterate all IPs (or at least those that haven't been active very recently).
   // Optimization: filter `lastActiveAt < now - 3 days` (minimum retention).
@@ -92,7 +94,7 @@ export async function deleteStaleIps () {
   while (hasMore) {
     const { results } = await mdb.index('storedEventOwners').search('', {
       filter: [
-        'entity = "ip"',
+        'entityType = "ip"',
         `lastActiveAt < ${cutoff}`
       ],
       limit: BATCH_SIZE,
@@ -126,7 +128,7 @@ export async function deleteStaleIps () {
       if (now > expirationTime) {
         // STALE!
         // 1. Prune/Promote Events
-        // This will promote popular events to 'pk' owner and delete the rest.
+        // This will promote popular events to 'pubkey' ownerType and delete the rest.
         await pruneEvents({
           ownerKey: ip,
           ownerType: 'ip',

@@ -61,7 +61,7 @@ export async function flushRequestedPubkeysToMDB () {
   for (const [pubkey, hll] of currentCache.entries()) {
     ops.push({
       targetKey: pubkey,
-      type: 'merge_hll',
+      type: 'mergeHll',
       data: { hll: bytesToBase64(hll.getRegisters()) }
     })
   }

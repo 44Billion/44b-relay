@@ -32,20 +32,20 @@ export default class EventSaver {
         const ops = []
         for (const hit of searchRes.hits) {
           // Subtract size from owner
-          const ownerType = hit.owner || 'pk'
-          const ownerKey = ownerType === 'pk' ? hit.pubkey : hit.ip
+          const ownerType = hit.ownerType || 'pubkey'
+          const ownerKey = ownerType === 'pubkey' ? hit.pubkey : hit.ip
 
           if (ownerKey) {
             ops.push({
               targetKey: ownerKey,
-              type: 'delta_usage',
+              type: 'deltaUsage',
               data: { delta: -(hit.byteSize || 0), ownerType }
             })
           }
           ops.push({
             targetKey: ownerKey, // We use ownerKey to group execution in the worker
-            type: 'delete_event',
-            data: { id: hit.ref || hit.id, ownerType }
+            type: 'deleteDocumentIfExists',
+            data: { index: 'events', id: hit.ref || hit.id, ownerType }
           })
         }
 
@@ -80,20 +80,20 @@ export default class EventSaver {
 
       if (oldEvent) {
         // Subtract old usage
-        const oldOwnerType = oldEvent.owner || 'pk'
-        const oldOwnerKey = oldOwnerType === 'pk' ? oldEvent.pubkey : oldEvent.ip
+        const oldOwnerType = oldEvent.ownerType || 'pubkey'
+        const oldOwnerKey = oldOwnerType === 'pubkey' ? oldEvent.pubkey : oldEvent.ip
         if (oldOwnerKey) {
           ops.push({
             targetKey: oldOwnerKey,
-            type: 'delta_usage',
+            type: 'deltaUsage',
             data: { delta: -(oldEvent.byteSize || 0), ownerType: oldOwnerType }
           })
         }
-        // Implicit replacement by 'save_event' later?
-        // Actually save_event with same PK will replace.
+        // Implicit replacement by 'insertOrReplaceDocument' later?
+        // Actually insertOrReplaceDocument with same PK will replace.
         // But if the old event owner is DIFFERENT (e.g. key rotation or IP assignment change?),
         // `oldOwnerKey` might perform usage update.
-        // We probably don't need explicit 'delete_event' for replacement unless we want to sure.
+        // We probably don't need explicit 'deleteDocumentIfExists' for replacement unless we want to sure.
         // Let's rely on overwrite.
       }
 
@@ -101,17 +101,17 @@ export default class EventSaver {
       const dbEvent = {
         ...record,
         byteSize,
-        owner: ownerType,
+        ownerType,
         ip,
         popularityLevel
         // receivedAt is already in record
       }
 
-      // Add 'save_event' op
+      // Add 'insertOrReplaceDocument' op
       ops.push({
         targetKey: ownerKey,
-        type: 'save_event',
-        data: { event: dbEvent, ownerType }
+        type: 'insertOrReplaceDocument',
+        data: { index: 'events', document: dbEvent, ownerType }
       })
 
       await queueOps(ops)

@@ -1,0 +1,304 @@
+import mdb from '#services/db/mdb.js'
+import { pruneEvents } from '#services/event/maintainer/mdb/index.js'
+import { CountMinSketch } from 'bloom-filters'
+import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
+import { base64ToBytes, bytesToBase64 } from '#helpers/base64.js'
+import { CMS_EPSILON, CMS_DELTA } from '#services/event/tracker/mdb/ip-activity.js'
+
+const BATCH_SIZE = 50
+const SYSTEM_STATE_KEY = '__processing_state__'
+
+// Define known index behaviors (pkField)
+const INDEX_CONFIG = {
+  events: { pkField: 'ref' },
+  storedEventOwners: { pkField: 'key' },
+  ipActivity: { pkField: 'key' },
+  requestedPubkeys: { pkField: 'key' },
+  pendingOps: { pkField: 'key' } // Should not be target of ops usually
+}
+
+const KNOWN_INDEXES = Object.keys(INDEX_CONFIG)
+
+async function loadSystemState () {
+  const state = {}
+  await Promise.all(KNOWN_INDEXES.map(async (indexName) => {
+    try {
+      const doc = await mdb.index(indexName).getDocument(SYSTEM_STATE_KEY)
+      state[indexName] = new Set(doc.processedOpIds || [])
+    } catch (_) {
+      state[indexName] = new Set()
+    }
+  }))
+  return state
+}
+
+export async function run () {
+  console.log('Processing pending storage operations...')
+
+  const systemState = await loadSystemState()
+
+  let hasMore = true
+  while (hasMore) {
+    const { results } = await mdb.index('pendingOps').getDocuments({
+      limit: BATCH_SIZE,
+      sort: ['createdAt:asc']
+    })
+
+    if (results.length === 0) {
+      hasMore = false
+      break
+    }
+
+    // Accumulators
+    const docsToAddOrUpdate = {} // index -> Map<key, doc>
+    const idsToDelete = {} // index -> Set<id>
+    const processedOpsInBatch = {} // index -> Set<opKey> (to be saved in state)
+    const indexUsesReplace = new Set() // index
+    const opsToDeleteFromQueue = []
+
+    // Dynamic initialization of accumulators
+    const ensureIndexInit = (index) => {
+      if (!docsToAddOrUpdate[index]) docsToAddOrUpdate[index] = new Map()
+      if (!idsToDelete[index]) idsToDelete[index] = new Set()
+      if (!processedOpsInBatch[index]) processedOpsInBatch[index] = new Set()
+      if (!systemState[index]) systemState[index] = new Set()
+    }
+
+    // Helper to get doc
+    const getDoc = async (index, key, fallbackFn) => {
+      ensureIndexInit(index)
+      if (docsToAddOrUpdate[index].has(key)) return docsToAddOrUpdate[index].get(key)
+      try {
+        const doc = await mdb.index(index).getDocument(key)
+        return doc
+      } catch (err) {
+        if (err.code === 'document_not_found') {
+          return fallbackFn ? fallbackFn() : null
+        }
+        throw err
+      }
+    }
+
+    for (const op of results) {
+      let data = {}
+      try { data = op.data ? JSON.parse(op.data) : {} } catch (_) {
+        console.error('Bad OP Data', op)
+        opsToDeleteFromQueue.push(op.key)
+        continue
+      }
+
+      const opType = op.type
+      let targetIndex = null
+      let isProcessed = false
+
+      try {
+        // --- Dispatch Logic ---
+
+        if (opType === 'insertOrReplaceDocument') {
+          targetIndex = data.index
+          ensureIndexInit(targetIndex)
+          indexUsesReplace.add(targetIndex)
+
+          if (systemState[targetIndex].has(op.key)) {
+            isProcessed = true
+          } else {
+            const doc = data.document
+            if (doc) {
+              const pkField = INDEX_CONFIG[targetIndex]?.pkField || 'id'
+              docsToAddOrUpdate[targetIndex].set(doc[pkField], doc)
+
+              // If we are replacing, make sure we don't delete it
+              if (idsToDelete[targetIndex].has(doc[pkField])) {
+                idsToDelete[targetIndex].delete(doc[pkField])
+              }
+            }
+          }
+        } else if (opType === 'deleteDocumentIfExists') {
+          targetIndex = data.index
+          ensureIndexInit(targetIndex)
+
+          if (systemState[targetIndex].has(op.key)) {
+            isProcessed = true
+          } else {
+            const id = data.id
+            if (id) {
+              idsToDelete[targetIndex].add(id)
+              docsToAddOrUpdate[targetIndex].delete(id)
+            }
+          }
+        } else if (opType === 'patchDocumentIfExists') {
+          targetIndex = data.index
+          ensureIndexInit(targetIndex)
+
+          if (systemState[targetIndex].has(op.key)) {
+            isProcessed = true
+          } else {
+            const partialDoc = data.document
+            const pkField = INDEX_CONFIG[targetIndex]?.pkField || 'id'
+            const key = partialDoc[pkField]
+
+            if (key) {
+              // Must fetch full doc to merge, because MeiliSearch updateDocuments is partial update,
+              // BUT we are simulating serial execution in memory.
+              // So we need to merge with CURRENT accumulation state.
+              const currentDoc = await getDoc(targetIndex, key, () => null) // If not exists, we can't patch
+              if (currentDoc) {
+                const merged = { ...currentDoc, ...partialDoc }
+                docsToAddOrUpdate[targetIndex].set(key, merged)
+                if (idsToDelete[targetIndex].has(key)) idsToDelete[targetIndex].delete(key)
+              }
+            }
+          }
+        } else if (opType === 'mergeCms') {
+          targetIndex = 'ipActivity'
+          ensureIndexInit(targetIndex)
+
+          if (systemState[targetIndex].has(op.key)) {
+            isProcessed = true
+          } else {
+            const doc = await getDoc(targetIndex, op.targetKey, () => ({
+              key: op.targetKey, json: JSON.stringify(new CountMinSketch(CMS_EPSILON, CMS_DELTA).saveAsJSON())
+            }))
+
+            if (doc && data.cms) {
+              const globalCMS = CountMinSketch.fromJSON(JSON.parse(doc.json))
+              const incomingCMS = CountMinSketch.fromJSON(data.cms)
+              globalCMS.merge(incomingCMS)
+              doc.json = JSON.stringify(globalCMS.saveAsJSON())
+              docsToAddOrUpdate[targetIndex].set(op.targetKey, doc)
+            }
+          }
+        } else if (opType === 'mergeHll') {
+          targetIndex = 'requestedPubkeys'
+          ensureIndexInit(targetIndex)
+
+          if (systemState[targetIndex].has(op.key)) {
+            isProcessed = true
+          } else {
+            const doc = await getDoc(targetIndex, op.targetKey, () => ({
+              key: op.targetKey, hll: bytesToBase64(new HLL(0).getRegisters()), count: 0
+            }))
+
+            if (doc && data.hll) {
+              const existingHll = HLL.newWithRegisters(base64ToBytes(doc.hll), 0)
+              const incomingHll = HLL.newWithRegisters(base64ToBytes(data.hll), 0)
+              existingHll.merge(incomingHll)
+
+              doc.hll = bytesToBase64(existingHll.getRegisters())
+              doc.count = existingHll.count()
+              docsToAddOrUpdate[targetIndex].set(op.targetKey, doc)
+            }
+          }
+        } else if (opType === 'deltaUsage' || opType === 'pruneCheck') {
+          targetIndex = 'storedEventOwners'
+          ensureIndexInit(targetIndex)
+
+          if (systemState[targetIndex].has(op.key)) {
+            isProcessed = true
+          } else {
+            const ownerType = data.ownerType || data.entityType || 'pubkey'
+
+            const doc = await getDoc(targetIndex, op.targetKey, () => ({
+              key: op.targetKey, entityType: ownerType, usedBytes: 0, popularityLevel: 999
+            }))
+
+            if (doc) {
+              // Ensure fields are consistent with standard
+              doc.entityType = ownerType
+
+              if (data.popularityLevel !== undefined) doc.popularityLevel = data.popularityLevel
+
+              if (opType === 'deltaUsage') {
+                doc.usedBytes = (doc.usedBytes || 0) + (data.delta || 0)
+              } else if (opType === 'pruneCheck') {
+                const limit = data.limit || 0
+                if (doc.usedBytes > limit) {
+                  // Side Effect: Pruning (Direct DB Deletes)
+                  // Note: `pruneEvents` performs direct deletes on 'events' index.
+                  // This is "out of band" of our transaction buffer.
+                  // But since `events` index deletes happen immediately, it's fine.
+                  // We just assume they succeed.
+                  const cleared = await pruneEvents({
+                    ownerKey: op.targetKey,
+                    ownerType,
+                    bytesToRemove: doc.usedBytes - limit
+                  })
+                  doc.usedBytes = Math.max(0, doc.usedBytes - cleared)
+                }
+              }
+              docsToAddOrUpdate[targetIndex].set(op.targetKey, doc)
+            }
+          }
+        } else {
+          console.warn(`Unknown op type: ${opType}`)
+          // Consume it so we don't loop forever
+          opsToDeleteFromQueue.push(op.key)
+          continue
+        }
+
+        // --- End Logic ---
+
+        if (isProcessed) {
+          opsToDeleteFromQueue.push(op.key)
+        } else if (targetIndex) {
+          processedOpsInBatch[targetIndex].add(op.key)
+          opsToDeleteFromQueue.push(op.key)
+        }
+      } catch (err) {
+        console.error(`Error processing op ${op.key} (${opType})`, err)
+      }
+    }
+
+    // 4. Commit Batch per Index
+    const indexesToCommit = Object.keys(docsToAddOrUpdate)
+
+    for (const indexName of indexesToCommit) {
+      const docs = Array.from(docsToAddOrUpdate[indexName].values())
+      const idsDel = Array.from(idsToDelete[indexName])
+      const processedIds = Array.from(processedOpsInBatch[indexName])
+
+      const config = INDEX_CONFIG[indexName]
+      const pkField = config?.pkField || 'id'
+
+      if (docs.length === 0 && idsDel.length === 0 && processedIds.length === 0) continue
+
+      // Include State Doc Upsert
+      if (processedIds.length > 0) {
+        const stateDoc = { [pkField]: SYSTEM_STATE_KEY, processedOpIds: processedIds }
+        docs.push(stateDoc)
+      }
+
+      if (idsDel.length > 0) {
+        await mdb.index(indexName).deleteDocuments(idsDel)
+      }
+
+      if (docs.length > 0) {
+        // Use addDocuments (Replace) if any operation in the batch for this index was 'insertOrReplaceDocument'.
+        // Otherwise, use updateDocuments (Merge) which is safer for partial updates/patches.
+        // Since we simulate serialization in memory by fetching full docs, 'addDocuments' is generally safe too,
+        // but 'updateDocuments' is more permissive if we somehow missed fields
+        // (e.g. some other process updated a document outside of an operation).
+        // However, 'insertOrReplaceDocument' STRICTLY requires 'addDocuments' to ensure deleted fields are removed.
+
+        if (indexUsesReplace.has(indexName)) {
+          await mdb.index(indexName).addDocuments(docs)
+        } else {
+          await mdb.index(indexName).updateDocuments(docs)
+        }
+      }
+    }
+
+    // 5. Delete Ops from Pending
+    if (opsToDeleteFromQueue.length > 0) {
+      await mdb.index('pendingOps').deleteDocuments(opsToDeleteFromQueue)
+    }
+  }
+  console.log('Done processing pending storage operations.')
+}
+
+export default {
+  key: 'processPendingOps',
+  frequency: 5,
+  shouldUseLock: true,
+  run
+}

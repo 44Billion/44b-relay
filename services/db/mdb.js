@@ -70,7 +70,7 @@ import eventSchema from '#models/event/schema.js'
 import jobSchema from '#models/job/schema.js'
 import storedEventOwnerSchema from '#models/stored-event-owner/schema.js'
 import pendingOpSchema from '#models/pending-op/schema.js'
-import requestedPubkeysSchema from '#models/requested-pubkeys/schema.js'
+import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
 import { typeof2 } from '#helpers/operator.js'
 
 // Remember if deleting by filter, that filtering by <primaryKey> = xyz
@@ -145,7 +145,7 @@ async function migrate (db) {
     jobSchema,
     storedEventOwnerSchema,
     pendingOpSchema,
-    requestedPubkeysSchema
+    requestedPubkeySchema
   ]
   const idxsByUid = idxs.reduce((r, v) => ({ ...r, [v.uid]: v }), {})
   const currentIdxsByUid = await db.getIndexes({ limit: db.constants.maxBigIndexes })

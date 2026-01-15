@@ -1,5 +1,5 @@
 // import exampleConfig from './example.js'
-import processPendingOpsConfig from './process-pending-ops.js'
+import processPendingOpsConfig from './process-pending-ops/index.js'
 import calcPopularPubkeysConfig from './calc-popular-pubkeys.js'
 import flushRequestedPubkeysConfig from './flush-requested-pubkeys.js'
 import deleteExpiredEventsConfig from './delete-expired-events.js'

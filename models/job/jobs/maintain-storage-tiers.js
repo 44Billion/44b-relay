@@ -56,11 +56,11 @@ async function run () {
   let processed = 0
 
   while (true) {
-    // Iterate storedEventOwners where entity='pk'
+    // Iterate storedEventOwners where entityType='pubkey'
     const { results } = await mdb.index('storedEventOwners').getDocuments({
       offset,
       limit: BATCH_SIZE,
-      filter: 'entity = "pk"',
+      filter: 'entityType = "pubkey"',
       sort: ['key:asc'] // Stable sort
     })
 
@@ -119,14 +119,14 @@ async function run () {
 }
 
 async function relegateEvents (pubkey, state, popularityLevel) {
-  // Find events for this pubkey with owner='pk'
-  // and switch them to owner='ip'
+  // Find events for this pubkey with ownerType='pubkey'
+  // and switch them to ownerType='ip'
   // Also need to handle 'ip' usage update.
 
   const BATCH = 50
 
   while (true) {
-    const filter = `pubkey = ${mdb.toMeiliValue(pubkey)} AND owner = "pk"`
+    const filter = `pubkey = ${mdb.toMeiliValue(pubkey)} AND ownerType = "pubkey"`
     const { results: events } = await mdb.index('events').search('', {
       filter,
       limit: BATCH,
@@ -167,13 +167,12 @@ async function relegateEvents (pubkey, state, popularityLevel) {
       const sizeToAdd = ipEvents.reduce((acc, ev) => acc + (ev.byteSize || 0), 0)
       const { ops } = await checkStorageLimitAndPrune({ pubkey, ip, newEventSize: sizeToAdd, popularityLevel })
 
-      // Queue event updates (changing owner to 'ip') atomically with usage update
-      const updates = ipEvents.map(ev => ({ ...ev, owner: 'ip' }))
-      updates.forEach(ev => {
+      // Queue event updates (changing ownerTypeto 'ip') atomically with usage update
+      ipEvents.forEach(ev => {
         ops.push({
           targetKey: ip,
-          type: 'save_event',
-          data: { event: ev, ownerType: 'ip' }
+          type: 'patchDocumentIfExists',
+          data: { index: 'events', document: { ref: ev.ref, ownerType: 'ip' }, ownerType: 'ip' }
         })
       })
 
@@ -185,8 +184,8 @@ async function relegateEvents (pubkey, state, popularityLevel) {
     if (totalBytesRemoved > 0) {
       allOps.push({
         targetKey: pubkey,
-        type: 'delta_usage',
-        data: { delta: -totalBytesRemoved, ownerType: 'pk' }
+        type: 'deltaUsage',
+        data: { delta: -totalBytesRemoved, ownerType: 'pubkey' }
       })
     }
 

@@ -1,10 +1,18 @@
 export default {
   uid: 'storedEventOwners',
   primaryKey: 'key',
+  attributes: [
+    'key',
+    'entityType',
+    'popularityLevel',
+    'previousPopularityLevel',
+    'usedBytes',
+    'lastActiveAt'
+  ],
   settings: {
     filterableAttributes: [
       'key',
-      'entity', // 'pk' or 'ip'
+      'entityType', // 'pubkey' or 'ip'
       'popularityLevel',
       'lastActiveAt'
     ],

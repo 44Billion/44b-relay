@@ -34,7 +34,10 @@ export default {
     'nonFtsContent', // not searchable
     'ftsContent', // event.content = record.ftsContent ?? record.nonFtsContent
     'created_at',
-    'sig'
+    'sig',
+    'ownerType', // ip or pubkey
+    'ip',
+    'popularityLevel'
   ],
   // https://www.meilisearch.com/docs/reference/api/settings#settings-object
   settings: {
@@ -54,7 +57,7 @@ export default {
       'receivedAt',
       'lastAccessedAt',
       'expiresAt',
-      'owner',
+      'ownerType',
       'ip',
       'popularityLevel'
     ],

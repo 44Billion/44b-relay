@@ -73,7 +73,7 @@ async function getStoredEntity ({ key, type }) {
     return await mdb.index('storedEventOwners').getDocument(key)
   } catch (e) {
     if (e.code === 'document_not_found') {
-      return { key, entity: type, usedBytes: 0, popularityLevel: 999 }
+      return { key, entityType: type, usedBytes: 0, popularityLevel: 999 }
     }
     throw e
   }
@@ -87,9 +87,9 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
 
   while (cleared < bytesToRemove) {
     // Fetch oldest events
-    const filter = ownerType === 'pk'
-      ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND owner = "pk"`
-      : `ip = ${mdb.toMeiliValue(ownerKey)} AND owner = "ip"`
+    const filter = ownerType === 'pubkey'
+      ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey"`
+      : `ip = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "ip"`
 
     const searchRes = await mdb.index('events').search('', {
       filter,
@@ -107,7 +107,7 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
     const hits = searchRes.hits
     let bytesInBatch = 0
 
-    if (ownerType === 'pk') {
+    if (ownerType === 'pubkey') {
       const idsToDelete = hits.map(h => h.ref || h.id)
       bytesInBatch = hits.reduce((acc, h) => acc + (h.byteSize || 0), 0)
       await mdb.index('events').deleteDocuments(idsToDelete)
@@ -149,13 +149,12 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
           popularityLevel: getPopularityLevel(pubkey)
         })
 
-        // 3. Queue event updates (changing owner to 'pk') atomically with usage update
-        const updates = events.map(ev => ({ ...ev, owner: 'pk' }))
-        updates.forEach(ev => {
+        // 3. Queue event updates (changing ownerType to 'pubkey') atomically with usage update
+        events.forEach(ev => {
           ops.push({
             targetKey: pubkey,
-            type: 'save_event',
-            data: { event: ev, ownerType: 'pk' }
+            type: 'patchDocumentIfExists',
+            data: { index: 'events', document: { ref: ev.ref, ownerType: 'pubkey' }, ownerType: 'pubkey' }
           })
         })
 
@@ -186,8 +185,8 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
   }
   const level = popularityLevel
 
-  const ownerType = level <= 5 ? 'pk' : 'ip'
-  const ownerKey = ownerType === 'pk' ? pubkey : ip
+  const ownerType = level <= 5 ? 'pubkey' : 'ip'
+  const ownerKey = ownerType === 'pubkey' ? pubkey : ip
   const limit = getStorageLimit(level)
 
   const ops = []
@@ -195,7 +194,7 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
   // Queue the usage update
   ops.push({
     targetKey: ownerKey,
-    type: 'delta_usage',
+    type: 'deltaUsage',
     data: { delta: newEventSize, ownerType, popularityLevel: level }
   })
 
@@ -211,7 +210,7 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
     if (currentUsage + newEventSize > limit * 0.9) {
       ops.push({
         targetKey: ownerKey,
-        type: 'prune_check',
+        type: 'pruneCheck',
         data: { limit, ownerType, popularityLevel: level }
       })
     }
