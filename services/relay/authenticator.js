@@ -1,5 +1,5 @@
 import { sendAuth } from '#helpers/message.js'
-import { keepTrackOfPubkey } from '#models/event.js'
+// import { keepTrackOfPubkey } from '#models/event.js'
 
 function isAuthenticated ({ ws }) {
   return !!ws.nostr.pubkey
@@ -16,7 +16,7 @@ async function authenticate ({ ws, event }) {
   const isSuccess =
     challenge === ws.nostr.challenge &&
     (Math.abs(event.created_at - Date.now() / 1000) <= 60 * 10) &&
-    relay.replace(/\/$/, '') === `wss://${process.env.RELAY_HOST}`
+    relay.replace(/\/$/, '') === `${process.env.NODE_ENV === 'production' ? 'wss' : 'ws'}://${process.env.RELAY_HOST}`
   const message = isSuccess ? '' : 'restricted: couldn\'t authenticate'
 
   if (isSuccess) {
@@ -24,7 +24,7 @@ async function authenticate ({ ws, event }) {
       ws.nostr.subscriptions = {} // reset subs
     }
     ws.nostr.pubkey = event.pubkey
-    await keepTrackOfPubkey({ ws, action: 'authenticate' })
+    // await keepTrackOfPubkey({ ws, action: 'authenticate' })
   } else delete ws.nostr.pubkey
 
   return { isSuccess, message }

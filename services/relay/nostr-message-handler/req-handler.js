@@ -1,4 +1,4 @@
-import { getFilterInterests, uninterestedIn, trackRequestedPubkeys } from '#services/event/tracker/mdb/index.js'
+import { getFilterInterests, uninterestedIn, trackRequestedPubkeys } from '#services/event/tracker/mdb/requested-pubkeys.js'
 import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import { sendEvent, sendEose, sendClosed } from '#helpers/message.js'
 // import { isAuthenticated, requestAuthentication } from '#services/relay/authenticator.js'
@@ -8,7 +8,8 @@ import { webSocketReadyState } from '#constants/web-socket.js'
 import { isType } from '#helpers/shared.js'
 import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
 import EventFetcher from '#services/event/fetcher/mdb/index.js'
-import { keepTrackOfPubkey } from '#models/event.js'
+// import { keepTrackOfPubkey } from '#models/event.js'
+import { maybeUnref } from '#helpers/timer.js'
 
 class ReqHandler {
   static run ({ wss, ws, nostrMessage }) {
@@ -38,6 +39,7 @@ class ReqHandler {
       const subscriptionReplaceRequestMoment = Date.now()
       ws.nostr.subscriptions[subscriptionId] ??= {}
       ws.nostr.subscriptions[subscriptionId].replaceAtMs = subscriptionReplaceRequestMoment
+      ws.nostr.subscriptions[subscriptionId].filters = filters
 
       let isBlocked, message
       for (const filter of filters) {
@@ -57,9 +59,9 @@ class ReqHandler {
         console.log(err.stack)
       } finally {
         await sendEose({ ws, subscriptionId })
-        await keepTrackOfPubkey({ ws, action: 'subscribe' })
+        // await keepTrackOfPubkey({ ws, action: 'subscribe' })
       }
-      const hasNoFutureSubscriptionReplaceRequest = ws.nostr.subscriptions[subscriptionId].replaceAtMs === subscriptionReplaceRequestMoment
+      const hasNoFutureSubscriptionReplaceRequest = ws.nostr.subscriptions[subscriptionId] && ws.nostr.subscriptions[subscriptionId].replaceAtMs === subscriptionReplaceRequestMoment
       if (hasNoFutureSubscriptionReplaceRequest) {
         const nowSecs = Date.now() / 1000
         const liveFilters = filters.filter(v => v.until === undefined || v.until > nowSecs)
@@ -107,8 +109,8 @@ async function sendFilteredEvents ({ ws, subscriptionId, filters }) {
     await sendEvent({ ws, subscriptionId, event })
     sentEventCount++
   }
-  trackRequestedPubkeys({ pubkeys: [...interestedIn.pubkeys], ip: ws.req.socket.remoteAddress })
-  trackIpActivity({ ip: ws.req.socket.remoteAddress })
+  trackRequestedPubkeys({ pubkeys: [...interestedIn.pubkeys], ip: ws.ip })
+  trackIpActivity({ ip: ws.ip })
   return { sentEventCount }
 }
 
@@ -155,7 +157,7 @@ function isScraper (filter) {
 }
 
 function applyCustomRelayRestrictionsToNostrFilter ({ /* ws, */ filter, _isAllowedBroadFilter = isAllowedBroadFilter(filter) }) {
-  if (isScraper(filter) && !_isAllowedBroadFilter) return { isBlocked: true, message: 'error: overly broad filters are not allowed.' }
+  if (!_isAllowedBroadFilter && isScraper(filter)) return { isBlocked: true, message: 'error: overly broad filters are not allowed.' }
 
   // For now, Ignore Harvest Now, Decrypt Later (HNDL) attacks
   // (storing encrypted DMs for later decryption when having the key)
@@ -223,9 +225,9 @@ function scheduleSubscriptionCleanup ({ ws, subscriptionId }) {
 
   if (delayMs > 2147483647) return
 
-  subscription.cleanupTimeout = setTimeout(() => {
+  subscription.cleanupTimeout = maybeUnref(setTimeout(() => {
     cleanupSubscription({ ws, subscriptionId })
-  }, delayMs)
+  }, delayMs))
 }
 
 function cleanupSubscription ({ ws, subscriptionId }) {

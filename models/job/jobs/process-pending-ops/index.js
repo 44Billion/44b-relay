@@ -1,12 +1,13 @@
 import mdb from '#services/db/mdb.js'
 import { pruneEvents } from '#services/event/maintainer/mdb/index.js'
-import { CountMinSketch } from 'bloom-filters'
+import bloomFilters from 'bloom-filters'
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { base64ToBytes, bytesToBase64 } from '#helpers/base64.js'
-import { CMS_EPSILON, CMS_DELTA } from '#services/event/tracker/mdb/ip-activity.js'
+import { createCountMinSketch } from '#services/event/tracker/mdb/ip-activity.js'
 
+const { CountMinSketch } = bloomFilters
 const BATCH_SIZE = 50
-const SYSTEM_STATE_KEY = '__processing_state__'
+const SYSTEM_STATE_KEY = '__processingState__'
 
 // Define known index behaviors (pkField)
 const INDEX_CONFIG = {
@@ -19,7 +20,7 @@ const INDEX_CONFIG = {
 
 const KNOWN_INDEXES = Object.keys(INDEX_CONFIG)
 
-async function loadSystemState () {
+export async function loadSystemState () {
   const state = {}
   await Promise.all(KNOWN_INDEXES.map(async (indexName) => {
     try {
@@ -32,14 +33,15 @@ async function loadSystemState () {
   return state
 }
 
+const log = process.env.NODE_ENV === 'production' ? console.log : () => {}
 export async function run () {
-  console.log('Processing pending storage operations...')
+  log('Processing pending storage operations...')
 
   const systemState = await loadSystemState()
 
   let hasMore = true
   while (hasMore) {
-    const { results } = await mdb.index('pendingOps').getDocuments({
+    const { hits: results } = await mdb.index('pendingOps').search('', {
       limit: BATCH_SIZE,
       sort: ['createdAt:asc']
     })
@@ -51,7 +53,7 @@ export async function run () {
 
     // Accumulators
     const docsToAddOrUpdate = {} // index -> Map<key, doc>
-    const idsToDelete = {} // index -> Set<id>
+    const keysToDelete = {} // index -> Set<primaryKey>
     const processedOpsInBatch = {} // index -> Set<opKey> (to be saved in state)
     const indexUsesReplace = new Set() // index
     const opsToDeleteFromQueue = []
@@ -59,7 +61,7 @@ export async function run () {
     // Dynamic initialization of accumulators
     const ensureIndexInit = (index) => {
       if (!docsToAddOrUpdate[index]) docsToAddOrUpdate[index] = new Map()
-      if (!idsToDelete[index]) idsToDelete[index] = new Set()
+      if (!keysToDelete[index]) keysToDelete[index] = new Set()
       if (!processedOpsInBatch[index]) processedOpsInBatch[index] = new Set()
       if (!systemState[index]) systemState[index] = new Set()
     }
@@ -67,12 +69,14 @@ export async function run () {
     // Helper to get doc
     const getDoc = async (index, key, fallbackFn) => {
       ensureIndexInit(index)
+      if (keysToDelete[index].has(key)) return fallbackFn ? fallbackFn() : null
       if (docsToAddOrUpdate[index].has(key)) return docsToAddOrUpdate[index].get(key)
       try {
         const doc = await mdb.index(index).getDocument(key)
         return doc
       } catch (err) {
-        if (err.code === 'document_not_found') {
+        const notFound = (err && (err.code === 'document_not_found' || (err.cause && err.cause.code === 'document_not_found'))) || (err && err.response && err.response.status === 404)
+        if (notFound) {
           return fallbackFn ? fallbackFn() : null
         }
         throw err
@@ -80,13 +84,9 @@ export async function run () {
     }
 
     for (const op of results) {
-      let data = {}
-      try { data = op.data ? JSON.parse(op.data) : {} } catch (_) {
-        console.error('Bad OP Data', op)
-        opsToDeleteFromQueue.push(op.key)
-        continue
-      }
+      const data = op.data || {}
 
+      const opTargetKey = data.targetKey
       const opType = op.type
       let targetIndex = null
       let isProcessed = false
@@ -108,8 +108,8 @@ export async function run () {
               docsToAddOrUpdate[targetIndex].set(doc[pkField], doc)
 
               // If we are replacing, make sure we don't delete it
-              if (idsToDelete[targetIndex].has(doc[pkField])) {
-                idsToDelete[targetIndex].delete(doc[pkField])
+              if (keysToDelete[targetIndex].has(doc[pkField])) {
+                keysToDelete[targetIndex].delete(doc[pkField])
               }
             }
           }
@@ -120,10 +120,10 @@ export async function run () {
           if (systemState[targetIndex].has(op.key)) {
             isProcessed = true
           } else {
-            const id = data.id
-            if (id) {
-              idsToDelete[targetIndex].add(id)
-              docsToAddOrUpdate[targetIndex].delete(id)
+            const { key } = data
+            if (key) {
+              keysToDelete[targetIndex].add(key)
+              docsToAddOrUpdate[targetIndex].delete(key)
             }
           }
         } else if (opType === 'patchDocumentIfExists') {
@@ -145,7 +145,7 @@ export async function run () {
               if (currentDoc) {
                 const merged = { ...currentDoc, ...partialDoc }
                 docsToAddOrUpdate[targetIndex].set(key, merged)
-                if (idsToDelete[targetIndex].has(key)) idsToDelete[targetIndex].delete(key)
+                if (keysToDelete[targetIndex].has(key)) keysToDelete[targetIndex].delete(key)
               }
             }
           }
@@ -156,8 +156,8 @@ export async function run () {
           if (systemState[targetIndex].has(op.key)) {
             isProcessed = true
           } else {
-            const doc = await getDoc(targetIndex, op.targetKey, () => ({
-              key: op.targetKey, json: JSON.stringify(new CountMinSketch(CMS_EPSILON, CMS_DELTA).saveAsJSON())
+            const doc = await getDoc(targetIndex, opTargetKey, () => ({
+              key: opTargetKey, json: JSON.stringify(createCountMinSketch().saveAsJSON())
             }))
 
             if (doc && data.cms) {
@@ -165,7 +165,7 @@ export async function run () {
               const incomingCMS = CountMinSketch.fromJSON(data.cms)
               globalCMS.merge(incomingCMS)
               doc.json = JSON.stringify(globalCMS.saveAsJSON())
-              docsToAddOrUpdate[targetIndex].set(op.targetKey, doc)
+              docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
             }
           }
         } else if (opType === 'mergeHll') {
@@ -175,8 +175,8 @@ export async function run () {
           if (systemState[targetIndex].has(op.key)) {
             isProcessed = true
           } else {
-            const doc = await getDoc(targetIndex, op.targetKey, () => ({
-              key: op.targetKey, hll: bytesToBase64(new HLL(0).getRegisters()), count: 0
+            const doc = await getDoc(targetIndex, opTargetKey, () => ({
+              key: opTargetKey, hll: bytesToBase64(new HLL(0).getRegisters()), count: 0
             }))
 
             if (doc && data.hll) {
@@ -186,7 +186,7 @@ export async function run () {
 
               doc.hll = bytesToBase64(existingHll.getRegisters())
               doc.count = existingHll.count()
-              docsToAddOrUpdate[targetIndex].set(op.targetKey, doc)
+              docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
             }
           }
         } else if (opType === 'deltaUsage' || opType === 'pruneCheck') {
@@ -196,16 +196,14 @@ export async function run () {
           if (systemState[targetIndex].has(op.key)) {
             isProcessed = true
           } else {
-            const ownerType = data.ownerType || data.entityType || 'pubkey'
+            const entityType = data.entityType || 'pubkey'
 
-            const doc = await getDoc(targetIndex, op.targetKey, () => ({
-              key: op.targetKey, entityType: ownerType, usedBytes: 0, popularityLevel: 999
+            const doc = await getDoc(targetIndex, opTargetKey, () => ({
+              key: opTargetKey, entityType, usedBytes: 0, popularityLevel: 999
             }))
 
             if (doc) {
-              // Ensure fields are consistent with standard
-              doc.entityType = ownerType
-
+              doc.entityType = entityType
               if (data.popularityLevel !== undefined) doc.popularityLevel = data.popularityLevel
 
               if (opType === 'deltaUsage') {
@@ -219,14 +217,14 @@ export async function run () {
                   // But since `events` index deletes happen immediately, it's fine.
                   // We just assume they succeed.
                   const cleared = await pruneEvents({
-                    ownerKey: op.targetKey,
-                    ownerType,
+                    ownerKey: opTargetKey,
+                    ownerType: entityType,
                     bytesToRemove: doc.usedBytes - limit
                   })
                   doc.usedBytes = Math.max(0, doc.usedBytes - cleared)
                 }
               }
-              docsToAddOrUpdate[targetIndex].set(op.targetKey, doc)
+              docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
             }
           }
         } else {
@@ -245,7 +243,25 @@ export async function run () {
           opsToDeleteFromQueue.push(op.key)
         }
       } catch (err) {
+        // If DB is down, we must STOP. We should not consume the op.
+        // Meilisearch communication errors or networking errors.
+        const isNetworkError =
+          err.name === 'MeiliSearchCommunicationError' ||
+          err.code === 'ECONNREFUSED' ||
+          err.code === 'ETIMEDOUT' ||
+          err.code === 'ENOTFOUND'
+
+        if (isNetworkError) {
+          throw err
+        }
+
         console.error(`Error processing op ${op.key} (${opType})`, err)
+        // Avoid infinite retries: consume the op so it won't block the queue in tests
+        try {
+          opsToDeleteFromQueue.push(op.key)
+        } catch {
+          // ignore
+        }
       }
     }
 
@@ -254,13 +270,13 @@ export async function run () {
 
     for (const indexName of indexesToCommit) {
       const docs = Array.from(docsToAddOrUpdate[indexName].values())
-      const idsDel = Array.from(idsToDelete[indexName])
+      const keysDel = Array.from(keysToDelete[indexName])
       const processedIds = Array.from(processedOpsInBatch[indexName])
 
       const config = INDEX_CONFIG[indexName]
       const pkField = config?.pkField || 'id'
 
-      if (docs.length === 0 && idsDel.length === 0 && processedIds.length === 0) continue
+      if (docs.length === 0 && keysDel.length === 0 && processedIds.length === 0) continue
 
       // Include State Doc Upsert
       if (processedIds.length > 0) {
@@ -268,8 +284,8 @@ export async function run () {
         docs.push(stateDoc)
       }
 
-      if (idsDel.length > 0) {
-        await mdb.index(indexName).deleteDocuments(idsDel)
+      if (keysDel.length > 0) {
+        await mdb.index(indexName).deleteDocuments(keysDel)
       }
 
       if (docs.length > 0) {
@@ -293,12 +309,17 @@ export async function run () {
       await mdb.index('pendingOps').deleteDocuments(opsToDeleteFromQueue)
     }
   }
-  console.log('Done processing pending storage operations.')
+  log('Done processing pending storage operations.')
 }
 
 export default {
   key: 'processPendingOps',
   frequency: 5,
   shouldUseLock: true,
+  // We want this to run indefinitely within the same process
+  // even when there are no ops at the moment.
+  // We may in the future remove it from the job list and make
+  // it run on a dedicated worker process on pm2.
+  maxDuration: Number.MAX_SAFE_INTEGER, // effectively no limit
   run
 }

@@ -20,7 +20,7 @@ export default [
       'import/no-anonymous-default-export': 'off',
       'no-unused-vars': [
         'error',
-        { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_', varsIgnorePattern: '^_$' }
+        { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_', varsIgnorePattern: '^_' }
       ]
     },
     ignores: [

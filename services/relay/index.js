@@ -24,22 +24,31 @@ class Relay {
     }
   }
 
-  attachMessageHandler (ws) { ws.addEventListener('message', this.getHandleMessage()) }
+  attachMessageHandler (ws) {
+    // Different from ws.on('message', ...), ws.(onmessage=|addEventListener('message', ...))
+    // listeners receive MessageEvent objects
+    // that have a data property set to (isBinary ? buffer : buffer.toString())
+    ws.on('message', this.getHandleMessage())
+  }
 
   getHandleMessage () {
     const relay = this
 
-    return function handleMessage (message) {
+    return function handleMessage (message, isBinary) {
       const ws = this
-      const wsMessage = message.toString()
       let nostrMessage
-      try {
-        nostrMessage = JSON.parse(wsMessage)
-        nostrMessage.byteLength = message.byteLength // buffer
-        if (!nostrClientMessages[nostrMessage?.[0]]) nostrMessage = null
-      } catch (_err) {
-        console.error(`[NOTICE]: Wrong client message (not nostr): ${wsMessage}`)
+      if (isBinary) {
         nostrMessage = null
+      } else {
+        const wsMessage = message.toString()
+        try {
+          nostrMessage = JSON.parse(wsMessage)
+          nostrMessage.byteLength = message.byteLength // buffer
+          if (!nostrClientMessages[nostrMessage?.[0]]) nostrMessage = null
+        } catch (_err) {
+          console.error(`[NOTICE]: Wrong client message (not nostr): ${wsMessage}`)
+          nostrMessage = null
+        }
       }
 
       relay.handleNostrMessage({ ws, nostrMessage })

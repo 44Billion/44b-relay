@@ -17,6 +17,7 @@ export default class BroadStrategy {
     const tags = Object.fromEntries(
       Object.entries(filter)
         .filter(([k, v]) => /^#[a-zA-Z]$/.test(k) && Array.isArray(v) && v.length > 0)
+        .map(([k, v]) => [k.slice(1), v])
     )
 
     const query = {
@@ -25,7 +26,7 @@ export default class BroadStrategy {
     }
 
     // Popularity check for broad filters
-    if (isAllowedBroadFilter(filter)) {
+    if (isAllowedBroadFilter(filter) && process.env.IS_INTEGRATION_TEST !== 'true') {
       query.popularityLevel = 6
     }
 

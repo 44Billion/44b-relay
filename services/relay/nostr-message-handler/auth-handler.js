@@ -19,7 +19,7 @@ class AuthHandler {
     let { isSuccess, message } = await isValidEvent({ event, clientMessage: nostrClientMessages.AUTH })
     if (!isSuccess) return sendCommandResult({ ws, event, isSuccess, message })
 
-    ;({ isSuccess, message } = authenticate({ ws, event }))
+    ;({ isSuccess, message } = await authenticate({ ws, event }))
     if (isSuccess) {
       const { isBlocked } = this.applyCustomRelayRestrictionsToRequest(ws)
       if (isBlocked) return

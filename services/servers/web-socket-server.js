@@ -4,7 +4,8 @@ import { getIp } from '#helpers/request.js'
 
 const wss = new WebSocketServer({
   noServer: true,
-  maxPayload: 64 * 1024 // 8 * 1024 // 136 * 1024 // 8 kb note plus 128 kb data image
+  // https://github.com/hoytech/strfry/blob/master/src/apps/relay/golpe.yaml#L39
+  maxPayload: 131072 // 64 * 1024 // 8 * 1024 // 136 * 1024 // 8 kb note plus 128 kb data image
 })
 addToCleanup(() => wss.close())
 
@@ -23,7 +24,7 @@ wss.on('connection', (ws, req) => {
 
   ws.addEventListener('pong', function heartbeat () { this.isAlive = true })
   ws.addEventListener('error', error => { console.error(`Oops! Received this error: ${error}`) })
-  ws.addEventListener('message', data => { console.log(`[RECV]: ${data}`) })
+  ws.addEventListener('message', ({ data }) => { console.log(`[RECV]: ${data.byteLength === undefined ? data : `${data.byteLength} Buffer bytes`}`) })
   ws.addEventListener('close', function () { console.log('disconnected', Object.keys(this.nostr.subscriptions).join(', ')) })
 })
 

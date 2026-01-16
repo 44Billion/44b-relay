@@ -1,6 +1,9 @@
-import { CountMinSketch } from 'bloom-filters'
+import bloomFilters from 'bloom-filters'
 import mdb from '#services/db/mdb.js'
 import { pruneEvents, queueOps } from '#services/event/maintainer/mdb/index.js'
+import { ipToPrimaryKey, primaryKeyToIp } from '#helpers/mdb.js'
+
+const { CountMinSketch } = bloomFilters
 
 // Configuration for CountMinSketch
 // epsilon: error rate (e.g. 0.001 = 0.1% error)
@@ -8,8 +11,15 @@ import { pruneEvents, queueOps } from '#services/event/maintainer/mdb/index.js'
 export const CMS_EPSILON = 0.001
 export const CMS_DELTA = 0.99
 
+export function createCountMinSketch () {
+  const errorProb = 1 - CMS_DELTA
+  const width = Math.ceil(Math.E / CMS_EPSILON)
+  const depth = Math.ceil(Math.log(1 / errorProb))
+  return new CountMinSketch(width, depth)
+}
+
 // Local cache
-let localCMS = new CountMinSketch(CMS_EPSILON, CMS_DELTA)
+let localCMS = createCountMinSketch()
 const lastActiveAtSubmissions = new Map() // IP -> Timestamp
 
 export function trackIpActivity ({ ip }) {
@@ -29,7 +39,7 @@ export async function flushIpActivityToMDB () {
   const currentCMS = localCMS
   const currentActiveAts = new Map(lastActiveAtSubmissions)
 
-  localCMS = new CountMinSketch(CMS_EPSILON, CMS_DELTA)
+  localCMS = createCountMinSketch()
   lastActiveAtSubmissions.clear()
 
   // 2. Prepare Ops
@@ -37,19 +47,17 @@ export async function flushIpActivityToMDB () {
 
   // CMS Merge Op
   ops.push({
-    targetKey: 'globalCms',
     type: 'mergeCms',
-    data: { cms: currentCMS.saveAsJSON() }
+    data: { targetKey: 'globalCms', cms: currentCMS.saveAsJSON() }
   })
 
   // IP Activity Updates
   for (const [ip, ts] of currentActiveAts) {
     ops.push({
-      targetKey: ip,
       type: 'patchDocumentIfExists',
       data: {
         index: 'storedEventOwners',
-        document: { key: ip, entityType: 'ip', lastActiveAt: ts }
+        document: { key: ipToPrimaryKey(ip), entityType: 'ip', lastActiveAt: ts }
       }
     })
   }
@@ -73,7 +81,7 @@ export async function deleteStaleIps () {
     const doc = await mdb.index('ipActivity').getDocument('globalCms')
     globalCMS = CountMinSketch.fromJSON(JSON.parse(doc.json))
   } catch (err) {
-    if (err.code === 'document_not_found') return // Nothing to clean
+    if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') return // Nothing to clean
     console.error('deleteStaleIps: Failed to load global CMS', err)
     return
   }
@@ -92,7 +100,7 @@ export async function deleteStaleIps () {
   let hasMore = true
 
   while (hasMore) {
-    const { results } = await mdb.index('storedEventOwners').search('', {
+    const { results } = await mdb.index('storedEventOwners').getDocuments({
       filter: [
         'entityType = "ip"',
         `lastActiveAt < ${cutoff}`
@@ -116,7 +124,12 @@ export async function deleteStaleIps () {
     let deletedCount = 0
 
     for (const owner of results) {
-      const ip = owner.key
+      const encodedIp = owner.key
+      // If the key is already IP (v6 without dots?), handle gracefully?
+      // Assuming new system only has encoded IPs.
+      // But we can fallback if decoding fails or looks weird (optional)
+      const ip = primaryKeyToIp(encodedIp)
+
       // If lastActiveAt is missing, treat as very old
       const lastActive = owner.lastActiveAt || 0
       const score = globalCMS.count(ip)
@@ -130,13 +143,13 @@ export async function deleteStaleIps () {
         // 1. Prune/Promote Events
         // This will promote popular events to 'pubkey' ownerType and delete the rest.
         await pruneEvents({
-          ownerKey: ip,
+          ownerKey: encodedIp,
           ownerType: 'ip',
           bytesToRemove: Number.MAX_SAFE_INTEGER // Remove everything belonging to this IP
         })
 
         // 2. Delete the Owner Record
-        await mdb.index('storedEventOwners').deleteDocuments([ip])
+        await mdb.index('storedEventOwners').deleteDocuments([encodedIp])
         deletedCount++
       } else {
         // Not stale yet (high score saved it)

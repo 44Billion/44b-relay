@@ -26,7 +26,13 @@ class NostrMessageHandler {
     if (!nostrMessage) return sendNotice({ ws, message: 'error: failed to parse Nostr message' })
 
     // TODO: assess https://github.com/nostr-protocol/nips/issues/177
-    const { isBlocked } = this.applyCustomRelayRestrictionsToNostrMessage({ ws, nostrMessage })
+    // "[...] (to) remove the key-weakening concern of mined public keys,
+    // A relay could require keys to be whitelisted in order to write events.
+    // Anybody who sends in an event with POW (not the pubkey itself) beyond
+    // a certain threshold is automatically whitelisted, unless or until blacklisted due to abuse."
+    // What about if within an AUTH event, so that the PoW must be generated
+    // at that moment for that event, rather than a pre computed PoW?
+    const { isBlocked } = this.applyCustomRelayRestrictionsToNostrMessage({ wss, ws, nostrMessage })
     if (isBlocked) return
 
     const handleFn = nostMessageHandlers[nostrMessage[0]]
@@ -59,7 +65,7 @@ const nostMessageHandlers = {
 
 function limitNostrMessageLength ({ ws, nostrMessage }) {
   const nostrClientMessage = nostrMessage[0]
-  const { byteLength } = nostrMessage
+  const { byteLength: msgByteLength } = nostrMessage
   let event
   let isInvalid
   switch (nostrClientMessage) {
@@ -68,14 +74,14 @@ function limitNostrMessageLength ({ ws, nostrMessage }) {
       // we slice 500 authors at parseSubscriptionFilter
       // keep 10 max filters per pubkey
       // and add extra space for other keys
-      isInvalid = byteLength > (authorByteLength * 500 * 10 + 1024)
+      isInvalid = msgByteLength > (authorByteLength * 500 * 10 + 1024)
       break
     }
     case nostrClientMessages.EVENT: {
       ([, event = {}] = nostrMessage)
-      if (event?.kind) {
-        if ([eventKinds.TEXT_NOTE, eventKinds.ENCRYPTED_DIRECT_MESSAGE].includes(event.kind)) {
-          if (event?.content) {
+      if (event?.kind || event?.kind === 0) {
+        if (eventKinds.TEXT_NOTE === event.kind) {
+          if (typeof event.content === 'string') {
             // expect max 1 image data url, so no g flag
             const contentWithoutDataImage = event.content.replace(imageDataUrlRegExp, '')
             const contentByteLength = new TextEncoder().encode(contentWithoutDataImage).byteLength
@@ -85,9 +91,20 @@ function limitNostrMessageLength ({ ws, nostrMessage }) {
           }
         } else if (event.kind === eventKinds.ENCRYPTED_DIRECT_MESSAGE) {
           // won't allow image data url
-          isInvalid = !event.content && byteLength > 4 * 1024
+          isInvalid = typeof event.content !== 'string' || msgByteLength > 4 * 1024
+        } else if (event.kind === eventKinds.BINARY_DATA_CHUNK) {
+          if (typeof event.content === 'string') {
+            // Minimum Length: 58,286 bytes (all zeros)
+            // Maximum Length: 62,770 bytes (all ones)
+            const contentByteLength = new TextEncoder().encode(event.content).byteLength
+            isInvalid = contentByteLength < 58286 || contentByteLength > 62770
+          } else {
+            isInvalid = true
+          }
         } else {
-          isInvalid = byteLength > 4 * 1024
+          // https://github.com/hoytech/strfry/blob/master/strfry.conf#L21
+          // maxEventSize = 65536
+          isInvalid = msgByteLength > 4 * 1024
         }
       }
       break
@@ -149,7 +166,7 @@ function rateLimitNostrMessage ({ wss, ws, nostrMessage }) {
       break
     }
     case nostrClientMessages.EVENT: {
-      const event = nostrMessage[0] ?? {}
+      const event = nostrMessage[1] ?? {}
       ;({ isRateLimited } = rateLimitNostrEventMessageByPubkey(ws, event))
       if (isRateLimited) message = 'slow down there chief'
       break

@@ -17,6 +17,7 @@ export default {
       'lastActiveAt'
     ],
     sortableAttributes: [
+      'key',
       'usedBytes'
     ]
   }

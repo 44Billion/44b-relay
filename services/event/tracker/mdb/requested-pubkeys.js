@@ -1,5 +1,5 @@
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
-import { sha256 } from '@noble/hashes/sha256'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase64 } from '#helpers/base64.js'
 import { eventKinds } from '#constants/event.js'
 import { queueOps } from '#services/event/maintainer/mdb/index.js'
@@ -28,7 +28,7 @@ export function getFilterInterests ({ filters }) {
     const hasIds = filter.ids && filter.ids.length > 0
     if (hasAuthors) {
       for (const author of filter.authors) {
-        interestingPubkeys[author] = true
+        interestingPubkeys.add(author)
       }
     // Only consider ids if there are no authors in the filter
     } else if (hasIds) {
@@ -60,9 +60,8 @@ export async function flushRequestedPubkeysToMDB () {
   const ops = []
   for (const [pubkey, hll] of currentCache.entries()) {
     ops.push({
-      targetKey: pubkey,
       type: 'mergeHll',
-      data: { hll: bytesToBase64(hll.getRegisters()) }
+      data: { targetKey: pubkey, hll: bytesToBase64(hll.getRegisters()) }
     })
   }
 

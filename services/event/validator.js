@@ -1,5 +1,6 @@
-import { schnorr } from '@noble/curves/secp256k1'
+import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
+import { hexToBytes } from '@noble/hashes/utils.js'
 import { eventTags, eventKinds } from '#constants/event.js'
 import { webSocketRegExp } from '#constants/web-socket.js'
 import { hostnameRegExp, urlRegExp, imageDataUrlRegExp } from '#constants/url.js'
@@ -40,11 +41,13 @@ export default class EventValidator {
     return ''
   }
 
-  async doesMessageAllowKind () {
+  doesMessageAllowKind () {
     const { event: { kind }, clientMessage } = this
     if (!clientMessage) return true
     if (![nostrClientMessages.AUTH, nostrClientMessages.EVENT].includes(clientMessage)) return false
-    if (kind === eventKinds.AUTH && clientMessage !== nostrClientMessages.AUTH) return false
+    if (kind === eventKinds.AUTH) {
+      if (clientMessage !== nostrClientMessages.AUTH) return false
+    } else if (clientMessage === nostrClientMessages.AUTH) return false
 
     return true
   }
@@ -89,7 +92,7 @@ export default class EventValidator {
   hasValidEventSignature () {
     try {
       const { event: { id: eventHash, sig, pubkey } } = this
-      return schnorr.verify(sig, eventHash, pubkey)
+      return schnorr.verify(hexToBytes(sig), hexToBytes(eventHash), hexToBytes(pubkey))
     } catch (_err) {
       return false
     }
@@ -172,7 +175,7 @@ export default class EventValidator {
           if (++tagCount[eventTags.EXPIRATION] > 1 || tag.length !== 2) return false
           let expiration
           try { expiration = parseInt(tag[1], 10) } catch (_err) {}
-          if (!isType(expiration, 'number') || expiration < -8640000000000 || expiration > 8640000000000) return false
+          if (!isType(expiration, 'number') || Number.isNaN(expiration) || expiration < -8640000000000 || expiration > 8640000000000) return false
           break
         }
         case eventTags.HASHTAG: { if (tag.length !== 2 || !isType(tag[1], 'string') || tag[1] === '') return false; break }

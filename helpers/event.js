@@ -44,7 +44,7 @@ function isKnownEventKind (kind) {
     kind <= kindLimit
 }
 
-function isExpiredEvent (event, { expirationTag }) {
+function isExpiredEvent (event, { expirationTag } = {}) {
   let expiration
   try { expiration = parseInt(expirationTag || event.tags.find(v => v[0] === eventTags.EXPIRATION)?.[1], 10) } catch (_err) {}
   return (
@@ -71,22 +71,24 @@ async function isValidEvent ({ event, clientMessage }) {
 }
 
 function getAuthorPubkey (event) {
-  return event.tags.find(v => v[0] === eventTags.DELEGATION)?.[1] ?? event.pubkey
+  return event.pubkey
+  // return event.tags.find(v => v[0] === eventTags.DELEGATION)?.[1] ?? event.pubkey
 }
 
-function isEventCopy (_event) { return false }
+// function isEventCopy (_event) { return false }
 
 function getPublishedAt (event) {
-  // instead of event.kind === eventKinds.LONG_FORM_CONTENT we will extend it to all parameterized replaceable events
-  const publishedAt = (isEventCopy(event) || isAddressableEvent(event)) && event.tags.find(v => v[0] === eventTags.PUBLISHED_AT)?.[1]
-  return publishedAt
-    ? (() => {
-        let result
-        try { result = parseInt(publishedAt, 10) } catch (_err) {}
-        if (Number.isNaN(result)) return event.created_at
-        return result
-      })()
-    : event.created_at
+  return event.created_at
+  // // instead of event.kind === eventKinds.LONG_FORM_CONTENT we will extend it to all parameterized replaceable events
+  // const publishedAt = (isEventCopy(event) || isAddressableEvent(event)) && event.tags.find(v => v[0] === eventTags.PUBLISHED_AT)?.[1]
+  // return publishedAt
+  //   ? (() => {
+  //       let result
+  //       try { result = parseInt(publishedAt, 10) } catch (_err) {}
+  //       if (Number.isNaN(result)) return event.created_at
+  //       return result
+  //     })()
+  //   : event.created_at
 }
 
 function getExpiration (event) {

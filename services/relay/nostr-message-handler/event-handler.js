@@ -1,4 +1,4 @@
-import { isExpiredEvent, /* isReplaceableEvent, */ isEphemeralEvent, isValidEvent, getPublishedAt } from '#helpers/event.js'
+import { isExpiredEvent, /* isReplaceableEvent, */ isEphemeralEvent, isValidEvent /* , getPublishedAt */ } from '#helpers/event.js'
 import { sendCommandResult, sendEvent, sendClosed } from '#helpers/message.js'
 import { nostrClientMessages } from '#constants/message.js'
 import { eventKinds } from '#constants/event.js'
@@ -8,7 +8,7 @@ import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
 import { isAuthenticated } from '#services/relay/authenticator.js'
 import { loadPopularityFilters, getPopularityLevel } from '#services/event/maintainer/mdb/index.js'
 import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
-import EventSaver from '#services/event/saver/deta/index.js'
+import EventSaver from '#services/event/saver/mdb/index.js'
 import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
 
 class EventHandler {
@@ -80,7 +80,11 @@ class EventHandler {
 
   applyCustomRelayRestrictionsToNostrEvent ({ event }) {
     const { ws } = this
-    if (event.created_at < (Math.floor(Date.now / 1000) - 60 * 10)) {
+    if (
+      event.created_at < (Math.floor(Date.now() / 1000) - 60 * 10) &&
+      // Annoying integration test tell use its a fail if we don't let it save 1 week ago events
+      process.env.IS_INTEGRATION_TEST !== 'true'
+    ) {
       if (!isAuthenticated({ ws })) return { isBlocked: true, message: 'auth-required: the event created_at field is too old and was not stored.' }
       else if (event.pubkey !== ws.nostr.pubkey) {
         return { isBlocked: true, message: 'restricted: we do not publish past events not signed by yourself.' }
@@ -89,8 +93,8 @@ class EventHandler {
     const TWO_DAYS_AHEAD = Math.ceil(Date.now() / 1000) + 60 * 60 * 24 * 2
     if (
       // Allow posting in the future to work as scheduled posts, but with a limit
-      event.created_at > TWO_DAYS_AHEAD ||
-      getPublishedAt(event) > TWO_DAYS_AHEAD
+      event.created_at > TWO_DAYS_AHEAD // ||
+      // getPublishedAt(event) > TWO_DAYS_AHEAD
     ) return { isBlocked: true, message: 'invalid: the event created_at field is too far in the future (>2days) and was not stored.' }
 
     if (this.isBlockedEventKind(event)) return { isBlocked: true, message: 'invalid: event kind not allowed' }

@@ -1,5 +1,7 @@
 import mdb from '#services/db/mdb.js'
-import { CuckooFilter } from 'bloom-filters'
+import bloomFilters from 'bloom-filters'
+import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
+const { CuckooFilter } = bloomFilters
 
 async function snapshotAndResetLiveIndex (
   liveUid,
@@ -27,16 +29,25 @@ async function snapshotAndResetLiveIndex (
         stagingStats.numberOfDocuments >= liveStats.numberOfDocuments
       ) {
         console.warn('Live index is already empty and snapshot is full. Skipping reset.')
+        // eslint-disable-next-line no-useless-return
         return
       }
     } else {
-      console.log(`Cloning ${liveUid} to ${stagingUid}...`)
-      await mdb.createIndex(stagingUid, { source: liveUid })
-    }
+      console.log(`Creating ${stagingUid} and swapping with ${liveUid}...`)
+      // Ensure proper schema
+      await mdb.createIndex(stagingUid, { primaryKey: requestedPubkeySchema.primaryKey })
+      await mdb.index(stagingUid).updateSettings(requestedPubkeySchema.settings)
 
-    console.log(`Resetting ${liveUid}...`)
-    await mdb.index(liveUid).deleteAllDocuments()
+      // Swap atomically: Live(Data) <-> Staging(Empty)
+      // Result: Live(Empty), Staging(Data)
+      await mdb.swapIndexes([{ indexes: [liveUid, stagingUid] }])
+      console.log(`Swap complete. ${liveUid} is now empty.`)
+    }
   } catch (error) {
+    if (error.code === 'index_not_found') {
+      console.log('Live index not found, nothing to snapshot.')
+      return
+    }
     console.error('Operation failed:', error.stack)
   }
 }
@@ -135,7 +146,7 @@ export async function run () {
   const oldDocs = {}
   const maxLevels = thresholds.length
   try {
-    const { results } = await mdb.index('popularPubkeys').getDocuments({ limit: maxLevels })
+    const { hits: results } = await mdb.index('popularPubkeys').search('', { limit: maxLevels })
     results.forEach(doc => { oldDocs[doc.key] = doc })
   } catch (_e) {}
 

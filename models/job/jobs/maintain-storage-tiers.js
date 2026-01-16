@@ -1,6 +1,7 @@
 import mdb from '#services/db/mdb.js'
 import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
-import { CuckooFilter } from 'bloom-filters'
+import bloomFilters from 'bloom-filters'
+const { CuckooFilter } = bloomFilters
 
 async function run () {
   console.log('Running storage tiers maintenance...')
@@ -10,7 +11,7 @@ async function run () {
   try {
     calcJob = await mdb.index('jobs').getDocument('calcPopularPubkeys')
   } catch (err) {
-    if (err.code !== 'document_not_found') throw err
+    if (err.code !== 'document_not_found' && err.cause?.code !== 'document_not_found') throw err
   }
 
   if (!calcJob || !calcJob.endedAt) {
@@ -19,7 +20,7 @@ async function run () {
   }
 
   const referenceDesc = `calc-${calcJob.endedAt}`
-  const stateKey = `maintenanceState:${calcJob.endedAt}`
+  const stateKey = `maintenanceState-${calcJob.endedAt}`
 
   // 2. Load or Create State
   let state
@@ -35,7 +36,7 @@ async function run () {
       ? CuckooFilter.fromJSON(JSON.parse(state.eventsProcessedCuckoo))
       : new CuckooFilter(1000000, 4, 3) // 1 Million events capacity
   } catch (err) {
-    if (err.code === 'document_not_found') {
+    if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') {
       state = {
         key: stateKey,
         jobKey: 'calcPopularPubkeys',
@@ -61,7 +62,7 @@ async function run () {
       offset,
       limit: BATCH_SIZE,
       filter: 'entityType = "pubkey"',
-      sort: ['key:asc'] // Stable sort
+      sort: ['key:asc']
     })
 
     if (results.length === 0) break
@@ -93,7 +94,7 @@ async function run () {
       if (!state.maintenanceDoneCuckooRaw.has(pubkey)) {
         // Check for Relegation
         if (popularityLevel > 5) {
-          // Relegation Logic: Move 'pk' events to 'ip'
+          // Relegation Logic: Move 'pubkey' events to 'ip'
           await relegateEvents(pubkey, state, popularityLevel)
         } else {
           // Still popular (1-5)
@@ -127,7 +128,8 @@ async function relegateEvents (pubkey, state, popularityLevel) {
 
   while (true) {
     const filter = `pubkey = ${mdb.toMeiliValue(pubkey)} AND ownerType = "pubkey"`
-    const { results: events } = await mdb.index('events').search('', {
+    // offset 0 so no need to use getDocuments
+    const { hits: events } = await mdb.index('events').search('', {
       filter,
       limit: BATCH,
       offset: 0
@@ -137,8 +139,8 @@ async function relegateEvents (pubkey, state, popularityLevel) {
 
     // Filter out already processed events (due to Meilisearch async indexing lag or restart)
     const newEvents = events.filter(ev => {
-      const id = ev.ref || ev.id // Use ref (DB ID) if available
-      return !state.eventsProcessedCuckooRaw.has(id)
+      const primaryKey = ev.ref
+      return !state.eventsProcessedCuckooRaw.has(primaryKey)
     })
 
     if (newEvents.length === 0) {
@@ -167,12 +169,11 @@ async function relegateEvents (pubkey, state, popularityLevel) {
       const sizeToAdd = ipEvents.reduce((acc, ev) => acc + (ev.byteSize || 0), 0)
       const { ops } = await checkStorageLimitAndPrune({ pubkey, ip, newEventSize: sizeToAdd, popularityLevel })
 
-      // Queue event updates (changing ownerTypeto 'ip') atomically with usage update
+      // Queue event updates (changing ownerType to 'ip') atomically with usage update
       ipEvents.forEach(ev => {
         ops.push({
-          targetKey: ip,
           type: 'patchDocumentIfExists',
-          data: { index: 'events', document: { ref: ev.ref, ownerType: 'ip' }, ownerType: 'ip' }
+          data: { index: 'events', document: { ref: ev.ref, ownerType: 'ip' } }
         })
       })
 
@@ -183,9 +184,8 @@ async function relegateEvents (pubkey, state, popularityLevel) {
     const totalBytesRemoved = newEvents.reduce((acc, ev) => acc + (ev.byteSize || 0), 0)
     if (totalBytesRemoved > 0) {
       allOps.push({
-        targetKey: pubkey,
         type: 'deltaUsage',
-        data: { delta: -totalBytesRemoved, ownerType: 'pubkey' }
+        data: { targetKey: pubkey, delta: -totalBytesRemoved, entityType: 'pubkey' }
       })
     }
 
@@ -194,8 +194,8 @@ async function relegateEvents (pubkey, state, popularityLevel) {
 
     // Mark as processed only after successful queueing
     for (const ev of newEvents) {
-      const id = ev.ref || ev.id
-      state.eventsProcessedCuckooRaw.add(id)
+      const primaryKey = ev.ref
+      state.eventsProcessedCuckooRaw.add(primaryKey)
     }
 
     // Periodically save state here too?

@@ -1,3 +1,5 @@
+import { maybeUnref } from '#helpers/timer.js'
+
 const rateLimitBucket = {}
 function rateLimitByKey ({
   key,
@@ -16,7 +18,7 @@ function rateLimitByKey ({
       nextWindow: new Date(startMs + windowMs),
       maxReqs: reqsPerWindow
     }
-    setTimeout(() => delete rateLimitBucket[key], windowMs)
+    maybeUnref(setTimeout(() => delete rateLimitBucket[key], windowMs))
   }
   const isRateLimited = rateLimitBucket[key].maxReqs-- <= 0
   return { isRateLimited, nextWindow: rateLimitBucket[key].nextWindow }

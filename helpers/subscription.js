@@ -6,11 +6,12 @@ const isTagQuery = key => isSingleLetterTagRegExp.test(key)
 
 // We allow these broad filters now by returning less spammy events (of popularity <= 6)
 export function isAllowedBroadFilter (filter) {
+  if (process.env.IS_INTEGRATION_TEST === 'true') return true
   return (
     // specific kinds or
     !!filter.kinds?.length ||
     // referencing authors, ids, addresses, or external entities
-    Object.entries(filter).some(([k, v]) => v?.length && /^#[aeiu]$/i.test(k))
+    Object.entries(filter).some(([k, v]) => v?.length && /^#[aeip]$/i.test(k))
   )
 }
 

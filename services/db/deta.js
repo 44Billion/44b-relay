@@ -5,7 +5,7 @@
 // DynamoDB collates and compares strings using the bytes of the underlying UTF-8 string encoding.
 // For example, "a" (0x61) is greater than "A" (0x41), and "¿" (0xC2BF) is greater than "z" (0x7A).
 // Limits: 400kB per row | 16 digit integers (use strings for larger ints) | 10 GB of Drive space per account
-import { Deta } from 'deta'
+// import { Deta } from 'deta'
 
 const getRandomFixedLengthId = (() => {
   // safe DynamoDB chars
@@ -55,7 +55,8 @@ function keyToId (key) {
   return key.slice(maxSecondsLength + maxMsLength)
 }
 
-const deta = Deta(process.env.DETA_COLLECTION_DATA_KEY)
+// const deta = Deta(process.env.DETA_COLLECTION_DATA_KEY)
+const deta = {}
 
 export {
   generateKey,

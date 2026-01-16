@@ -3,14 +3,12 @@ export default {
   primaryKey: 'key',
   attributes: [
     'key',
-    'targetKey',
     'type',
     'data',
     'createdAt'
   ],
   settings: {
     filterableAttributes: [
-      'targetKey',
       'type'
     ],
     sortableAttributes: [

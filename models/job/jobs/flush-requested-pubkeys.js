@@ -1,4 +1,4 @@
-import { flushRequestedPubkeysToMDB } from '#services/event/tracker/mdb/index.js'
+import { flushRequestedPubkeysToMDB } from '#services/event/tracker/mdb/requested-pubkeys.js'
 
 export async function run () {
   await flushRequestedPubkeysToMDB()

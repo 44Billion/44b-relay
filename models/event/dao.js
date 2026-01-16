@@ -1,8 +1,8 @@
-import { db } from '#services/db/mdb.js'
+import mdb from '#services/db/mdb.js'
 import { eventToRecord, recordToEvent } from './mapper.js'
 
 export async function getEventByRef (ref, options = {}) {
-  return db.index('events').getDocument(ref, {
+  return mdb.index('events').getDocument(ref, {
     ...(options.fields && { fields: options.fields })
   })
     .then(record => ({ result: recordToEvent(record), error: null, success: true }))
@@ -12,7 +12,7 @@ export async function getEventByRef (ref, options = {}) {
 // Good to update metadata such as lastAccessedAt
 // Won't add record if it doesn't exist
 export async function patchEventByRef (ref, patch) {
-  const record = await db.index('events').getDocument(ref)
+  const record = await mdb.index('events').getDocument(ref)
   if (!record) {
     return { result: null, error: new Error('Event not found'), success: false }
   }
@@ -25,7 +25,7 @@ export async function patchEventByRef (ref, patch) {
 // Adds doc if it doesn't exist, i.e., may create a record
 // missing fields for not being present on the patch arg
 export async function putEventByRef (ref, patch) {
-  return db.index('events').updateDocuments([{
+  return mdb.index('events').updateDocuments([{
     ref,
     ...patch
   }])
@@ -49,7 +49,7 @@ async function searchByNostrFilter ({
   ids, authors, kinds, tags, since, until, limit,
   search = '', // nip50
   popularityLevel // not part of nostr spec
-}, { metadataOnly = false, fields } = { }) {
+}, { metadataOnly = false, fields } = {}) {
   limit = Math.min(limit || 20, 100)
   let language
   let q = search
@@ -65,23 +65,23 @@ async function searchByNostrFilter ({
       .trim()
   }
 
-  return db.index('events').search(q, {
+  return mdb.index('events').search(q, {
     ...(fields && { attributesToRetrieve: fields }),
     limit,
     filter: [
       // inner array is OR clause
-      ...(ids ? [ids.map(id => `id = ${db.toMeiliValue(id)}`)] : []),
-      ...(authors ? [authors.map(pubkey => `pubkey = ${db.toMeiliValue(pubkey)}`)] : []),
-      ...(kinds ? [kinds.map(kind => `kind = ${db.toMeiliValue(kind)}`)] : []),
-      ...(tags ? Object.entries(tags).map(([k, vs]) => vs.map(v => `indexableTags = ${db.toMeiliValue(`${k} ${v}`)}`)) : []),
-      ...(since ? [`created_at >= ${db.toMeiliValue(since)}`] : []),
-      ...(until ? [`created_at <= ${db.toMeiliValue(until)}`] : []),
-      ...(language ? [`language = ${db.toMeiliValue(language)}`] : []),
-      ...(popularityLevel ? [`popularityLevel <= ${db.toMeiliValue(popularityLevel)}`] : [])
+      ...(ids ? [ids.map(id => `id = ${mdb.toMeiliValue(id)}`)] : []),
+      ...(authors ? [authors.map(pubkey => `pubkey = ${mdb.toMeiliValue(pubkey)}`)] : []),
+      ...(kinds ? [kinds.map(kind => `kind = ${mdb.toMeiliValue(kind)}`)] : []),
+      ...(tags ? Object.entries(tags).map(([k, vs]) => vs.map(v => `indexableTags = ${mdb.toMeiliValue(`${k} ${v}`)}`)) : []),
+      ...(since ? [`created_at >= ${mdb.toMeiliValue(since)}`] : []),
+      ...(until ? [`created_at <= ${mdb.toMeiliValue(until)}`] : []),
+      ...(language ? [`language = ${mdb.toMeiliValue(language)}`] : []),
+      ...(popularityLevel ? [`popularityLevel <= ${mdb.toMeiliValue(popularityLevel)}`] : [])
     ],
-    sort: ['created_at:desc'],
+    sort: ['created_at:desc', 'id:asc'],
     offset: metadataOnly
-      ? db.constants.maxTotalHits // hack to get no v.hits
+      ? mdb.constants.maxTotalHits // hack to get no v.hits
       : 0
   })
 }
@@ -90,7 +90,7 @@ export async function upsertEvent (event, options = {}) {
   validateEvent(event)
   const record = eventToRecord(event, options)
   if (record.expiresAt != null && record.expiresAt <= Math.floor(Date.now() / 1000)) return { result: record, success: true, isPersisted: false }
-  return db.index('events').addDocuments([record])
+  return mdb.index('events').addDocuments([record])
     .then(() => ({ result: record, error: null, success: true, isPersisted: true }))
     .catch(error => ({ result: null, error, success: false, isPersisted: false }))
 }
@@ -100,9 +100,9 @@ function validateEvent (_event) {
 }
 
 export async function deleteEventsById (ids) {
-  return db.index('events').deleteDocuments({
+  return mdb.index('events').deleteDocuments({
     filter: [
-      ids.map(id => `id = ${db.toMeiliValue(id)}`)
+      ids.map(id => `id = ${mdb.toMeiliValue(id)}`)
     ]
   })
     .then(() => ({ result: null, error: null, success: true }))
@@ -111,16 +111,16 @@ export async function deleteEventsById (ids) {
 
 export async function deleteEventsByRef (refs) {
   // ref field is the primary key of the events index
-  return db.index('events').deleteDocuments(refs)
+  return mdb.index('events').deleteDocuments(refs)
     .then(() => ({ result: null, error: null, success: true }))
     .catch(error => ({ result: null, error, success: false }))
 }
 
 export async function deleteExpiredEvents () {
   const now = Math.floor(Date.now() / 1000)
-  return db.index('events').deleteDocuments({
+  return mdb.index('events').deleteDocuments({
     filter: [
-      `expiresAt <= ${db.toMeiliValue(now)}`
+      `expiresAt <= ${mdb.toMeiliValue(now)}`
     ]
   })
     .then(() => ({ result: null, error: null, success: true }))

@@ -5,8 +5,11 @@ import { parse } from 'node:url'
 import { getIp } from '#helpers/request.js'
 import { rateLimitReqByIp } from '#services/rate-limiting/server-request-limiter.js'
 
-// const server = createServer(httpOnlyHandler)
-const server = { on: () => server, listen: () => server }
+const shouldSpinUpServer = process.env.NODE_ENV === 'development' || process.env.SHOULD_SPIN_UP_SERVER === 'true'
+const server = shouldSpinUpServer
+  ? createServer(httpOnlyHandler)
+  : { on: () => server, listen: () => server }
+
 export async function httpOnlyHandler (req, res) {
   try {
     console.dir(req.headers, { depth: null })
@@ -39,7 +42,7 @@ function sendRateLimitResponnse (res, retrySecs) {
 }
 export function handleRequest (req, res) {
   try {
-    req.ip = getIp(req)
+    req.ip ??= getIp(req)
     const { isRateLimited, nextWindow } = rateLimitReqByIp(req)
     if (isRateLimited) {
       const retrySecs = Math.ceil(Math.max(0, nextWindow.getTime() - Date.now()) / 1000)
@@ -51,21 +54,25 @@ export function handleRequest (req, res) {
     const { pathname /*, query */ } = parsedUrl
     switch (pathname) {
       case '/': {
-        // other handler may handle it
-        if (req.method !== 'GET') return // return sendDefaultErrorResponse(res)
+        if (req.method !== 'GET') {
+          if (shouldSpinUpServer) return sendDefaultErrorResponse(res)
+          // other handler may handle it
+          return
+        }
         // In fact, this header won't be present as node:http will have already triggered 'upgrade' event
         // if (req.headers.connection === 'Upgrade') return // handle at server.on('upgrade')
 
         if (req.headers.accept === 'application/nostr+json') {
           const relayInformationDocument = {
-            name: '44billion.net'.slice(0, 30),
-            // description: '',
-            // pubkey: '',
-            // contact: '',
+            name: '44billion.net Relay'.slice(0, 30),
+            description: 'Public Nostr relay focused on privacy and performance.'.slice(0, 100),
+            icon: 'https://nostr.build/i/53866b44135a27d624e99c6165cabd76ac8f72797209700acb189fce75021f47.jpg',
+            pubkey: 'fc7085c383ba71745704bdc1c6efcf7fab0197501de598c5e6c537ac0b32a4cb', // arthurfranca - npub1l3cgtsurhfchg4cyhhqudm70074sr96srhje330xc5m6czej5n9s9q6vs2
+            contact: 'https://github.com/arthurfranca',
             // just server-side nips
-            supported_nips: [1, 11]
-            // software: '',
-            // version: ''
+            supported_nips: [1, 9, 11, 40, 42],
+            software: 'Bananânia Relay Deluxe',
+            version: '0.0.1'
           }
 
           res.setHeader('content-type', 'application/nostr+json')
@@ -73,17 +80,18 @@ export function handleRequest (req, res) {
           res.writeHead(200)
           const body = JSON.stringify(relayInformationDocument)
           res.end(body)
-        } /* else {
+        } else if (shouldSpinUpServer) {
           res.setHeader('content-type', 'application/json')
-          res.end({ error: { base: ['Please connect with a Nostr client'] } })
-        } */
+          res.end(JSON.stringify({ error: { base: ['Please connect with a Nostr client'] } }))
+        }
 
         break
       }
-      // default:
-      //   return sendDefaultErrorResponse(res)
+      default:
+        if (shouldSpinUpServer) return sendDefaultErrorResponse(res)
     }
   } catch (err) {
+    if (!shouldSpinUpServer) return console.log(err)
     res.writeHead(500)
     res.end(err)
   }
@@ -114,13 +122,13 @@ function onError ({ port }) {
   }
 }
 
-function onListening ({ port, isDev, server }) {
+function onListening ({ port, /* isDev, */ server }) {
   return () => {
     console.log(`> Ready on http://localhost:${port}`)
     addToCleanup(server.close.bind(server))
-    if (isDev) return
+    // if (isDev) return
 
-    process.send?.('ready') // send the ready signal to pm2
+    // process.send?.('ready') // send the ready signal to pm2
   }
 }
 

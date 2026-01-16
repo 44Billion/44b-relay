@@ -1,6 +1,7 @@
 import jobs from './jobs/index.js'
 import { getRandomId } from '#helpers/misc.js'
 import { getJobByKey, patchJobByKey, putJobByKey } from './dao.js'
+import { setTimer, wait } from '#helpers/timer.js'
 
 const HEARTBEAT_INTERVAL = 30 // seconds
 const HEARTBEAT_TOLERANCE = 90 // seconds
@@ -16,8 +17,8 @@ const DEFAULT_MAX_DURATION = 12 * 60 * 60 // 12 hours
 // Else, no need to persist anything, just schedule
 // js-side according to its frequency and ignore maxDuration
 // - Schedule job
-export async function init () {
-  for (const job of jobs) {
+export async function init (jobConfigs = jobs) {
+  for (const job of jobConfigs) {
     await maybeEnsureRecordForJob(job)
     scheduleJob(job)
   }
@@ -52,7 +53,7 @@ function scheduleJob (job, options = {}) {
     ? retriggerAfter * 1000
     : Math.random() * 1000 * 60
 
-  setTimeout(async () => {
+  setTimer(async () => {
     const { retriggerAfter } = await maybeTriggerJob(job)
     if (retriggerAfter === null) return
     scheduleJob(job, { retriggerAfter })
@@ -134,7 +135,7 @@ async function startJob (job) {
 
   await patchJobByKey(job.key, { startedAt: now, lockKey, heartbeatedAt: now })
 
-  await new Promise(resolve => setTimeout(resolve, 2000))
+  await wait(2000)
 
   const { result: record } = await getJobByKey(job.key)
   if (record.lockKey === lockKey) {
@@ -148,14 +149,33 @@ async function startJob (job) {
         console.error(err)
       }
       if (stopHeartbeat) return
-      heartbeatTimeout = setTimeout(heartbeatLoop, HEARTBEAT_INTERVAL * 1000)
+      heartbeatTimeout = setTimer(heartbeatLoop, HEARTBEAT_INTERVAL * 1000)
     }
 
-    heartbeatTimeout = setTimeout(heartbeatLoop, HEARTBEAT_INTERVAL * 1000)
+    heartbeatTimeout = setTimer(heartbeatLoop, HEARTBEAT_INTERVAL * 1000)
 
     let error
     try {
-      await job.run()
+      // Use Promise.race to enforce maxDuration.
+      // This doesn't kill the thread but allows the worker to release the lock and mark error.
+      //
+      // In the future, we can consider using Worker Threads (node:worker_threads)
+      // if we add CPU-bound jobs and terminate the thread here if maxDuration is reached.
+      // Note: No need to proxy mdb client by making worker thread talk to main thread
+      // instead of talking directly to MeiliSearch, because MeiliSearch client
+      // connection overhead is very low (they're HTTP agents), unless we would want
+      // to rate-limit them, e.g., 50 DB writes/second globally across all threads.
+      const maxDuration = (job.maxDuration || DEFAULT_MAX_DURATION) * 1000
+      let timeoutId
+      const timeoutPromise = new Promise((resolve, reject) => {
+        timeoutId = setTimer(() => reject(new Error(`Job timed out after ${maxDuration}ms`)), maxDuration)
+      })
+
+      try {
+        await Promise.race([job.run(), timeoutPromise])
+      } finally {
+        clearTimeout(timeoutId)
+      }
     } catch (err) {
       console.error(err)
       error = err

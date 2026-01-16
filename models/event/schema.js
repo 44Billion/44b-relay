@@ -63,11 +63,12 @@ export default {
     ],
     sortableAttributes: [
       'created_at',
-      'sat'
+      'id'
     ],
     rankingRules: [
       ...defaultRankingRules,
-      'created_at:desc'
+      'created_at:desc',
+      'id:asc'
     ]
     // stopWords: [],
     // nonSeparatorTokens: [], // allows to remove of some tokens from the default list of separators - https://github.com/meilisearch/meilisearch/pull/3946

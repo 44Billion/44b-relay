@@ -1,11 +1,14 @@
 import { rateLimitByKey, getIp } from '#helpers/request.js'
 import { isAuthenticated } from '#services/relay/authenticator.js'
+import { maybeUnref } from '#helpers/timer.js'
 
 // 1. 30 open reqs per ip - considering many users with same ip
 // 2. 10 new reqs per 5 seconds - considering users opening new tabs
 // 2. 3 new reqs per second - considering 3 users at same second
-const MAX_OPEN_CONNECTIONS = 30
+const MAX_OPEN_CONNECTIONS = process.env.IS_INTEGRATION_TEST === 'true' ? 1000 : 30
 const openConnectionsByIp = {}
+const reqsPerWindowA = process.env.IS_INTEGRATION_TEST === 'true' ? 1000 : 10
+const reqsPerWindowB = process.env.IS_INTEGRATION_TEST === 'true' ? 1000 : 3
 
 function rateLimitReqByIp (req) {
   const ip = getIp(req)
@@ -14,10 +17,10 @@ function rateLimitReqByIp (req) {
   if (isRateLimited) return { isRateLimited }
 
   openConnectionsByIp[ip]++
-  ;({ isRateLimited } = rateLimitByKey({ key: 'webSocket::' + ip + '::a', reqsPerWindow: 10, windowSeconds: 5 }))
+  ;({ isRateLimited } = rateLimitByKey({ key: 'webSocket::' + ip + '::a', reqsPerWindow: reqsPerWindowA, windowSeconds: 5 }))
   if (isRateLimited) return { isRateLimited }
 
-  ;({ isRateLimited } = rateLimitByKey({ key: 'webSocket::' + ip + '::b', reqsPerWindow: 3, windowSeconds: 1 }))
+  ;({ isRateLimited } = rateLimitByKey({ key: 'webSocket::' + ip + '::b', reqsPerWindow: reqsPerWindowB, windowSeconds: 1 }))
   return { isRateLimited }
 }
 
@@ -43,23 +46,23 @@ function rateLimitReqByPubkey (ws) {
 }
 
 function disconnectIfNotAuthenticatedAfterSomeTime (ws) {
-  setTimeout(() => {
+  maybeUnref(setTimeout(() => {
     if (isAuthenticated({ ws })) return
     ws.close(1000, 'Didn\'t authenticate in time')
-  }, 5000)
+  }, 5000))
 }
 
 function disconnectWhenInactive (ws) {
   if (ws.nostr.inactivityTimeout) return
   const then = Date.now()
-  ws.nostr.inactivityTimeout = setTimeout(() => {
+  ws.nostr.inactivityTimeout = maybeUnref(setTimeout(() => {
     if (Object.keys(ws.nostr.subscriptions).length > 0) return // will reset timeout on close
     if (ws.nostr.lastActiveAtMs > then) {
       delete ws.nostr.inactivityTimeout
       return disconnectWhenInactive(ws)
     }
     ws.close(1013, 'Casting off client due to inactivity')
-  }, 1000 * 60 * 3)
+  }, 1000 * 60 * 3))
 }
 
 function returnReqToPubkeyRateLimitPool (ws) {

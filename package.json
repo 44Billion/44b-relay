@@ -3,11 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "NODE_ENV=development node index.js",
+    "// test": "--test-concurrency=1 to benefit from single MeiliSearch instance setup at global-setup.js without conflicts between parallel tests",
+    "test": "NODE_ENV=test node --test --test-concurrency=1 --test-global-setup=tests/global-setup.js --experimental-test-module-mocks 'tests/**/*.test.js'",
+    "test:only": "NODE_ENV=test node --test --test-only --test-concurrency=1 --test-global-setup=tests/global-setup.js --experimental-test-module-mocks 'tests/**/*.test.js'",
+    "test:integration": "bash tests/integration/run-suite.sh"
   },
   "engines": {
-    "node": "18.12.1"
+    "node": "24.8.0"
   },
   "imports": {
     "#config/*": "./config/*",
@@ -22,13 +25,15 @@
     "bloom-filters": "^3.0.4",
     "deta": "^1.1.0",
     "dotenv": "^16.0.3",
+    "meilisearch": "^0.55.0",
     "nostr-hll": "^1.0.0",
     "nostr-tools": "^2.19.4",
-    "ws": "^8.11.0"
+    "ws": "^8.19.0"
   },
   "devDependencies": {
     "eslint": "^9.39.2",
     "globals": "^17.0.0",
-    "neostandard": "^0.12.2"
+    "neostandard": "^0.12.2",
+    "testcontainers": "^11.11.0"
   }
 }

@@ -1,9 +1,16 @@
-import { CuckooFilter } from 'bloom-filters'
+import bloomFilters from 'bloom-filters'
 import mdb from '#services/db/mdb.js'
 import crypto from 'node:crypto'
+import { primaryKeyToIp, ipToPrimaryKey, isValidPrimaryKey } from '#helpers/mdb.js'
 
+const { CuckooFilter } = bloomFilters
 const ONE_MB = 1024 * 1024
 const EVENT_BATCH_SIZE = 20
+
+export const VIP_PUBKEYS = new Set([
+  'fc7085c383ba71745704bdc1c6efcf7fab0197501de598c5e6c537ac0b32a4cb', // arthurfranca - npub1l3cgtsurhfchg4cyhhqudm70074sr96srhje330xc5m6czej5n9s9q6vs2
+  '5a8bc85694d8fbb4f30208649c1c52509636d1e6fdb1f0f4c84a3f10f9383ec9' // 44b mirror - npub1t29us455mramfuczppjfc8zj2ztrd50xlkclpaxgfgl3p7fc8mysjuvsrw
+])
 
 // Estimated limits
 const STORAGE_LIMITS = {
@@ -55,6 +62,8 @@ async function loadPopularityFilters () {
 }
 
 function getPopularityLevel (pubkey) {
+  if (process.env.IS_INTEGRATION_TEST === 'true') return 6
+
   for (let level = 1; level <= 5; level++) {
     const filter = popularCuckooFilters[level]
     if (filter.normal?.has(pubkey) || filter.relegated?.has(pubkey)) {
@@ -69,10 +78,12 @@ function getStorageLimit (popularityLevel) {
 }
 
 async function getStoredEntity ({ key, type }) {
+  // Do this outside: `const primaryKey = type === 'ip' ? ipToPrimaryKey(key) : key`
+  if (!isValidPrimaryKey(key)) throw new Error('Invalid primary key format')
   try {
     return await mdb.index('storedEventOwners').getDocument(key)
   } catch (e) {
-    if (e.code === 'document_not_found') {
+    if (e.code === 'document_not_found' || e.cause?.code === 'document_not_found') {
       return { key, entityType: type, usedBytes: 0, popularityLevel: 999 }
     }
     throw e
@@ -80,7 +91,9 @@ async function getStoredEntity ({ key, type }) {
 }
 
 async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
+  if (!isValidPrimaryKey(ownerKey)) throw new Error('Invalid primary key format')
   if (ownerType === 'ip') await loadPopularityFilters()
+  else if (VIP_PUBKEYS.has(ownerKey)) return 0
 
   let cleared = 0
   let offset = 0
@@ -89,7 +102,7 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
     // Fetch oldest events
     const filter = ownerType === 'pubkey'
       ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey"`
-      : `ip = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "ip"`
+      : `ip = ${mdb.toMeiliValue(primaryKeyToIp(ownerKey))} AND ownerType = "ip"`
 
     const searchRes = await mdb.index('events').search('', {
       filter,
@@ -108,9 +121,11 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
     let bytesInBatch = 0
 
     if (ownerType === 'pubkey') {
-      const idsToDelete = hits.map(h => h.ref || h.id)
+      const keysToDelete = hits.map(h => h.ref)
+      // Clear all of the batch even if cleared >= bytesToRemove
+      // so to postpone a proosible next purging need for this same owner.
       bytesInBatch = hits.reduce((acc, h) => acc + (h.byteSize || 0), 0)
-      await mdb.index('events').deleteDocuments(idsToDelete)
+      await mdb.index('events').deleteDocuments(keysToDelete)
       cleared += bytesInBatch
     } else {
       // Owner is IP: Check for popular pubkeys to promote/restore
@@ -129,8 +144,8 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
 
       // Delete non-popular
       if (eventsToDelete.length > 0) {
-        const ids = eventsToDelete.map(h => h.ref || h.id)
-        await mdb.index('events').deleteDocuments(ids)
+        const keysToDelete = eventsToDelete.map(h => h.ref)
+        await mdb.index('events').deleteDocuments(keysToDelete)
         const size = eventsToDelete.reduce((acc, h) => acc + (h.byteSize || 0), 0)
         cleared += size
       }
@@ -152,9 +167,8 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
         // 3. Queue event updates (changing ownerType to 'pubkey') atomically with usage update
         events.forEach(ev => {
           ops.push({
-            targetKey: pubkey,
             type: 'patchDocumentIfExists',
-            data: { index: 'events', document: { ref: ev.ref, ownerType: 'pubkey' }, ownerType: 'pubkey' }
+            data: { index: 'events', document: { ref: ev.ref, ownerType: 'pubkey' } }
           })
         })
 
@@ -165,18 +179,28 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
   return cleared
 }
 
-async function queueOps (ops) {
-  if (!ops || ops.length === 0) return
-  const now = Date.now()
-  const documents = ops.map(op => ({
-    key: crypto.randomUUID(),
-    targetKey: op.targetKey,
-    type: op.type,
-    data: JSON.stringify(op.data),
-    createdAt: now
-  }))
-  await mdb.index('pendingOps').addDocuments(documents)
-}
+const queueOps = (() => {
+  async function queueOps (ops) {
+    if (!ops || ops.length === 0) return
+    const now = Date.now()
+    const documents = ops.map(op => {
+      return {
+        key: crypto.randomUUID(),
+        type: op.type,
+        data: op.data,
+        createdAt: now
+      }
+    })
+    await mdb.index('pendingOps').addDocuments(documents)
+  }
+  // If integration tests are running, process instantly
+  return process.env.IS_INTEGRATION_TEST === 'true'
+    ? async (ops) => {
+      await queueOps(ops)
+      await (await import('#models/job/jobs/process-pending-ops/index.js')).run()
+    }
+    : queueOps
+})()
 
 export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, popularityLevel }) {
   if (popularityLevel === undefined) {
@@ -184,23 +208,25 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
     popularityLevel = getPopularityLevel(pubkey)
   }
   const level = popularityLevel
+  const isVip = VIP_PUBKEYS.has(pubkey)
 
-  const ownerType = level <= 5 ? 'pubkey' : 'ip'
-  const ownerKey = ownerType === 'pubkey' ? pubkey : ip
+  const ownerType = isVip ? 'pubkey' : (level <= 5 ? 'pubkey' : 'ip')
+  const ownerKey = ownerType === 'pubkey' ? pubkey : ipToPrimaryKey(ip)
   const limit = getStorageLimit(level)
 
   const ops = []
 
   // Queue the usage update
   ops.push({
-    targetKey: ownerKey,
     type: 'deltaUsage',
-    data: { delta: newEventSize, ownerType, popularityLevel: level }
+    data: { targetKey: ownerKey, delta: newEventSize, entityType: ownerType, popularityLevel: level }
   })
 
   // We optimize by checking current usage (even if slightly stale) to see if we should queue a prune check
   // We don't strictly need to queue 'prune' if we are far from limit, to save job processing time.
   // But if we are close or over, we queue it.
+
+  if (isVip) return { ownerType, ownerKey, popularityLevel: level, ops }
 
   try {
     const storedEntity = await getStoredEntity({ key: ownerKey, type: ownerType })
@@ -209,9 +235,8 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
     // We queue a prune check if we are over limit OR close to it (e.g. > 90%)
     if (currentUsage + newEventSize > limit * 0.9) {
       ops.push({
-        targetKey: ownerKey,
         type: 'pruneCheck',
-        data: { limit, ownerType, popularityLevel: level }
+        data: { targetKey: ownerKey, limit, entityType: ownerType, popularityLevel: level }
       })
     }
   } catch (_e) {

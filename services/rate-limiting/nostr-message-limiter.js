@@ -2,27 +2,29 @@ import { rateLimitByKey } from '#helpers/request.js'
 import { isType } from '#helpers/shared.js'
 import { eventKinds } from '#constants/event.js'
 
+const LIMIT_MULTIPLIER = process.env.IS_INTEGRATION_TEST === 'true' ? 1000 : 1
+
 function rateLimitNostrMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  const { isRateLimited } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: 12, windowSeconds: 2 })
+  const { isRateLimited } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: 12 * LIMIT_MULTIPLIER, windowSeconds: 2 })
 
   return { isRateLimited }
 }
 
 function rateLimitNostrAuthMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  let { isRateLimited } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::a', reqsPerWindow: 20, windowMinutes: 1 })
+  let { isRateLimited } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::a', reqsPerWindow: 20 * LIMIT_MULTIPLIER, windowMinutes: 1 })
   if (isRateLimited) return { isRateLimited }
-  ;({ isRateLimited } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::b', reqsPerWindow: 2, windowSeconds: 1 }))
+  ;({ isRateLimited } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::b', reqsPerWindow: 2 * LIMIT_MULTIPLIER, windowSeconds: 1 }))
 
   return { isRateLimited }
 }
 
 // considering MAX_OPEN_CONNECTIONS = 30 per ip
 // if client does 1 conn per pubkey -> 30 pubkeys per ip -> 10 subs per conn/pubkey -> 300 subs total per ip
-const MAX_SUBSCRIPTIONS_PER_WS_CONNECTION = 10
+const MAX_SUBSCRIPTIONS_PER_WS_CONNECTION = 10 * LIMIT_MULTIPLIER
 function rateLimitNostrReqMessageByWsConnection (ws, subscriptionId) {
-  if (!isType(subscriptionId, 'string')) return // it will be invalid ahead at ReqHandler
+  if (!isType(subscriptionId, 'string')) return { isRateLimited: false } // it will be invalid ahead at ReqHandler
   const { subscriptions } = ws.nostr
 
   const isSubscriptionReplaceRequest = !!subscriptions[subscriptionId]
@@ -38,9 +40,9 @@ const MAX_SUBSCRIPTIONS_PER_PUBKEY = MAX_SUBSCRIPTIONS_PER_WS_CONNECTION
 const MAX_FILTERS_PER_PUBKEY = MAX_SUBSCRIPTIONS_PER_WS_CONNECTION
 // this may be slow because of wss.clients loop
 function rateLimitNostrReqMessageByPubkey (wss, ws, subscriptionId, filters) {
-  if (!isType(subscriptionId, 'string')) return // it will be invalid ahead at ReqHandler
+  if (!isType(subscriptionId, 'string')) return { isRateLimited: false } // it will be invalid ahead at ReqHandler
   const { pubkey } = ws.nostr
-  if (!pubkey) return
+  if (!pubkey) return { isRateLimited: false }
 
   const { subscriptions } = ws.nostr
 
@@ -70,22 +72,22 @@ function rateLimitNostrReqMessageByPubkey (wss, ws, subscriptionId, filters) {
 
 function rateLimitNostrEventMessageByPubkey (ws, event) {
   const { pubkey } = ws.nostr
-  if (!pubkey || !event || !isType(event, 'object')) return
+  if (!pubkey || !event || !isType(event, 'object')) return { isRateLimited: false }
 
   let isRateLimited = false
   switch (event.kind) {
     case eventKinds.METADATA:
-      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 7, windowMinutes: 1 }))
+      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 7 * LIMIT_MULTIPLIER, windowMinutes: 1 }))
       break
     case eventKinds.TEXT_NOTE:
-      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::a`, reqsPerWindow: 7, windowMinutes: 2 }))
-      if (!isRateLimited) ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::b`, reqsPerWindow: 1, windowSeconds: 5 }))
+      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::a`, reqsPerWindow: 7 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
+      if (!isRateLimited) ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::b`, reqsPerWindow: 1 * LIMIT_MULTIPLIER, windowSeconds: 5 }))
       break
     case eventKinds.RECOMMEND_RELAY:
-      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 5, windowMinutes: 10 }))
+      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 5 * LIMIT_MULTIPLIER, windowMinutes: 10 }))
       break
     case eventKinds.FOLLOWS:
-      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 25, windowMinutes: 2 }))
+      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 25 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
       break
   }
 

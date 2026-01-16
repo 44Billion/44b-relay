@@ -7,6 +7,13 @@
 // https://www.meilisearch.com/docs/guides/running_production#step-1%3A-install-meilisearch
 // mv meilisearch /usr/local/bin/meilisearch
 //
+// SIDE NOTES:
+// For https://www.meilisearch.com/docs/learn/update_and_migration/updating#dumpless-upgrade
+// Download new version as as above, moving the executable to /usr/local/bin ($ mv meilisearch /usr/local/bin/meilisearch)
+// Then restart the service (systemctl restart meilisearch) - see below for service setup
+// However, the v1.30.1 is the last version supporting S3-streaming snapshots without
+// an Enterprise Edition license as seen here: https://github.com/meilisearch/meilisearch/releases/tag/v1.31.0
+//
 // Now add a user to run Meilisearch, a non-login one
 // useradd -d /var/lib/meilisearch -s /bin/false -m -r meilisearch
 // chown meilisearch:meilisearch /usr/local/bin/meilisearch
@@ -71,17 +78,63 @@ import jobSchema from '#models/job/schema.js'
 import storedEventOwnerSchema from '#models/stored-event-owner/schema.js'
 import pendingOpSchema from '#models/pending-op/schema.js'
 import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
-import { typeof2 } from '#helpers/operator.js'
+import popularPubkeySchema from '#models/popular-pubkey/schema.js'
+import ipActivitySchema from '#models/ip-activity/schema.js'
+import maintenanceStateSchema from '#models/maintenance-state/schema.js'
+import { addToCleanup } from '#helpers/process.js'
 
 // Remember if deleting by filter, that filtering by <primaryKey> = xyz
 // would match XyZ xyZ too cause it is case-insensitive on strings
 //
 // const timestamp = Math.floor(timestampInMilliseconds / 1000) // UNIX timestamps must be in seconds!!
 async function init () {
-  const config = {
-    host: 'http://127.0.0.1:7700',
-    apiKey: 'meilisearchmasterkey' // no underline https://github.com/meilisearch/meilisearch-migration/issues/47
+  let config = {
+    host: process.env.MDB_HOST || 'http://127.0.0.1:7700',
+    apiKey: process.env.MDB_API_KEY || 'meilisearchmasterkey' // no underline https://github.com/meilisearch/meilisearch-migration/issues/47
   }
+
+  // Only start container if we are in test/dev AND no host is explicitly provided
+  if ((process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') && !process.env.MDB_HOST) {
+    try {
+      const { GenericContainer, Wait } = await import('testcontainers')
+
+      // Set Docker Host for Podman
+      if (!process.env.DOCKER_HOST) {
+        const uid = process.getuid ? process.getuid() : 1000
+        process.env.DOCKER_HOST = `unix:///run/user/${uid}/podman/podman.sock`
+      }
+
+      console.log('Starting Meilisearch Container...')
+      const container = await new GenericContainer('getmeili/meilisearch:v1.25')
+        .withExposedPorts(7700)
+        .withEnvironment({ MEILI_MASTER_KEY: 'masterKey', MEILI_NO_ANALYTICS: 'true' })
+        .withWaitStrategy(Wait.forHttp('/health', 7700).withStartupTimeout(40000))
+        .start()
+
+      addToCleanup(async () => {
+        console.log('Stopping Meilisearch Container...')
+        await container.stop()
+      })
+
+      const containerHost = `http://${container.getHost()}:${container.getMappedPort(7700)}`
+      const containerKey = 'masterKey'
+
+      console.log(`Meilisearch Container started at ${containerHost}`)
+
+      // Update config
+      config = {
+        host: containerHost,
+        apiKey: containerKey
+      }
+
+      // Set env vars so re-imports (e.g. from mocks) find this running instance
+      process.env.MDB_HOST = containerHost
+      process.env.MDB_API_KEY = containerKey
+    } catch (e) {
+      console.error('Failed to start Meilisearch container:', e)
+    }
+  }
+
   let db = new MeiliSearch(config)
   const constants = {
     maxTotalHits: 1000, // https://www.meilisearch.com/docs/learn/advanced/known_limitations#maximum-number-of-results-per-search
@@ -90,62 +143,98 @@ async function init () {
   }
   // https://stackoverflow.com/a/50322882
   // Use this to escape chars when filtering like `attr = ${db.toMeiliValue(val))}`
-  const toMeiliValue = v => '"' + String(v).replace(/(\\)|(")/g, (_m, p1, p2) => (p1 && '\\\\') || (p2 && '\\"')) + '"'
-  const cache = new Map()
+  const toMeiliValue = v => typeof v === 'number' ? String(v) : '"' + String(v).replace(/(\\)|(")/g, (_m, p1, p2) => (p1 && '\\\\') || (p2 && '\\"')) + '"'
+
   // Make methods that return task metadata promise such as db.createIndex() return the task promise
   // Also memo db.index(uid) calls (note it is not the same as .getIndex, which just get index metadata)
-  db = new Proxy(Object.assign(db, { constants, toMeiliValue }), {
-    // receiver: the "this" of methods/getters/setters, usually is the proxy unless you call
-    // manually with Reflect.get(target, prop, { foo: 'bar' } /* other obj */)
-    // While the default behavior is return Reflect.get(...arguments)
-    // it won't have access to target's private properties such as #example
-    // so prefer returning target[prop] instead (when getter/setter)
-    // or function (...args) { return target[prop].apply(that, args) } when target[prop] instanceof Function
-    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy#no_private_property_forwarding
-    get: (target, prop, receiver) => {
-      if (!(target[prop] instanceof Function)) return target[prop]
+  db = Object.assign(createAutoWaitProxy(db, true), { constants, toMeiliValue })
 
-      if (typeof2(target[prop]) === 'asyncfunction') {
-        return async function (...args) {
-          const that = this === receiver ? target : this
-          return target[prop].apply(that, args)
-            .then(v => 'taskUid' in v
-              ? that.waitForTask(v.taskUid).then(v => {
-                if (v.status !== 'succeeded') throw new Error(`Task ${v.status}: ${JSON.stringify(v.error ?? v.canceledBy)}`)
-                return v
-              })
-              : v)
+  function createAutoWaitProxy (target, useCache = false) {
+    const cache = useCache ? new Map() : null
+
+    return new Proxy(target, {
+      // receiver: the "this" of methods/getters/setters, usually is the proxy unless you call
+      // manually with Reflect.get(target, prop, { foo: 'bar' } /* other obj */)
+      // While the default behavior is return Reflect.get(...arguments)
+      // it won't have access to target's private properties such as #example
+      // so prefer returning target[prop] instead (when getter/setter)
+      // or function (...args) { return target[prop].apply(that, args) } when target[prop] instanceof Function
+      // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy#no_private_property_forwarding
+      get: (target, prop, _receiver) => {
+        const val = target[prop]
+        if (typeof val !== 'function') return val
+
+        return function (...args) {
+          if (useCache && prop === 'index') {
+            const cacheKey = JSON.stringify(args)
+            if (cache.has(cacheKey)) return cache.get(cacheKey)
+          }
+
+          const ret = val.apply(target, args)
+
+          if (prop === 'index') {
+            const wrapped = createAutoWaitProxy(ret)
+            if (useCache) {
+              const cacheKey = JSON.stringify(args)
+              cache.set(cacheKey, wrapped)
+            }
+            return wrapped
+          }
+
+          if (ret && typeof ret.then === 'function') {
+            return ret.then(v => {
+              if (v && typeof v === 'object' && 'taskUid' in v) {
+                const waitFn = (typeof target.waitForTask === 'function')
+                  ? target.waitForTask.bind(target)
+                  : (target.tasks && typeof target.tasks.waitForTask === 'function')
+                      ? target.tasks.waitForTask.bind(target.tasks)
+                      : null
+
+                if (!waitFn) {
+                  console.warn('Could not find waitForTask method on target', target)
+                  return v
+                }
+
+                return waitFn(v.taskUid).then(task => {
+                  if (task.status !== 'succeeded') {
+                    throw new Error(`Task ${task.status}: ${JSON.stringify(task.error ?? task.canceledBy)}`)
+                  }
+                  return task
+                })
+              }
+              return v
+            })
+          }
+
+          return ret
         }
       }
+    })
+  }
 
-      return function (...args) {
-        let cacheKey
-        // cache just the index method
-        if (prop === 'index' && this === receiver) {
-          cacheKey = `${prop}:${JSON.stringify(args)}`
-          if (cache.has(cacheKey)) return cache.get(cacheKey)
-        }
-        const ret = target[prop].apply(this === receiver ? target : this, args)
-        if (cacheKey) cache.set(cacheKey, ret)
-        return ret
-      }
-    }
-  })
-  await migrate(db)
+  process.env.MDB_DEBUG ??= process.env.NODE_ENV === 'production'
+  function log (...args) {
+    if (process.env.MDB_DEBUG === 'false') return
+    console.log('[MDB DEBUG]', ...args)
+  }
+  await migrate(db, log)
   return db
 }
 
 const db = await init()
 export default db
 
-async function migrate (db) {
-  console.log('Running migration...')
+export async function migrate (db, log = console.log) {
+  log('Running migration...')
   const idxs = [
     eventSchema,
     jobSchema,
     storedEventOwnerSchema,
     pendingOpSchema,
-    requestedPubkeySchema
+    requestedPubkeySchema,
+    popularPubkeySchema,
+    ipActivitySchema,
+    maintenanceStateSchema
   ]
   const idxsByUid = idxs.reduce((r, v) => ({ ...r, [v.uid]: v }), {})
   const currentIdxsByUid = await db.getIndexes({ limit: db.constants.maxBigIndexes })
@@ -154,35 +243,63 @@ async function migrate (db) {
   for (const { uid, primaryKey, settings } of idxs) {
     const currentIdx = currentIdxsByUid[uid]
     if (!currentIdx) {
-      console.log(`${uid} index doesn't exit. Creating...`)
-      await db.createIndex(uid, { primaryKey })
-      await db.index(uid).updateSettings(settings) // this won't touch unset default values
-      console.log('Done creating')
-    } else {
-      if (currentIdx.primaryKey !== primaryKey) {
-        console.log(`${uid} index had diverging primaryKey. Updating...`)
-        db.updateIndex(uid, { primaryKey })
-        console.log('Done updating primaryKey')
+      log(`${uid} index doesn't exist. Creating...`)
+      try {
+        await db.createIndex(uid, { primaryKey })
+        log('Done creating')
+      } catch (e) {
+        if (e.code === 'index_already_exists' || (e.message && e.message.includes('index_already_exists'))) {
+          log(`${uid} index created by another process. Skipping creation.`)
+        } else {
+          throw e
+        }
       }
-      async function updateDivergingSettings () {
-        const currentIdxSettings = await db.index(uid).getSettings()
-        // will consider just array values for now, cause we haven't set settings fields whose values are objects or strings
-        // see models/<name>/schema.js > .settings
-        for (const [key, valueArr] of Object.entries(settings)) {
-          if (valueArr.some((v, i) => !currentIdxSettings[key] || currentIdxSettings[key][i] !== v)) {
-            console.log(`${uid} index had diverging ${key} setting. Updating...`)
-            await db.index(uid)[`update${key[0].toUpperCase()}${key.slice(1)}`](valueArr)
-            console.log(`Done updating ${key} setting`)
+    } else if (currentIdx.primaryKey !== primaryKey) {
+      log(`${uid} index had diverging primaryKey. Updating...`)
+      db.updateIndex(uid, { primaryKey })
+      log('Done updating primaryKey')
+    }
+
+    async function updateDivergingSettings () {
+      const currentIdxSettings = await db.index(uid).getSettings()
+      let hasAnyDiverged = false
+      // We will consider just array values for now, cause we haven't set settings fields whose values are objects or strings
+      // see models/<name>/schema.js > .settings
+      for (const [key, valueArr] of Object.entries(settings)) {
+        let hasDiverged = false
+        const currentArr = currentIdxSettings[key] || []
+
+        // Order-sensitive keys: rankingRules, searchableAttributes.
+        // Order-insensitive keys: filterableAttributes, sortableAttributes, displayedAttributes, stopWords.
+        if (['filterableAttributes', 'sortableAttributes', 'displayedAttributes', 'stopWords'].includes(key)) {
+          const sortedValue = [...valueArr].sort()
+          const sortedCurrent = [...currentArr].sort()
+          hasDiverged = sortedValue.length !== sortedCurrent.length || sortedValue.some((v, i) => v !== sortedCurrent[i])
+        } else {
+          // Known Limitation: Meilisearch may return ['*'] for searchableAttributes even if set to [primaryKey]
+          if (key === 'searchableAttributes' &&
+                currentArr.length === 1 && currentArr[0] === '*' &&
+                valueArr.length === 1 && valueArr[0] === primaryKey) {
+            hasDiverged = false
+          } else {
+            hasDiverged = valueArr.length !== currentArr.length || valueArr.some((v, i) => v !== currentArr[i])
           }
         }
-        return false
+
+        if (hasDiverged) {
+          log(`${uid} index had diverging ${key} setting. Updating...`)
+          hasAnyDiverged = true
+          await db.index(uid)[`update${key[0].toUpperCase()}${key.slice(1)}`](valueArr)
+          log(`Done updating ${key} setting`)
+        }
       }
-      await updateDivergingSettings()
-      console.log('Done updating diverging settings')
+      return hasAnyDiverged
     }
+    const hadDivergedSettings = await updateDivergingSettings()
+    if (hadDivergedSettings) log('Done updating diverging settings')
   }
 
   const leftoverIdxs = Object.keys(currentIdxsByUid).filter(uid => !idxsByUid[uid]).join(', ')
-  if (leftoverIdxs) console.log(`Consider deleting these leftover indexes: ${leftoverIdxs}`)
-  console.log('Migration done')
+  if (leftoverIdxs) log(`Consider deleting these leftover indexes: ${leftoverIdxs}`)
+  log('Migration done')
 }
