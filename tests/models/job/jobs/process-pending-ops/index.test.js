@@ -6,6 +6,7 @@ import { ipToPrimaryKey } from '#helpers/mdb.js'
 describe('Job: Process Pending Ops', () => {
   let processPendingOps
   let pruneEventsMock
+  let runSingleBatch
 
   before(async () => {
     // Mock pruneEvents to avoid complex interactions for now, unless we want full integration
@@ -21,6 +22,12 @@ describe('Job: Process Pending Ops', () => {
     })
 
     processPendingOps = await import('#models/job/jobs/process-pending-ops/index.js')
+
+    runSingleBatch = async () => {
+      const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+      const state = await processPendingOps.loadSystemState()
+      await processPendingOps.processBatch(hits, state)
+    }
   })
 
   after(() => {
@@ -83,7 +90,7 @@ describe('Job: Process Pending Ops', () => {
 
       await mdb.index('pendingOps').addDocuments([op])
 
-      await processPendingOps.run()
+      await runSingleBatch()
 
       // 1. Verify Doc exists in events
       const doc = await mdb.index('events').getDocument('doc1')
@@ -117,7 +124,7 @@ describe('Job: Process Pending Ops', () => {
       }
 
       await mdb.index('pendingOps').addDocuments([op])
-      await processPendingOps.run()
+      await runSingleBatch()
 
       const doc = await mdb.index('storedEventOwners').getDocument(ownerKey)
       assert.equal(doc.usedBytes, 100)
@@ -139,7 +146,7 @@ describe('Job: Process Pending Ops', () => {
       }
 
       await mdb.index('pendingOps').addDocuments([op])
-      await processPendingOps.run()
+      await runSingleBatch()
 
       const doc = await mdb.index('storedEventOwners').getDocument(ownerKey)
       assert.equal(doc.usedBytes, 50)
@@ -169,7 +176,7 @@ describe('Job: Process Pending Ops', () => {
       await mdb.index('pendingOps').addDocuments([op])
 
       // 3. Run
-      await processPendingOps.run()
+      await runSingleBatch()
 
       // 4. Verify Op removed (logic deletes processed ops)
       try {
@@ -217,7 +224,7 @@ describe('Job: Process Pending Ops', () => {
       })
 
       await mdb.index('pendingOps').addDocuments([op])
-      await processPendingOps.run()
+      await runSingleBatch()
 
       // Verify pruneEvents called
       assert.equal(pruneEventsMock.mock.calls.length, 1)

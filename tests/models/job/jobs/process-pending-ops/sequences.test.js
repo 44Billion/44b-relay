@@ -5,6 +5,7 @@ import mdb from '#services/db/mdb.js'
 describe('Job: Process Pending Ops - Sequences', () => {
   let processPendingOps
   let pruneEventsMock
+  let runSingleBatch
 
   before(async () => {
     pruneEventsMock = mock.fn(async () => 0)
@@ -18,6 +19,12 @@ describe('Job: Process Pending Ops - Sequences', () => {
     })
 
     processPendingOps = await import('#models/job/jobs/process-pending-ops/index.js')
+
+    runSingleBatch = async () => {
+      const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+      const state = await processPendingOps.loadSystemState()
+      await processPendingOps.processBatch(hits, state)
+    }
   })
 
   after(() => {
@@ -63,7 +70,7 @@ describe('Job: Process Pending Ops - Sequences', () => {
     }
 
     await mdb.index('pendingOps').addDocuments([op1, op2, op3])
-    await processPendingOps.run()
+    await runSingleBatch()
 
     // Expectation: Document should NOT exist
     try {
@@ -93,7 +100,7 @@ describe('Job: Process Pending Ops - Sequences', () => {
     }
 
     await mdb.index('pendingOps').addDocuments([op1, op2])
-    await processPendingOps.run()
+    await runSingleBatch()
 
     try {
       await mdb.index('events').getDocument(docId)
@@ -135,7 +142,7 @@ describe('Job: Process Pending Ops - Sequences', () => {
     }
 
     await mdb.index('pendingOps').addDocuments([op1, op2, op3, op4])
-    await processPendingOps.run()
+    await runSingleBatch()
 
     const result = await mdb.index('events').getDocument(docId)
     assert.equal(result.val, 'B', 'Should have val B')
@@ -172,7 +179,7 @@ describe('Job: Process Pending Ops - Sequences', () => {
     }
 
     await mdb.index('pendingOps').addDocuments([op1, op2, op3, op4])
-    await processPendingOps.run()
+    await runSingleBatch()
 
     try {
       await mdb.index('events').getDocument(docId)
