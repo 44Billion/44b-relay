@@ -1,7 +1,6 @@
 import mdb from '#services/db/mdb.js'
-import bloomFilters from 'bloom-filters'
+import { CuckooFilter, packFilter } from '#helpers/cuckoo.js'
 import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
-const { CuckooFilter } = bloomFilters
 
 async function snapshotAndResetLiveIndex (
   liveUid,
@@ -152,7 +151,7 @@ export async function run () {
 
   for (let level = 1; level <= maxLevels; level++) {
     const filter = filters[level]
-    const filterJson = JSON.stringify(filter.saveAsJSON())
+    const filterJson = await packFilter(filter)
 
     // Determine Relegated Filter (Old Normal of PREVIOUS level)
     let relegatedCuckoo = null

@@ -313,6 +313,7 @@ export async function processBatch (results, systemState) {
 
   // 4. Commit Batch per Index
   const indexesToCommit = Object.keys(docsToAddOrUpdate)
+  const commitPromises = []
 
   for (const indexName of indexesToCommit) {
     const docs = Array.from(docsToAddOrUpdate[indexName].values())
@@ -330,25 +331,31 @@ export async function processBatch (results, systemState) {
       docs.push(stateDoc)
     }
 
-    if (keysDel.length > 0) {
-      await mdb.index(indexName).deleteDocuments(keysDel)
-    }
-
-    if (docs.length > 0) {
-      // Use addDocuments (Replace) if any operation in the batch for this index was 'insertOrReplaceDocument'.
-      // Otherwise, use updateDocuments (Merge) which is safer for partial updates/patches.
-      // Since we simulate serialization in memory by fetching full docs, 'addDocuments' is generally safe too,
-      // but 'updateDocuments' is more permissive if we somehow missed fields
-      // (e.g. some other process updated a document outside of an operation).
-      // However, 'insertOrReplaceDocument' STRICTLY requires 'addDocuments' to ensure deleted fields are removed.
-
-      if (indexUsesReplace.has(indexName)) {
-        await mdb.index(indexName).addDocuments(docs)
-      } else {
-        await mdb.index(indexName).updateDocuments(docs)
+    // We can run deletes and upserts for the same index in parallel usually,
+    // but Meilisearch queues them anyway.
+    // However, parallelizing across different indices is definitely beneficial.
+    commitPromises.push((async () => {
+      if (keysDel.length > 0) {
+        await mdb.index(indexName).deleteDocuments(keysDel)
       }
-    }
+
+      if (docs.length > 0) {
+        // Use addDocuments (Replace) if any operation in the batch for this index was 'insertOrReplaceDocument'.
+        // Otherwise, use updateDocuments (Merge) which is safer for partial updates/patches.
+        // Since we simulate serialization in memory by fetching full docs, 'addDocuments' is generally safe too,
+        // but 'updateDocuments' is more permissive if we somehow missed fields
+        // (e.g. some other process updated a document outside of an operation).
+        // However, 'insertOrReplaceDocument' STRICTLY requires 'addDocuments' to ensure deleted fields are removed.
+        if (indexUsesReplace.has(indexName)) {
+          await mdb.index(indexName).addDocuments(docs)
+        } else {
+          await mdb.index(indexName).updateDocuments(docs)
+        }
+      }
+    })())
   }
+
+  await Promise.all(commitPromises)
 
   // 5. Delete Ops from Pending
   if (opsToDeleteFromQueue.length > 0) {

@@ -1,19 +1,26 @@
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
-import processPendingOpsJob from '#models/job/jobs/process-pending-ops/index.js'
+import { processBatch, loadSystemState } from '#models/job/jobs/process-pending-ops/index.js'
 import * as maintainStorageTiersJob from '#models/job/jobs/maintain-storage-tiers.js'
-import bloomFilters from 'bloom-filters'
-const { CuckooFilter } = bloomFilters
+import { CuckooFilter, packFilter } from '#helpers/cuckoo.js'
+
+const runPendingOps = async () => {
+  const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+  const state = await loadSystemState()
+  await processBatch(hits, state)
+}
 
 describe('Job: Maintain Storage Tiers', () => {
   beforeEach(async () => {
-    await mdb.index('jobs').deleteAllDocuments()
-    await mdb.index('maintenanceState').deleteAllDocuments()
-    await mdb.index('storedEventOwners').deleteAllDocuments()
-    await mdb.index('events').deleteAllDocuments()
-    await mdb.index('popularPubkeys').deleteAllDocuments()
-    await mdb.index('pendingOps').deleteAllDocuments()
+    await Promise.all([
+      mdb.index('jobs').deleteAllDocuments(),
+      mdb.index('maintenanceState').deleteAllDocuments(),
+      mdb.index('storedEventOwners').deleteAllDocuments(),
+      mdb.index('events').deleteAllDocuments(),
+      mdb.index('popularPubkeys').deleteAllDocuments(),
+      mdb.index('pendingOps').deleteAllDocuments()
+    ])
   })
 
   it('should require calcPopularPubkeys job to have run', async () => {
@@ -43,7 +50,7 @@ describe('Job: Maintain Storage Tiers', () => {
     cuckoo.add('pubkey1')
     await mdb.index('popularPubkeys').addDocuments([{
       key: '1',
-      cuckoo: JSON.stringify(cuckoo.saveAsJSON())
+      cuckoo: await packFilter(cuckoo)
     }])
 
     // 3. Setup Stored Event Owner
@@ -59,8 +66,8 @@ describe('Job: Maintain Storage Tiers', () => {
     await new Promise(resolve => setTimeout(resolve, 100))
 
     // Run
-    const worker = setInterval(async () => { try { await processPendingOpsJob.run() } catch {} }, 2000)
-    try { await maintainStorageTiersJob.default.run() } finally { clearInterval(worker) }
+    await maintainStorageTiersJob.default.run()
+    await runPendingOps()
 
     await new Promise(resolve => setTimeout(resolve, 100))
 
@@ -74,7 +81,7 @@ describe('Job: Maintain Storage Tiers', () => {
     assert.ok(results.length > 0)
   })
 
-  it.only('should handle relegation when popularity > 5', async () => {
+  it('should handle relegation when popularity > 5', async () => {
     // 1. Setup Jobs
     await mdb.index('jobs').addDocuments([{ key: 'calcPopularPubkeys', endedAt: 123456 }])
 
@@ -104,14 +111,24 @@ describe('Job: Maintain Storage Tiers', () => {
 
     await new Promise(resolve => setTimeout(resolve, 100))
 
-    // Run
-    const worker = setInterval(async () => { try { await processPendingOpsJob.run() } catch {} }, 2000)
+    // Run with background processor for pendingOps (needed for relegateEvents loop)
+    const runLoop = async () => {
+      try {
+        await runPendingOps()
+      } catch (e) {
+        if (e.code !== 'document_not_found') console.error(e)
+      } finally {
+        if (processor) processor = setTimeout(runLoop, 200)
+      }
+    }
+    let processor = setTimeout(runLoop, 200)
+
     try {
       await maintainStorageTiersJob.default.run()
-    } catch (err) {
-      if (!err.message.includes('timeout')) throw err
     } finally {
-      clearInterval(worker)
+      clearTimeout(processor)
+      processor = null
+      await runPendingOps() // Drain remaining
     }
 
     await new Promise(resolve => setTimeout(resolve, 500)) // Wait for async queueOps/processing?

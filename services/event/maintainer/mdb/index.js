@@ -1,9 +1,8 @@
-import bloomFilters from 'bloom-filters'
+import { unpackFilter } from '#helpers/cuckoo.js'
 import mdb from '#services/db/mdb.js'
 import crypto from 'node:crypto'
 import { primaryKeyToIp, ipToPrimaryKey, isValidPrimaryKey } from '#helpers/mdb.js'
 
-const { CuckooFilter } = bloomFilters
 const ONE_MB = 1024 * 1024
 const EVENT_BATCH_SIZE = 20
 
@@ -48,10 +47,10 @@ async function loadPopularityFilters () {
       const level = parseInt(doc.key)
       if (level >= 1 && level <= 6) {
         if (doc.cuckoo) {
-          popularCuckooFilters[level].normal = CuckooFilter.fromJSON(JSON.parse(doc.cuckoo)) // Assuming JSON stored
+          popularCuckooFilters[level].normal = await unpackFilter(doc.cuckoo)
         }
         if (doc.relegatedCuckoo) {
-          popularCuckooFilters[level].relegated = CuckooFilter.fromJSON(JSON.parse(doc.relegatedCuckoo))
+          popularCuckooFilters[level].relegated = await unpackFilter(doc.relegatedCuckoo)
         }
       }
     }
@@ -196,8 +195,14 @@ const queueOps = (() => {
   // If integration tests are running, process instantly
   return process.env.IS_INTEGRATION_TEST === 'true'
     ? async (ops) => {
+      async function runSingleBatch () {
+        const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+        const processPendingOps = await import('#models/job/jobs/process-pending-ops/index.js')
+        const state = await processPendingOps.loadSystemState()
+        await processPendingOps.processBatch(hits, state)
+      }
       await queueOps(ops)
-      await (await import('#models/job/jobs/process-pending-ops/index.js')).run()
+      await runSingleBatch()
     }
     : queueOps
 })()

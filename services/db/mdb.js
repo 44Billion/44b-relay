@@ -195,7 +195,7 @@ async function init () {
                   return v
                 }
 
-                return waitFn(v.taskUid).then(task => {
+                return waitFn(v.taskUid, { timeout: 60000, interval: process.env.NODE_ENV === 'test' ? 20 : 50 }).then(task => {
                   if (task.status !== 'succeeded') {
                     throw new Error(`Task ${task.status}: ${JSON.stringify(task.error ?? task.canceledBy)}`)
                   }

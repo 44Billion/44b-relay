@@ -1,7 +1,6 @@
 import mdb from '#services/db/mdb.js'
 import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
-import bloomFilters from 'bloom-filters'
-const { CuckooFilter } = bloomFilters
+import { CuckooFilter, packFilter, unpackFilter } from '#helpers/cuckoo.js'
 
 async function run () {
   console.log('Running storage tiers maintenance...')
@@ -20,20 +19,27 @@ async function run () {
   }
 
   const referenceDesc = `calc-${calcJob.endedAt}`
-  const stateKey = `maintenanceState-${calcJob.endedAt}`
+  const stateKey = 'calcPopularPubkeys-current'
 
   // 2. Load or Create State
   let state
   try {
     state = await mdb.index('maintenanceState').getDocument(stateKey)
+
+    if (state.createdAt !== calcJob.endedAt) {
+      const err = new Error('Outdated state')
+      err.code = 'document_not_found'
+      throw err
+    }
+
     state.levelUpdatedCuckooRaw = state.levelUpdatedCuckoo
-      ? CuckooFilter.fromJSON(JSON.parse(state.levelUpdatedCuckoo))
+      ? (await unpackFilter(state.levelUpdatedCuckoo)) || new CuckooFilter(100000, 4, 3)
       : new CuckooFilter(100000, 4, 3) // Large filter for processed PKs
     state.maintenanceDoneCuckooRaw = state.maintenanceDoneCuckoo
-      ? CuckooFilter.fromJSON(JSON.parse(state.maintenanceDoneCuckoo))
+      ? (await unpackFilter(state.maintenanceDoneCuckoo)) || new CuckooFilter(100000, 4, 3)
       : new CuckooFilter(100000, 4, 3)
     state.eventsProcessedCuckooRaw = state.eventsProcessedCuckoo
-      ? CuckooFilter.fromJSON(JSON.parse(state.eventsProcessedCuckoo))
+      ? (await unpackFilter(state.eventsProcessedCuckoo)) || new CuckooFilter(1000000, 4, 3)
       : new CuckooFilter(1000000, 4, 3) // 1 Million events capacity
   } catch (err) {
     if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') {
@@ -125,14 +131,17 @@ async function relegateEvents (pubkey, state, popularityLevel) {
   // Also need to handle 'ip' usage update.
 
   const BATCH = 50
+  let batchCount = 0
+  let offset = 0
 
   while (true) {
     const filter = `pubkey = ${mdb.toMeiliValue(pubkey)} AND ownerType = "pubkey"`
-    // offset 0 so no need to use getDocuments
+    // Use sort and variable offset to ensure progress through the list
     const { hits: events } = await mdb.index('events').search('', {
       filter,
       limit: BATCH,
-      offset: 0
+      offset,
+      sort: ['created_at:asc']
     })
 
     if (events.length === 0) break
@@ -144,12 +153,9 @@ async function relegateEvents (pubkey, state, popularityLevel) {
     })
 
     if (newEvents.length === 0) {
-      // If we found events but they are all in Cuckoo, it means Index hasn't updated yet.
-      // We should probably wait or break to avoid infinite loop if index is stuck?
-      // Or just continue and hope next batch (offset?) -- No, we use offset 0.
-      // If we are stuck on offset 0 with processed events, we are in an infinite loop until index updates.
-      // We can sleep briefly.
-      await new Promise(resolve => setTimeout(resolve, 1000))
+      // If found events are all in Cuckoo, they are either processed (index lag) or false positives.
+      // We advance the offset to break potential infinite loops.
+      offset += BATCH
       continue
     }
 
@@ -198,9 +204,16 @@ async function relegateEvents (pubkey, state, popularityLevel) {
       state.eventsProcessedCuckooRaw.add(primaryKey)
     }
 
+    // Advance offset
+    offset += BATCH
+
     // Periodically save state here too?
     // If we process many batches, we should save state so we don't lose the cuckoo filter additions.
-    await saveState(state)
+    // Optimization: Only save every 10 batches to avoid excessive DB writes and waiting
+    batchCount++
+    if (batchCount % 10 === 0) {
+      await saveState(state)
+    }
   }
 }
 
@@ -209,9 +222,9 @@ async function saveState (state) {
     key: state.key,
     jobKey: state.jobKey,
     createdAt: state.createdAt,
-    levelUpdatedCuckoo: JSON.stringify(state.levelUpdatedCuckooRaw.saveAsJSON()),
-    maintenanceDoneCuckoo: JSON.stringify(state.maintenanceDoneCuckooRaw.saveAsJSON()),
-    eventsProcessedCuckoo: JSON.stringify(state.eventsProcessedCuckooRaw.saveAsJSON())
+    levelUpdatedCuckoo: await packFilter(state.levelUpdatedCuckooRaw),
+    maintenanceDoneCuckoo: await packFilter(state.maintenanceDoneCuckooRaw),
+    eventsProcessedCuckoo: await packFilter(state.eventsProcessedCuckooRaw)
   }])
 }
 
