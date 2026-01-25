@@ -187,6 +187,7 @@ const queueOps = (() => {
         key: crypto.randomUUID(),
         type: op.type,
         data: op.data,
+        ...(![null, undefined].includes(op.source) ? { source: op.source } : {}),
         createdAt: now
       }
     })

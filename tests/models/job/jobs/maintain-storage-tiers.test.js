@@ -81,6 +81,73 @@ describe('Job: Maintain Storage Tiers', () => {
     assert.ok(results.length > 0)
   })
 
+  it('should wait for previous unfinished maintainStorageTiers ops', async () => {
+    // 1. Setup Jobs (prerequisite)
+    await mdb.index('jobs').addDocuments([{ key: 'calcPopularPubkeys', endedAt: 123456 }])
+
+    // 2. Insert a pending op from 'maintainStorageTiers'
+    const opKey = 'previous-op-1'
+    await mdb.index('pendingOps').addDocuments([{
+      key: opKey,
+      type: 'test-op',
+      data: {},
+      createdAt: Date.now(),
+      source: 'maintainStorageTiers'
+    }])
+
+    let jobFinished = false
+    const jobPromise = maintainStorageTiersJob.default.run().then(() => { jobFinished = true })
+
+    // Wait a bit to ensure it reached the check loop
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    // Should still be waiting
+    assert.equal(jobFinished, false, 'Job should be waiting for previous op to clear')
+
+    // 3. Delete the op
+    await mdb.index('pendingOps').deleteDocument(opKey)
+
+    // Wait for the job to notice (it polls every 5s)
+    // We just await the promise
+    await jobPromise
+    assert.equal(jobFinished, true, 'Job should complete after op is cleared')
+  })
+
+  it('should verify tagged source on new pending ops', async () => {
+    // 1. Setup Jobs
+    await mdb.index('jobs').addDocuments([{ key: 'calcPopularPubkeys', endedAt: 123456 }])
+
+    // 2. Setup Stored Event Owner & Event to trigger relegation (which creates pending ops)
+    await mdb.index('storedEventOwners').addDocuments([{
+      key: 'relegatedPubKey',
+      entityType: 'pubkey',
+      popularityLevel: 5,
+      usedBytes: 100
+    }])
+    await mdb.index('events').addDocuments([{
+      ref: 'ev1',
+      pubkey: 'relegatedPubKey',
+      ip: '1.2.3.4',
+      byteSize: 100,
+      ownerType: 'pubkey',
+      kind: 1, created_at: 100, tags: [], content: '', sig: ''
+    }])
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Run job
+    await maintainStorageTiersJob.default.run()
+
+    // Check pendingOps for 'source' before processing them
+    const { hits } = await mdb.index('pendingOps').search('')
+    assert.ok(hits.length > 0)
+    const tierOps = hits.filter(op => op.source === 'maintainStorageTiers')
+    assert.ok(tierOps.length > 0, 'Should have ops with source=maintainStorageTiers')
+
+    // Cleanup
+    await runPendingOps()
+  })
+
   it('should handle relegation when popularity > 5', async () => {
     // 1. Setup Jobs
     await mdb.index('jobs').addDocuments([{ key: 'calcPopularPubkeys', endedAt: 123456 }])

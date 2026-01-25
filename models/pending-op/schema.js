@@ -5,11 +5,13 @@ export default {
     'key',
     'type',
     'data',
-    'createdAt'
+    'createdAt',
+    'source'
   ],
   settings: {
     filterableAttributes: [
-      'type'
+      'type',
+      'source'
     ],
     sortableAttributes: [
       'createdAt'

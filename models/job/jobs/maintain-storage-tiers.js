@@ -38,9 +38,6 @@ async function run () {
     state.maintenanceDoneCuckooRaw = state.maintenanceDoneCuckoo
       ? (await unpackFilter(state.maintenanceDoneCuckoo)) || new CuckooFilter(100000, 4, 3)
       : new CuckooFilter(100000, 4, 3)
-    state.eventsProcessedCuckooRaw = state.eventsProcessedCuckoo
-      ? (await unpackFilter(state.eventsProcessedCuckoo)) || new CuckooFilter(1000000, 4, 3)
-      : new CuckooFilter(1000000, 4, 3) // 1 Million events capacity
   } catch (err) {
     if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') {
       state = {
@@ -48,12 +45,43 @@ async function run () {
         jobKey: 'calcPopularPubkeys',
         createdAt: calcJob.endedAt,
         levelUpdatedCuckooRaw: new CuckooFilter(100000, 4, 3),
-        maintenanceDoneCuckooRaw: new CuckooFilter(100000, 4, 3),
-        eventsProcessedCuckooRaw: new CuckooFilter(1000000, 4, 3)
+        maintenanceDoneCuckooRaw: new CuckooFilter(100000, 4, 3)
       }
     } else {
       throw err
     }
+  }
+
+  // Check for previous pending ops from this job type
+  let lastOp
+  try {
+    const { hits } = await mdb.index('pendingOps').search('', {
+      filter: 'source = "maintainStorageTiers"',
+      sort: ['createdAt:desc'],
+      limit: 1
+    })
+    if (hits.length > 0) {
+      lastOp = hits[0]
+    }
+  } catch (_e) {
+    // ignore
+  }
+
+  if (lastOp) {
+    console.log(`Waiting for previous ops to complete (last op: ${lastOp.key})...`)
+    while (true) {
+      try {
+        await mdb.index('pendingOps').getDocument(lastOp.key)
+        // If found, it means it's still pending
+        await new Promise(resolve => setTimeout(resolve, 5000))
+      } catch (err) {
+        if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') {
+          break // Op is gone, we can proceed
+        }
+        throw err
+      }
+    }
+    console.log('Previous ops completed.')
   }
 
   await loadPopularityFilters()
@@ -145,7 +173,7 @@ async function relegateEvents (pubkey, state, popularityLevel) {
   while (true) {
     const filter = `pubkey = ${mdb.toMeiliValue(pubkey)} AND ownerType = "pubkey"`
     // Use sort and variable offset to ensure progress through the list
-    const { hits: events } = await mdb.index('events').search('', {
+    const { results: events } = await mdb.index('events').getDocuments({
       filter,
       limit: BATCH,
       offset,
@@ -154,22 +182,9 @@ async function relegateEvents (pubkey, state, popularityLevel) {
 
     if (events.length === 0) break
 
-    // Filter out already processed events (due to Meilisearch async indexing lag or restart)
-    const newEvents = events.filter(ev => {
-      const primaryKey = ev.ref
-      return !state.eventsProcessedCuckooRaw.has(primaryKey)
-    })
-
-    if (newEvents.length === 0) {
-      // If found events are all in Cuckoo, they are either processed (index lag) or false positives.
-      // We advance the offset to break potential infinite loops.
-      offset += BATCH
-      continue
-    }
-
     // Group by IP to batch updates
     const eventsByIp = {}
-    for (const ev of newEvents) {
+    for (const ev of events) {
       if (!ev.ip) continue // Should have IP
       if (!eventsByIp[ev.ip]) eventsByIp[ev.ip] = []
       eventsByIp[ev.ip].push(ev)
@@ -195,7 +210,7 @@ async function relegateEvents (pubkey, state, popularityLevel) {
     }
 
     // Decrement usage for PK
-    const totalBytesRemoved = newEvents.reduce((acc, ev) => acc + (ev.byteSize || 0), 0)
+    const totalBytesRemoved = events.reduce((acc, ev) => acc + (ev.byteSize || 0), 0)
     if (totalBytesRemoved > 0) {
       allOps.push({
         type: 'deltaUsage',
@@ -203,14 +218,10 @@ async function relegateEvents (pubkey, state, popularityLevel) {
       })
     }
 
+    allOps.forEach(op => { op.source = 'maintainStorageTiers' })
+
     // Flush all ops in one batch
     await queueOps(allOps)
-
-    // Mark as processed only after successful queueing
-    for (const ev of newEvents) {
-      const primaryKey = ev.ref
-      state.eventsProcessedCuckooRaw.add(primaryKey)
-    }
 
     // Advance offset
     offset += BATCH
@@ -231,8 +242,7 @@ async function saveState (state) {
     jobKey: state.jobKey,
     createdAt: state.createdAt,
     levelUpdatedCuckoo: await packFilter(state.levelUpdatedCuckooRaw),
-    maintenanceDoneCuckoo: await packFilter(state.maintenanceDoneCuckooRaw),
-    eventsProcessedCuckoo: await packFilter(state.eventsProcessedCuckooRaw)
+    maintenanceDoneCuckoo: await packFilter(state.maintenanceDoneCuckooRaw)
   }])
 }
 
