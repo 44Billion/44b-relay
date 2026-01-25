@@ -61,6 +61,12 @@ async function run () {
   const BATCH_SIZE = 100
   let offset = 0
   let processed = 0
+  // By setting a flag the first time a pubkey is not found in the cuckoo filter,
+  // we can skip the filter check for all subsequent pubkeys (since the
+  // processing order is sorted), effectively avoiding false positives
+  // that would otherwise cause valid items to be skipped.
+  let levelUpdateReachedUnprocessed = false
+  let maintenanceReachedUnprocessed = false
 
   while (true) {
     // Iterate storedEventOwners where entityType='pubkey'
@@ -78,7 +84,8 @@ async function run () {
       let { popularityLevel } = ownerDoc
 
       // --- Step 2: Update Popularity Level (if not done) ---
-      if (!state.levelUpdatedCuckooRaw.has(pubkey)) {
+      if (levelUpdateReachedUnprocessed || !state.levelUpdatedCuckooRaw.has(pubkey)) {
+        levelUpdateReachedUnprocessed = true
         const newLevel = getPopularityLevel(pubkey)
 
         // Update DB if changed (or even if not, to sync fields?)
@@ -97,7 +104,8 @@ async function run () {
       }
 
       // --- Step 3: Maintenance (if not done) ---
-      if (!state.maintenanceDoneCuckooRaw.has(pubkey)) {
+      if (maintenanceReachedUnprocessed || !state.maintenanceDoneCuckooRaw.has(pubkey)) {
+        maintenanceReachedUnprocessed = true
         // Check for Relegation
         if (popularityLevel > 5) {
           // Relegation Logic: Move 'pubkey' events to 'ip'
