@@ -3,6 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToBase64 } from '#helpers/base64.js'
 import { eventKinds } from '#constants/event.js'
 import { queueOps } from '#services/event/maintainer/mdb/index.js'
+import { compressAsync } from '#helpers/buffer.js'
 
 // Cache to hold HLL objects in memory before flushing
 // Map<Pubkey, HLL>
@@ -59,9 +60,10 @@ export async function flushRequestedPubkeysToMDB () {
 
   const ops = []
   for (const [pubkey, hll] of currentCache.entries()) {
+    const compressed = await compressAsync(hll.getRegisters())
     ops.push({
       type: 'mergeHll',
-      data: { targetKey: pubkey, hll: bytesToBase64(hll.getRegisters()) }
+      data: { targetKey: pubkey, hll: bytesToBase64(compressed) }
     })
   }
 

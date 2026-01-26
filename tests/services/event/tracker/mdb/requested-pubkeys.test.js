@@ -70,7 +70,8 @@ describe('Requested Pubkeys Tracker', () => {
       assert.equal(ops.length, 1)
       assert.equal(ops[0].type, 'mergeHll')
       assert.equal(ops[0].data.targetKey, 'pubkeyA')
-      assert.match(ops[0].data.hll, /^[A-Za-z0-9+/]+={0,2}$/) // Base64 check
+      // Valid Base64 (URL safe or standard)
+      assert.match(ops[0].data.hll, /^[A-Za-z0-9+/_=-]+$/)
     })
 
     it('should aggregate multiple tracks across flushes', async () => {

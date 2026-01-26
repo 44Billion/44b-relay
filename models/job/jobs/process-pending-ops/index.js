@@ -5,6 +5,7 @@ import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { base64ToBytes, bytesToBase64 } from '#helpers/base64.js'
 import { createCountMinSketch } from '#services/event/tracker/mdb/ip-activity.js'
 import { wait } from '#helpers/timer.js'
+import { compressAsync, decompressAsync } from '#helpers/buffer.js'
 
 const { CountMinSketch } = bloomFilters
 const BATCH_SIZE = 50
@@ -221,16 +222,16 @@ export async function processBatch (results, systemState) {
         if (systemState[targetIndex].has(op.key)) {
           isProcessed = true
         } else {
-          const doc = await getDoc(targetIndex, opTargetKey, () => ({
-            key: opTargetKey, hll: bytesToBase64(new HLL(0).getRegisters()), count: 0
+          const doc = await getDoc(targetIndex, opTargetKey, async () => ({
+            key: opTargetKey, hll: bytesToBase64(await compressAsync(new HLL(0).getRegisters())), count: 0
           }))
 
           if (doc && data.hll) {
-            const existingHll = HLL.newWithRegisters(base64ToBytes(doc.hll), 0)
-            const incomingHll = HLL.newWithRegisters(base64ToBytes(data.hll), 0)
+            const existingHll = HLL.newWithRegisters(await decompressAsync(base64ToBytes(doc.hll)), 0)
+            const incomingHll = HLL.newWithRegisters(await decompressAsync(base64ToBytes(data.hll)), 0)
             existingHll.merge(incomingHll)
 
-            doc.hll = bytesToBase64(existingHll.getRegisters())
+            doc.hll = bytesToBase64(await compressAsync(existingHll.getRegisters()))
             doc.count = existingHll.count()
             docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
           }
