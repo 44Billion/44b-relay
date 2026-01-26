@@ -25,6 +25,7 @@
     "bloom-filters": "^3.0.4",
     "deta": "^1.1.0",
     "dotenv": "^16.0.3",
+    "fast-bloom-filter": "^2.1.1",
     "meilisearch": "^0.55.0",
     "nostr-hll": "^1.0.0",
     "nostr-tools": "^2.19.4",

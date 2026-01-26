@@ -5,9 +5,8 @@ export default {
     'key',
     'jobKey',
     'createdAt',
-    'levelUpdatedCuckoo',
-    'maintenanceDoneCuckoo',
-    'eventsProcessedCuckoo'
+    'levelUpdatedFilter',
+    'maintenanceDoneFilter'
   ],
   settings: {
     filterableAttributes: [

@@ -1,4 +1,4 @@
-import { unpackFilter } from '#helpers/cuckoo.js'
+import { unpackFilter } from '#helpers/bloom.js'
 import mdb from '#services/db/mdb.js'
 import crypto from 'node:crypto'
 import { primaryKeyToIp, ipToPrimaryKey, isValidPrimaryKey } from '#helpers/mdb.js'
@@ -21,7 +21,7 @@ const STORAGE_LIMITS = {
   DEFAULT: 10 * ONE_MB
 }
 
-const popularCuckooFilters = {
+const popularFilters = {
   1: { normal: null, relegated: null },
   2: { normal: null, relegated: null },
   3: { normal: null, relegated: null },
@@ -30,11 +30,11 @@ const popularCuckooFilters = {
   6: { normal: null, relegated: null }
 }
 
-let lastCuckooUpdate = 0
-const CUCKOO_UPDATE_INTERVAL = 10 * 60 * 1000 // 10 minutes cache
+let lastFilterUpdate = 0
+const FILTER_UPDATE_INTERVAL = 10 * 60 * 1000 // 10 minutes cache
 
 async function loadPopularityFilters () {
-  if (Date.now() - lastCuckooUpdate < CUCKOO_UPDATE_INTERVAL && popularCuckooFilters[1].normal) {
+  if (Date.now() - lastFilterUpdate < FILTER_UPDATE_INTERVAL && popularFilters[1].normal) {
     return
   }
 
@@ -46,17 +46,17 @@ async function loadPopularityFilters () {
       // doc.key is the level (e.g., "1", "2")
       const level = parseInt(doc.key)
       if (level >= 1 && level <= 6) {
-        if (doc.cuckoo) {
-          popularCuckooFilters[level].normal = await unpackFilter(doc.cuckoo)
+        if (doc.filter) {
+          popularFilters[level].normal = await unpackFilter(doc.filter)
         }
-        if (doc.relegatedCuckoo) {
-          popularCuckooFilters[level].relegated = await unpackFilter(doc.relegatedCuckoo)
+        if (doc.relegatedFilter) {
+          popularFilters[level].relegated = await unpackFilter(doc.relegatedFilter)
         }
       }
     }
-    lastCuckooUpdate = Date.now()
+    lastFilterUpdate = Date.now()
   } catch (err) {
-    console.error('Failed to load popular cuckoos', err)
+    console.error('Failed to load popular filters', err)
   }
 }
 
@@ -64,8 +64,8 @@ function getPopularityLevel (pubkey) {
   if (process.env.IS_INTEGRATION_TEST === 'true') return 6
 
   for (let level = 1; level <= 5; level++) {
-    const filter = popularCuckooFilters[level]
-    if (filter.normal?.has(pubkey) || filter.relegated?.has(pubkey)) {
+    const filter = popularFilters[level]
+    if (filter.normal?.hasString(pubkey) || filter.relegated?.hasString(pubkey)) {
       return level
     }
   }

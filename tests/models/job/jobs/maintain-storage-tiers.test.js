@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
 import { processBatch, loadSystemState } from '#models/job/jobs/process-pending-ops/index.js'
 import * as maintainStorageTiersJob from '#models/job/jobs/maintain-storage-tiers.js'
-import { CuckooFilter, packFilter } from '#helpers/cuckoo.js'
+import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
 
 const runPendingOps = async () => {
   const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
@@ -46,11 +46,11 @@ describe('Job: Maintain Storage Tiers', () => {
     await mdb.index('jobs').addDocuments([{ key: 'calcPopularPubkeys', endedAt: 123456 }])
 
     // 2. Setup Popular Pubkeys (Level 1 has 'pubkey1')
-    const cuckoo = new CuckooFilter(100, 4, 3)
-    cuckoo.add('pubkey1')
+    const filter = await FastBloomFilter.createOptimal(100, 0.01)
+    filter.addString('pubkey1')
     await mdb.index('popularPubkeys').addDocuments([{
       key: '1',
-      cuckoo: await packFilter(cuckoo)
+      filter: await packFilter(filter)
     }])
 
     // 3. Setup Stored Event Owner

@@ -5,8 +5,8 @@ export default {
   primaryKey: 'key',
   attributes: [
     'key',
-    'cuckoo',
-    'relegatedCuckoo'
+    'filter',
+    'relegatedFilter'
   ],
   settings: {
     displayedAttributes: [

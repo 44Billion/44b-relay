@@ -1,5 +1,5 @@
 import mdb from '#services/db/mdb.js'
-import { CuckooFilter, packFilter } from '#helpers/cuckoo.js'
+import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
 import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
 
 async function snapshotAndResetLiveIndex (
@@ -95,7 +95,7 @@ export async function run () {
   let prevLimit = 0
   for (const t of thresholds) {
     const size = Math.max(t.limit - prevLimit, 100)
-    filters[t.level] = new CuckooFilter(size, 4, 2)
+    filters[t.level] = await FastBloomFilter.createOptimal(size, 0.0001)
     prevLimit = t.limit
   }
 
@@ -127,7 +127,7 @@ export async function run () {
           // Add to the highest priority level matches this rank.
           // Since thresholds are sorted by limit (L1 < L2 < ...), the first match is the correct exclusive range.
           // e.g. Rank 5 fits in L1 (limit 10). Rank 15 misses L1 but fits in L2 (limit 100).
-          filters[t.level].add(doc.key)
+          filters[t.level].addString(doc.key)
           break
         }
       }
@@ -138,7 +138,7 @@ export async function run () {
     offset += limit
   }
 
-  // 4. Create/Update Cuckoo docs
+  // 4. Create/Update Bloom docs
   const docsToSave = []
 
   // Fetch all old docs first to map the transitions
@@ -151,21 +151,21 @@ export async function run () {
 
   for (let level = 1; level <= maxLevels; level++) {
     const filter = filters[level]
-    const filterJson = await packFilter(filter)
+    const packedFilter = await packFilter(filter)
 
     // Determine Relegated Filter (Old Normal of PREVIOUS level)
-    let relegatedCuckoo = null
+    let relegatedFilter = null
     if (level > 1) {
       const prevLevelDoc = oldDocs[String(level - 1)]
-      if (prevLevelDoc && prevLevelDoc.cuckoo) {
-        relegatedCuckoo = prevLevelDoc.cuckoo
+      if (prevLevelDoc && prevLevelDoc.filter) {
+        relegatedFilter = prevLevelDoc.filter
       }
     }
 
     docsToSave.push({
       key: String(level),
-      cuckoo: filterJson,
-      relegatedCuckoo
+      filter: packedFilter,
+      relegatedFilter
     })
   }
 

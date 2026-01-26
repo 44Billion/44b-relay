@@ -1,6 +1,6 @@
 import mdb from '#services/db/mdb.js'
 import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
-import { CuckooFilter, packFilter, unpackFilter } from '#helpers/cuckoo.js'
+import { FastBloomFilter, packFilter, unpackFilter } from '#helpers/bloom.js'
 
 async function run () {
   console.log('Running storage tiers maintenance...')
@@ -32,20 +32,20 @@ async function run () {
       throw err
     }
 
-    state.levelUpdatedCuckooRaw = state.levelUpdatedCuckoo
-      ? (await unpackFilter(state.levelUpdatedCuckoo)) || new CuckooFilter(100000, 4, 3)
-      : new CuckooFilter(100000, 4, 3) // Large filter for processed PKs
-    state.maintenanceDoneCuckooRaw = state.maintenanceDoneCuckoo
-      ? (await unpackFilter(state.maintenanceDoneCuckoo)) || new CuckooFilter(100000, 4, 3)
-      : new CuckooFilter(100000, 4, 3)
+    state.levelUpdatedFilterRaw = state.levelUpdatedFilter
+      ? (await unpackFilter(state.levelUpdatedFilter)) || await FastBloomFilter.createOptimal(100000, 0.0001)
+      : await FastBloomFilter.createOptimal(100000, 0.0001) // Large filter for processed PKs
+    state.maintenanceDoneFilterRaw = state.maintenanceDoneFilter
+      ? (await unpackFilter(state.maintenanceDoneFilter)) || await FastBloomFilter.createOptimal(100000, 0.0001)
+      : await FastBloomFilter.createOptimal(100000, 0.0001)
   } catch (err) {
     if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') {
       state = {
         key: stateKey,
         jobKey: 'calcPopularPubkeys',
         createdAt: calcJob.endedAt,
-        levelUpdatedCuckooRaw: new CuckooFilter(100000, 4, 3),
-        maintenanceDoneCuckooRaw: new CuckooFilter(100000, 4, 3)
+        levelUpdatedFilterRaw: await FastBloomFilter.createOptimal(100000, 0.0001),
+        maintenanceDoneFilterRaw: await FastBloomFilter.createOptimal(100000, 0.0001)
       }
     } else {
       throw err
@@ -89,7 +89,7 @@ async function run () {
   const BATCH_SIZE = 100
   let offset = 0
   let processed = 0
-  // By setting a flag the first time a pubkey is not found in the cuckoo filter,
+  // By setting a flag the first time a pubkey is not found in the filter,
   // we can skip the filter check for all subsequent pubkeys (since the
   // processing order is sorted), effectively avoiding false positives
   // that would otherwise cause valid items to be skipped.
@@ -112,7 +112,7 @@ async function run () {
       let { popularityLevel } = ownerDoc
 
       // --- Step 2: Update Popularity Level (if not done) ---
-      if (levelUpdateReachedUnprocessed || !state.levelUpdatedCuckooRaw.has(pubkey)) {
+      if (levelUpdateReachedUnprocessed || !state.levelUpdatedFilterRaw.hasString(pubkey)) {
         levelUpdateReachedUnprocessed = true
         const newLevel = getPopularityLevel(pubkey)
 
@@ -128,11 +128,11 @@ async function run () {
         // Update local vars for next step
         popularityLevel = newLevel
 
-        state.levelUpdatedCuckooRaw.add(pubkey)
+        state.levelUpdatedFilterRaw.addString(pubkey)
       }
 
       // --- Step 3: Maintenance (if not done) ---
-      if (maintenanceReachedUnprocessed || !state.maintenanceDoneCuckooRaw.has(pubkey)) {
+      if (maintenanceReachedUnprocessed || !state.maintenanceDoneFilterRaw.hasString(pubkey)) {
         maintenanceReachedUnprocessed = true
         // Check for Relegation
         if (popularityLevel > 5) {
@@ -145,7 +145,7 @@ async function run () {
           await queueOps(ops)
         }
 
-        state.maintenanceDoneCuckooRaw.add(pubkey)
+        state.maintenanceDoneFilterRaw.addString(pubkey)
       }
     }
 
@@ -227,7 +227,7 @@ async function relegateEvents (pubkey, state, popularityLevel) {
     offset += BATCH
 
     // Periodically save state here too?
-    // If we process many batches, we should save state so we don't lose the cuckoo filter additions.
+    // If we process many batches, we should save state so we don't lose the filter additions.
     // Optimization: Only save every 10 batches to avoid excessive DB writes and waiting
     batchCount++
     if (batchCount % 10 === 0) {
@@ -241,8 +241,8 @@ async function saveState (state) {
     key: state.key,
     jobKey: state.jobKey,
     createdAt: state.createdAt,
-    levelUpdatedCuckoo: await packFilter(state.levelUpdatedCuckooRaw),
-    maintenanceDoneCuckoo: await packFilter(state.maintenanceDoneCuckooRaw)
+    levelUpdatedFilter: await packFilter(state.levelUpdatedFilterRaw),
+    maintenanceDoneFilter: await packFilter(state.maintenanceDoneFilterRaw)
   }])
 }
 
