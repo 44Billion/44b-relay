@@ -1,13 +1,13 @@
+import { Buffer } from 'buffer'
+import { ConservativeCountMin } from 'sketch-oxide-node'
 import mdb from '#services/db/mdb.js'
 import { pruneEvents } from '#services/event/maintainer/mdb/index.js'
-import bloomFilters from 'bloom-filters'
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { base64ToBytes, bytesToBase64 } from '#helpers/base64.js'
-import { createCountMinSketch } from '#services/event/tracker/mdb/ip-activity.js'
+import { createSketch } from '#services/event/tracker/mdb/ip-activity.js'
 import { wait } from '#helpers/timer.js'
 import { compressAsync, decompressAsync } from '#helpers/buffer.js'
 
-const { CountMinSketch } = bloomFilters
 const BATCH_SIZE = 50
 const MAX_FILL_ATTEMPTS = 2
 const FILL_WAIT_MS = 1500
@@ -196,23 +196,35 @@ export async function processBatch (results, systemState) {
             }
           }
         }
-      } else if (opType === 'mergeCms') {
-        targetIndex = 'ipActivity'
+      } else if (opType === 'mergeSketch') {
+        targetIndex = 'ipActivities'
         ensureIndexInit(targetIndex)
 
         if (systemState[targetIndex].has(op.key)) {
           isProcessed = true
         } else {
           const doc = await getDoc(targetIndex, opTargetKey, () => ({
-            key: opTargetKey, json: JSON.stringify(createCountMinSketch().saveAsJSON())
+            key: opTargetKey, data: createSketch().serialize().toString('base64url')
           }))
 
-          if (doc && data.cms) {
-            const globalCMS = CountMinSketch.fromJSON(JSON.parse(doc.json))
-            const incomingCMS = CountMinSketch.fromJSON(data.cms)
-            globalCMS.merge(incomingCMS)
-            doc.json = JSON.stringify(globalCMS.saveAsJSON())
-            docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
+          if (doc && data.sketch) {
+            let globalSketch
+            try {
+              const decompressed = await decompressAsync(Buffer.from(doc.data, 'base64url'))
+              globalSketch = ConservativeCountMin.deserialize(decompressed)
+            } catch (_err) {
+              globalSketch = createSketch()
+            }
+
+            try {
+              const incomingSketch = ConservativeCountMin.deserialize(await decompressAsync(Buffer.from(data.sketch, 'base64url')))
+              globalSketch.merge(incomingSketch)
+              const recompressed = await compressAsync(globalSketch.serialize())
+              doc.data = recompressed.toString('base64url')
+              docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
+            } catch (err) {
+              console.error('Failed to merge Sketch op', err)
+            }
           }
         }
       } else if (opType === 'mergeHll') {

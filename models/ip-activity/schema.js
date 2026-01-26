@@ -1,11 +1,11 @@
 import { defaultRankingRules } from '#config/mdb.js'
 
 export default {
-  uid: 'ipActivity',
+  uid: 'ipActivities',
   primaryKey: 'key',
   attributes: [
     'key',
-    'json'
+    'data'
   ],
   settings: {
     displayedAttributes: [

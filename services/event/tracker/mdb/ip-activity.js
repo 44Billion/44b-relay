@@ -1,30 +1,28 @@
-import bloomFilters from 'bloom-filters'
+import { Buffer } from 'buffer'
+import { ConservativeCountMin } from 'sketch-oxide-node'
 import mdb from '#services/db/mdb.js'
 import { pruneEvents, queueOps } from '#services/event/maintainer/mdb/index.js'
 import { ipToPrimaryKey, primaryKeyToIp } from '#helpers/mdb.js'
-
-const { CountMinSketch } = bloomFilters
+import { compressAsync, decompressAsync } from '#helpers/buffer.js'
 
 // Configuration for CountMinSketch
 // epsilon: error rate (e.g. 0.001 = 0.1% error)
 // delta: probability of error (e.g. 0.99 = 99% confidence)
-export const CMS_EPSILON = 0.001
-export const CMS_DELTA = 0.99
+export const SKETCH_EPSILON = 0.001
+export const SKETCH_DELTA = 0.99
+export const WINDOW_DURATION = 1000 * 60 * 60 * 24 // 24 Hours
 
-export function createCountMinSketch () {
-  const errorProb = 1 - CMS_DELTA
-  const width = Math.ceil(Math.E / CMS_EPSILON)
-  const depth = Math.ceil(Math.log(1 / errorProb))
-  return new CountMinSketch(width, depth)
+export function createSketch () {
+  return new ConservativeCountMin(SKETCH_EPSILON, 1 - SKETCH_DELTA)
 }
 
 // Local cache
-let localCMS = createCountMinSketch()
+let localSketch = createSketch()
 const lastActiveAtSubmissions = new Map() // IP -> Timestamp
 
 export function trackIpActivity ({ ip }) {
   if (!ip) return
-  localCMS.update(ip)
+  localSketch.update(Buffer.from(ip))
   lastActiveAtSubmissions.set(ip, Date.now())
 }
 
@@ -36,19 +34,20 @@ export async function flushIpActivityToMDB () {
   if (lastActiveAtSubmissions.size === 0) return
 
   // 1. Snapshot and Reset Local State
-  const currentCMS = localCMS
+  const currentSketch = localSketch
   const currentActiveAts = new Map(lastActiveAtSubmissions)
 
-  localCMS = createCountMinSketch()
+  localSketch = createSketch()
   lastActiveAtSubmissions.clear()
 
   // 2. Prepare Ops
   const ops = []
 
-  // CMS Merge Op
+  // Sketch Merge Op
+  const compressedSketch = await compressAsync(currentSketch.serialize())
   ops.push({
-    type: 'mergeCms',
-    data: { targetKey: 'globalCms', cms: currentCMS.saveAsJSON() }
+    type: 'mergeSketch',
+    data: { targetKey: 'sketch-current', sketch: compressedSketch.toString('base64url') }
   })
 
   // IP Activity Updates
@@ -76,19 +75,57 @@ export async function flushIpActivityToMDB () {
 const ONE_DAY = 1000 * 60 * 60 * 24
 
 export async function deleteStaleIps () {
-  let globalCMS
+  let sketchCurrent, sketchPrevious
+
   try {
-    const doc = await mdb.index('ipActivity').getDocument('globalCms')
-    globalCMS = CountMinSketch.fromJSON(JSON.parse(doc.json))
+    const [docCurr, docPrev, docMeta] = await Promise.all([
+      mdb.index('ipActivities').getDocument('sketch-current').catch(() => null),
+      mdb.index('ipActivities').getDocument('sketch-previous').catch(() => null),
+      mdb.index('ipActivities').getDocument('sketch-meta').catch(() => ({ data: JSON.stringify({ lastRotation: 0 }) }))
+    ])
+
+    sketchCurrent = docCurr
+      ? ConservativeCountMin.deserialize(await decompressAsync(Buffer.from(docCurr.data, 'base64url')))
+      : createSketch()
+
+    sketchPrevious = docPrev
+      ? ConservativeCountMin.deserialize(await decompressAsync(Buffer.from(docPrev.data, 'base64url')))
+      : createSketch()
+
+    // Rotation Logic (Sliding Window)
+    // If we passed WINDOW_DURATION, we shift:
+    // Previous <- Current
+    // Current <- New Empty
+    let lastRotation = 0
+    try {
+      lastRotation = JSON.parse(docMeta.data).lastRotation || 0
+    } catch { }
+
+    const now = Date.now()
+
+    if (now - lastRotation > WINDOW_DURATION) {
+      console.log('Rotating IP Activity Sketch Window')
+      const prevSerialized = (await compressAsync(sketchCurrent.serialize())).toString('base64url')
+      const newSerialized = (await compressAsync(createSketch().serialize())).toString('base64url')
+
+      // Apply rotation to DB
+      await Promise.all([
+        mdb.index('ipActivities').addDocuments([{ key: 'sketch-previous', data: prevSerialized }]),
+        mdb.index('ipActivities').addDocuments([{ key: 'sketch-current', data: newSerialized }]),
+        mdb.index('ipActivities').addDocuments([{ key: 'sketch-meta', data: JSON.stringify({ lastRotation: now }) }])
+      ])
+
+      // Update local in-memory reference
+      sketchPrevious = sketchCurrent
+      sketchCurrent = createSketch()
+    }
   } catch (err) {
     if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') return // Nothing to clean
-    console.error('deleteStaleIps: Failed to load global CMS', err)
+    console.error('deleteStaleIps: Failed to load Sketch state', err)
     return
   }
 
   // Iterate over storedEventOwners where entityType = 'ip'
-  // We can't easily filter by "lastActiveAt < X" because X depends on the IP's score.
-  // So we iterate all IPs (or at least those that haven't been active very recently).
   // Optimization: filter `lastActiveAt < now - 3 days` (minimum retention).
 
   const minRetentionDays = 3
@@ -101,10 +138,7 @@ export async function deleteStaleIps () {
 
   while (hasMore) {
     const { results } = await mdb.index('storedEventOwners').getDocuments({
-      filter: [
-        'entityType = "ip"',
-        `lastActiveAt < ${cutoff}`
-      ],
+      filter: ['entityType = "ip"', `lastActiveAt < ${cutoff}`],
       limit: BATCH_SIZE,
       offset
     })
@@ -114,61 +148,48 @@ export async function deleteStaleIps () {
       break
     }
 
-    // We don't increase offset because we delete items, shifting the pagination?
-    // Wait, `storedEventOwners` are DELETED at the end of correct processing.
-    // If we skip deleting one, we must increase offset?
-    // To be safe against infinite loops on non-deleted items:
-    // We collect IDs to delete or skip.
-    // Actually, `pruneEvents` deletes events, but we also need to delete the `storedEventOwner` record itself if it's stale.
-
     let deletedCount = 0
 
     for (const owner of results) {
       const encodedIp = owner.key
-      // If the key is already IP (v6 without dots?), handle gracefully?
-      // Assuming new system only has encoded IPs.
-      // But we can fallback if decoding fails or looks weird (optional)
+      // storedEventOwners keys are base64 encoded IPs (or similar).
+      // We need the raw IP string to query the CMS.
       const ip = primaryKeyToIp(encodedIp)
-
-      // If lastActiveAt is missing, treat as very old
       const lastActive = owner.lastActiveAt || 0
-      const score = globalCMS.count(ip)
+
+      // SLIDING WINDOW SCORE
+      // Sum of Current + Previous
+      const ipBuf = Buffer.from(ip)
+      const currentScore = sketchCurrent.estimate(ipBuf)
+      const prevScore = sketchPrevious.estimate(ipBuf)
+      const score = currentScore + prevScore
+
+      // console.log(`DEBUG: IP ${ip} Score: ${score} (Curr: ${currentScore}, Prev: ${prevScore})`)
 
       // Calculate Retention based on Score (Activity)
       const retentionDays = calculateRetentionDays(score)
       const expirationTime = lastActive + (retentionDays * ONE_DAY)
 
       if (now > expirationTime) {
-        // STALE!
-        // 1. Prune/Promote Events
-        // This will promote popular events to 'pubkey' ownerType and delete the rest.
+        // Stale!
+        // 1. Prune events owned by this IP
+        // This will promote popular events to 'pubkey' ownerType and delete the rest
         await pruneEvents({
           ownerKey: encodedIp,
           ownerType: 'ip',
-          bytesToRemove: Number.MAX_SAFE_INTEGER // Remove everything belonging to this IP
+          bytesToRemove: Number.MAX_SAFE_INTEGER
         })
 
-        // 2. Delete the Owner Record
+        // 2. Delete the IP record itself
         await mdb.index('storedEventOwners').deleteDocuments([encodedIp])
         deletedCount++
-      } else {
-        // Not stale yet (high score saved it)
-        // We'll see it again next time, or we skip it now.
       }
     }
 
-    // If we didn't delete anything in this batch, we must advance offset to avoid loop
+    // Pagination logic
     if (deletedCount === 0) {
       offset += results.length
     } else {
-      // If we deleted some, the next page has shifted.
-      // safest is to keep offset 0 if we assume we are draining the pool of "potential candidates".
-      // But we are searching `lastActiveAt < cutoff`.
-      // The items we merely skipped are still explicitly returned by that query.
-      // So effectively we need to track which ones we processed/skipped to avoid rescanning them in this exact run,
-      // OR we just assume `offset += (results.length - deletedCount)`?
-      // If I delete 10 out of 50. The indices 0-9 are gone. 10-49 shift to 0-39.
-      // So I should have skipped the *remaining* 40.
       offset += (results.length - deletedCount)
     }
   }

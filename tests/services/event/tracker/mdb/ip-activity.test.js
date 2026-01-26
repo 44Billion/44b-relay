@@ -1,10 +1,10 @@
 import { describe, it, mock, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import bloomFilters from 'bloom-filters'
+import { Buffer } from 'buffer'
+import { ConservativeCountMin } from 'sketch-oxide-node'
 import mdb from '#services/db/mdb.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
-
-const { CountMinSketch } = bloomFilters
+import { compressAsync } from '#helpers/buffer.js'
 
 const queueOpsMock = mock.fn()
 const pruneEventsMock = mock.fn()
@@ -33,24 +33,28 @@ describe('IP Activity Tracker', () => {
     // Clear relevant MDB indexes
     try {
       await mdb.index('storedEventOwners').deleteAllDocuments()
-      await mdb.index('ipActivity').deleteAllDocuments()
+      await mdb.index('ipActivities').deleteAllDocuments()
     } catch (_) {}
   })
 
   // Helper to create and save a Global CMS
   const seedGlobalCMS = async (ipsWithCounts) => {
     // 0.001 error rate, 0.999 confidence
-    const cms = new CountMinSketch(Math.ceil(Math.E / 0.001), Math.ceil(Math.log(1 / 0.001)))
+    const cms = new ConservativeCountMin(0.001, 0.001)
 
     for (const [ip, count] of Object.entries(ipsWithCounts)) {
-      for (let i = 0; i < count; i++) cms.update(ip)
+      const buf = Buffer.from(ip)
+      for (let i = 0; i < count; i++) {
+        cms.update(buf)
+      }
     }
 
+    const compressed = await compressAsync(cms.serialize())
     const doc = {
-      key: 'globalCms', // MDB ID
-      json: JSON.stringify(cms.saveAsJSON())
+      key: 'sketch-current', // MDB ID
+      data: compressed.toString('base64url')
     }
-    await mdb.index('ipActivity').addDocuments([doc])
+    await mdb.index('ipActivities').addDocuments([doc])
   }
 
   // Helper to seed IP owners
@@ -140,12 +144,12 @@ describe('IP Activity Tracker', () => {
 
       assert.equal(queueOpsMock.mock.callCount(), 1)
       const ops = queueOpsMock.mock.calls[0].arguments[0]
-      // Expect 2 ops: mergeCms and patchDocumentIfExists (for IP owner)
+      // Expect 2 ops: mergeSketch and patchDocumentIfExists (for IP owner)
       assert.equal(ops.length, 2)
 
-      const cmsOp = ops.find(op => op.type === 'mergeCms')
+      const cmsOp = ops.find(op => op.type === 'mergeSketch')
       assert.ok(cmsOp)
-      assert.equal(cmsOp.data.targetKey, 'globalCms')
+      assert.equal(cmsOp.data.targetKey, 'sketch-current')
 
       const ownerOp = ops.find(op => op.type === 'patchDocumentIfExists')
       assert.ok(ownerOp)

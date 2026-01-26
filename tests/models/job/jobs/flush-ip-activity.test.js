@@ -21,10 +21,10 @@ describe('Job: Flush IP Activity', () => {
     // 3. Assert
     const { results } = await mdb.index('pendingOps').getDocuments()
 
-    // Should have 2 ops: mergeCms and patchDocumentIfExists (activeAt)
+    // Should have 2 ops: mergeSketch and patchDocumentIfExists (activeAt)
     assert.ok(results.length >= 2) // Could be more if logic splits?
 
-    const mergeOp = results.find(op => op.type === 'mergeCms')
+    const mergeOp = results.find(op => op.type === 'mergeSketch')
     const patchOp = results.find(op => op.type === 'patchDocumentIfExists' && op.data.document.entityType === 'ip')
 
     assert.ok(mergeOp)

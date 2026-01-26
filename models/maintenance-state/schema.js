@@ -1,5 +1,5 @@
 export default {
-  uid: 'maintenanceState',
+  uid: 'maintenanceStates',
   primaryKey: 'key',
   attributes: [
     'key',

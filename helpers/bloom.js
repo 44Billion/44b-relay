@@ -14,7 +14,7 @@ export async function packFilter (filter) {
     // Use V8 serialize to preserve types (like TypedArrays) if any
     const buf = serialize(exported)
     const compressed = await compressAsync(buf)
-    return compressed.toString('base64')
+    return compressed.toString('base64url')
   } catch (err) {
     console.warn('Failed to pack bloom filter', err)
     return null
@@ -29,7 +29,7 @@ export async function packFilter (filter) {
 export async function unpackFilter (str) {
   if (!str) return null
   try {
-    const buf = Buffer.from(str, 'base64')
+    const buf = Buffer.from(str, 'base64url')
     const inflated = await decompressAsync(buf)
 
     // Use V8 deserialize

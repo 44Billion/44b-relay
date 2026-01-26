@@ -25,7 +25,7 @@ async function run () {
   // 2. Load or Create State
   let state
   try {
-    state = await mdb.index('maintenanceState').getDocument(stateKey)
+    state = await mdb.index('maintenanceStates').getDocument(stateKey)
 
     if (state.createdAt !== calcJob.endedAt) {
       const err = new Error('Outdated state')
@@ -238,7 +238,7 @@ async function relegateEvents (pubkey, state, popularityLevel) {
 }
 
 async function saveState (state) {
-  await mdb.index('maintenanceState').updateDocuments([{
+  await mdb.index('maintenanceStates').updateDocuments([{
     key: state.key,
     jobKey: state.jobKey,
     createdAt: state.createdAt,

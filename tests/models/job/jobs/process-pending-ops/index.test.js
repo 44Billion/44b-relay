@@ -37,7 +37,7 @@ describe('Job: Process Pending Ops', () => {
   beforeEach(async () => {
     pruneEventsMock.mock.resetCalls()
     // Clear relevant indexes
-    const indexes = ['pendingOps', 'storedEventOwners', 'events', 'ipActivity', 'requestedPubkeys']
+    const indexes = ['pendingOps', 'storedEventOwners', 'events', 'ipActivities', 'requestedPubkeys']
     for (const idx of indexes) {
       await mdb.index(idx).deleteAllDocuments()
     }

@@ -1,15 +1,15 @@
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { Buffer } from 'buffer'
+import { ConservativeCountMin } from 'sketch-oxide-node'
 import mdb from '#services/db/mdb.js'
-import bloomFilters from 'bloom-filters'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
+import { compressAsync } from '#helpers/buffer.js'
 import * as deleteStaleIpsJob from '#models/job/jobs/delete-stale-ips.js'
-
-const { CountMinSketch } = bloomFilters
 
 describe('Job: Delete Stale IPs', () => {
   beforeEach(async () => {
-    await mdb.index('ipActivity').deleteAllDocuments()
+    await mdb.index('ipActivities').deleteAllDocuments()
     await mdb.index('storedEventOwners').deleteAllDocuments()
     // Also clear jobs queue related things if needed? events?
   })
@@ -19,14 +19,18 @@ describe('Job: Delete Stale IPs', () => {
     const now = Date.now()
 
     // 1. Setup Global CMS
-    const cms = new CountMinSketch(10, 5) // Small parameters
+    const cms = new ConservativeCountMin(0.001, 0.001)
     const highScoreIp = '10.0.0.1'
-    for (let i = 0; i < 150; i++) cms.update(highScoreIp) // Score 150 -> retention 30 days
+    const buf = Buffer.from(highScoreIp)
+    for (let i = 0; i < 150; i++) {
+      cms.update(buf)
+    }
 
     // Save CMS
-    await mdb.index('ipActivity').addDocuments([{
-      key: 'globalCms',
-      json: JSON.stringify(cms.saveAsJSON())
+    const compressed = await compressAsync(cms.serialize())
+    await mdb.index('ipActivities').addDocuments([{
+      key: 'sketch-current',
+      data: compressed.toString('base64url')
     }])
 
     // 2. Setup storedEventOwners

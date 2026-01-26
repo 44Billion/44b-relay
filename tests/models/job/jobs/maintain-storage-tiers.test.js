@@ -16,7 +16,7 @@ describe('Job: Maintain Storage Tiers', () => {
   beforeEach(async () => {
     await Promise.all([
       mdb.index('jobs').deleteAllDocuments(),
-      mdb.index('maintenanceState').deleteAllDocuments(),
+      mdb.index('maintenanceStates').deleteAllDocuments(),
       mdb.index('storedEventOwners').deleteAllDocuments(),
       mdb.index('events').deleteAllDocuments(),
       mdb.index('popularPubkeys').deleteAllDocuments(),
@@ -30,7 +30,7 @@ describe('Job: Maintain Storage Tiers', () => {
 
     // Should not create maintenanceState
     try {
-      await mdb.index('maintenanceState').getDocuments() // returns empty list usually
+      await mdb.index('maintenanceStates').getDocuments() // returns empty list usually
       // If it throws on empty, catch.
       // But getDocument would throw.
     } catch (_err) {}
@@ -38,7 +38,7 @@ describe('Job: Maintain Storage Tiers', () => {
     // We can verify by ensuring validation logic returned early.
     // If it ran, it would log or create state.
     // Let's assume if maintenanceState is empty, it didn't run.
-    const { results } = await mdb.index('maintenanceState').getDocuments()
+    const { results } = await mdb.index('maintenanceStates').getDocuments()
     assert.equal(results.length, 0)
   })
 
@@ -79,7 +79,7 @@ describe('Job: Maintain Storage Tiers', () => {
     assert.equal(owner.popularityLevel, 1)
 
     // maintenanceState should exist
-    const { results } = await mdb.index('maintenanceState').getDocuments()
+    const { results } = await mdb.index('maintenanceStates').getDocuments()
     assert.ok(results.length > 0)
   })
 
