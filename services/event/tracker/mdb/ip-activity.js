@@ -20,12 +20,48 @@ export function createSketch () {
 let localSketch = createSketch()
 const lastActiveAtSubmissions = new Map() // IP -> Timestamp
 
+// Global Cache (Read-Only for Spam Detection)
+let cachedGlobalCurrent = createSketch()
+let cachedGlobalPrevious = createSketch()
+let lastCacheUpdate = 0
+let isFetchingCache = false
+const CACHE_TTL = 1000 * 60 * 15 // 15 Minutes
+
 export function trackIpActivity ({ ip }) {
   if (!ip) return
   localSketch.update(Buffer.from(ip))
   lastActiveAtSubmissions.set(ip, Date.now())
 }
 
+export function getIpScore (ip) {
+  if (!ip) return 0
+
+  // Lazy Refresh
+  if (!isFetchingCache && Date.now() - lastCacheUpdate > CACHE_TTL) {
+    isFetchingCache = true
+    refreshGlobalSketches().finally(() => { isFetchingCache = false })
+  }
+
+  const buf = Buffer.from(ip)
+  // Total = Local (Real-time Pending) + Global Current (Synced) + Global Previous (Rolling Window)
+  return localSketch.estimate(buf) + cachedGlobalCurrent.estimate(buf) + cachedGlobalPrevious.estimate(buf)
+}
+
+async function refreshGlobalSketches () {
+  try {
+    const [docCurr, docPrev] = await Promise.all([
+      mdb.index('ipActivities').getDocument('sketch-current').catch(() => null),
+      mdb.index('ipActivities').getDocument('sketch-previous').catch(() => null)
+    ])
+
+    if (docCurr) cachedGlobalCurrent = ConservativeCountMin.deserialize(await decompressAsync(Buffer.from(docCurr.data, 'base64url')))
+    if (docPrev) cachedGlobalPrevious = ConservativeCountMin.deserialize(await decompressAsync(Buffer.from(docPrev.data, 'base64url')))
+
+    lastCacheUpdate = Date.now()
+  } catch (err) {
+    console.error('Failed to refresh global IP sketches', err)
+  }
+}
 // ----------------------------------------------------------------------------
 // Flush Logic (Queue Ops)
 // ----------------------------------------------------------------------------
@@ -196,11 +232,14 @@ export async function deleteStaleIps () {
 }
 
 function calculateRetentionDays (score) {
-  // Configurable Policy:
-  // Score 0-10: 3 days
-  // Score 10-100: 7 days
-  // Score 100-1000: 30 days
-  // Score 1000+: 90 days
+  // Score represents activity (Events published + Subscriptions opened)
+  // over the last ~24-48 hours (Current + Previous Daily Windows).
+  //
+  // Policy:
+  // Score 0-10: 3 days (Transient/Low activity - e.g. < 5 actions/day)
+  // Score 10-100: 7 days (Moderate activity - e.g. casual user)
+  // Score 100-1000: 30 days (High activity - e.g. power user/relay enthusiast)
+  // Score 1000+: 90 days (Very high activity - e.g. bridge/bot/heavy user)
 
   // Using a logarithmic scale or steps
   if (score < 10) return 3

@@ -4,6 +4,11 @@ import { bytesToBase64 } from '#helpers/base64.js'
 import { eventKinds } from '#constants/event.js'
 import { queueOps } from '#services/event/maintainer/mdb/index.js'
 import { compressAsync } from '#helpers/buffer.js'
+import { getIpScore } from './ip-activity.js'
+
+// 50,000 requests per 24h window
+// If an IP exceeds this, their votes for "popularity" are ignored.
+const SPAM_SCORE_THRESHOLD = 50000
 
 // Cache to hold HLL objects in memory before flushing
 // Map<Pubkey, HLL>
@@ -42,6 +47,9 @@ export function getFilterInterests ({ filters }) {
 }
 
 export function trackRequestedPubkeys ({ pubkeys, ip }) {
+  // Spam Mitigation
+  if (getIpScore(ip) > SPAM_SCORE_THRESHOLD) return
+
   for (const pubkey of pubkeys) {
     let hll = requestedPubkeysCache.get(pubkey)
     if (!hll) {

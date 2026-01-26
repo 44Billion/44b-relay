@@ -10,6 +10,13 @@ mock.module('#services/event/maintainer/mdb/index.js', {
   }
 })
 
+// Helper to mock getIpScore
+mock.module('#services/event/tracker/mdb/ip-activity.js', {
+  namedExports: {
+    getIpScore: () => 0 // Always return 0 (not spam)
+  }
+})
+
 // Dynamic import to allow mocking
 const {
   getFilterInterests,
