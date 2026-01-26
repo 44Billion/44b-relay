@@ -20,7 +20,7 @@ describe('Job: Calc Popular Pubkeys', () => {
     // Setup data
     // 1. Seed requestedPubkeys
     const pubkeys = Array.from({ length: 10 }, (_, i) => ({
-      key: `pubkey${i}`,
+      key: i.toString(16).padStart(64, '0'),
       count: (10 - i) * 100, // Descending counts: 1000, 900, ...
       lastSeen: Date.now()
     }))
@@ -75,7 +75,7 @@ describe('Job: Calc Popular Pubkeys', () => {
     // Create staging index if not exists
     await mdb.createIndex(stagingUid, { primaryKey: 'key' })
     await mdb.index(stagingUid).updateSettings({ sortableAttributes: ['count'] })
-    await mdb.index(stagingUid).addDocuments([{ key: 'pk_staging', count: 50 }])
+    await mdb.index(stagingUid).addDocuments([{ key: 'deadbeef00000000000000000000000000000000000000000000000000000000', count: 50 }])
     await new Promise(resolve => setTimeout(resolve, 100))
 
     // Run

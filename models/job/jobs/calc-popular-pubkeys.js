@@ -1,6 +1,7 @@
 import mdb from '#services/db/mdb.js'
 import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
 import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
+import { base16ToBytes } from '#helpers/base16.js'
 
 async function snapshotAndResetLiveIndex (
   liveUid,
@@ -127,7 +128,7 @@ export async function run () {
           // Add to the highest priority level matches this rank.
           // Since thresholds are sorted by limit (L1 < L2 < ...), the first match is the correct exclusive range.
           // e.g. Rank 5 fits in L1 (limit 10). Rank 15 misses L1 but fits in L2 (limit 100).
-          filters[t.level].addString(doc.key)
+          filters[t.level].add(base16ToBytes(doc.key))
           break
         }
       }

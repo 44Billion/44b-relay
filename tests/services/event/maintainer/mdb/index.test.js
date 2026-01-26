@@ -76,7 +76,7 @@ describe('Event Maintainer (MDB)', () => {
     })
 
     it('should handle popular pubkey -> uses pubkey limit', async () => {
-      const pubkey = 'pk_pop'
+      const pubkey = '0000000000000000000000000000000000000000000000000000000000000010'
       const ip = '1.1.1.1'
 
       const result = await maintainer.checkStorageLimitAndPrune({
@@ -97,7 +97,7 @@ describe('Event Maintainer (MDB)', () => {
     })
 
     it('should trigger pruneCheck if usage is near limit', async () => {
-      const pubkey = 'pk_limit'
+      const pubkey = '0000000000000000000000000000000000000000000000000000000000000011'
       const ip = '2.2.2.2'
       const level = 5 // 20 MB limit
       const limit = 20 * 1024 * 1024
@@ -185,7 +185,7 @@ describe('Event Maintainer (MDB)', () => {
     })
 
     it('should delete oldest events for regular pubkey until bytesToRemove is met', async () => {
-      const pubkey = 'pk_delete_test'
+      const pubkey = '0000000000000000000000000000000000000000000000000000000000000012'
       // Seed events
       const events = [
         { id: '1', ref: '1', pubkey, ownerType: 'pubkey', byteSize: 100, created_at: 10 },
@@ -220,8 +220,8 @@ describe('Event Maintainer (MDB)', () => {
 
       const ip = '1.2.3.4'
       const events = [
-        { id: 'ip1', ref: 'ip1', ip, ownerType: 'ip', pubkey: 'pkA', byteSize: 100, created_at: 10 },
-        { id: 'ip2', ref: 'ip2', ip, ownerType: 'ip', pubkey: 'pkB', byteSize: 100, created_at: 20 }
+        { id: 'ip1', ref: 'ip1', ip, ownerType: 'ip', pubkey: 'aaa0000000000000000000000000000000000000000000000000000000000001', byteSize: 100, created_at: 10 },
+        { id: 'ip2', ref: 'ip2', ip, ownerType: 'ip', pubkey: 'bbb0000000000000000000000000000000000000000000000000000000000001', byteSize: 100, created_at: 20 }
       ]
       await mdb.index('events').addDocuments(events)
 

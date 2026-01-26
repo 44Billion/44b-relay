@@ -4,6 +4,7 @@ import mdb from '#services/db/mdb.js'
 import { processBatch, loadSystemState } from '#models/job/jobs/process-pending-ops/index.js'
 import * as maintainStorageTiersJob from '#models/job/jobs/maintain-storage-tiers.js'
 import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
+import { base16ToBytes } from '#helpers/base16.js'
 
 const runPendingOps = async () => {
   const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
@@ -46,8 +47,9 @@ describe('Job: Maintain Storage Tiers', () => {
     await mdb.index('jobs').addDocuments([{ key: 'calcPopularPubkeys', endedAt: 123456 }])
 
     // 2. Setup Popular Pubkeys (Level 1 has 'pubkey1')
+    const pubkey1 = '0000000000000000000000000000000000000000000000000000000000000001'
     const filter = await FastBloomFilter.createOptimal(100, 0.01)
-    filter.addString('pubkey1')
+    filter.add(base16ToBytes(pubkey1))
     await mdb.index('popularPubkeys').addDocuments([{
       key: '1',
       filter: await packFilter(filter)
@@ -56,7 +58,7 @@ describe('Job: Maintain Storage Tiers', () => {
     // 3. Setup Stored Event Owner
     // Initially popularityLevel 5. Should become 1.
     await mdb.index('storedEventOwners').addDocuments([{
-      key: 'pubkey1',
+      key: pubkey1,
       entityType: 'pubkey',
       popularityLevel: 5,
       usedBytes: 100
@@ -73,7 +75,7 @@ describe('Job: Maintain Storage Tiers', () => {
 
     // Assert
     // storedEventOwner should be updated to Level 1
-    const owner = await mdb.index('storedEventOwners').getDocument('pubkey1')
+    const owner = await mdb.index('storedEventOwners').getDocument(pubkey1)
     assert.equal(owner.popularityLevel, 1)
 
     // maintenanceState should exist
@@ -118,15 +120,16 @@ describe('Job: Maintain Storage Tiers', () => {
     await mdb.index('jobs').addDocuments([{ key: 'calcPopularPubkeys', endedAt: 123456 }])
 
     // 2. Setup Stored Event Owner & Event to trigger relegation (which creates pending ops)
+    const relegatedPubKeyHex = '0000000000000000000000000000000000000000000000000000000000DEAD01'
     await mdb.index('storedEventOwners').addDocuments([{
-      key: 'relegatedPubKey',
+      key: relegatedPubKeyHex,
       entityType: 'pubkey',
       popularityLevel: 5,
       usedBytes: 100
     }])
     await mdb.index('events').addDocuments([{
       ref: 'ev1',
-      pubkey: 'relegatedPubKey',
+      pubkey: relegatedPubKeyHex,
       ip: '1.2.3.4',
       byteSize: 100,
       ownerType: 'pubkey',
@@ -159,8 +162,9 @@ describe('Job: Maintain Storage Tiers', () => {
 
     // 3. Setup Stored Event Owner
     // Level 6 (or just not found in levels 1-5, so > 5)
+    const relegatedPubKeyHex = '0000000000000000000000000000000000000000000000000000000000DEAD01'
     await mdb.index('storedEventOwners').addDocuments([{
-      key: 'relegatedPubKey',
+      key: relegatedPubKeyHex,
       entityType: 'pubkey',
       popularityLevel: 5, // Was 5, but now will be Demoted
       usedBytes: 100
@@ -169,7 +173,7 @@ describe('Job: Maintain Storage Tiers', () => {
     // 4. Setup Events for Relegation
     await mdb.index('events').addDocuments([{
       ref: 'ev1',
-      pubkey: 'relegatedPubKey',
+      pubkey: relegatedPubKeyHex,
       ip: '1.2.3.4',
       byteSize: 100,
       ownerType: 'pubkey', // Needs to change to ip
@@ -208,7 +212,7 @@ describe('Job: Maintain Storage Tiers', () => {
     // We can't check delta op easily if it's gone. Check stored usage if possible?
     // storedEventOwners for 'relegatedPubKey' should have 0 bytes (removed)
     // But update is delta.
-    const owner = await mdb.index('storedEventOwners').getDocument('relegatedPubKey')
+    const owner = await mdb.index('storedEventOwners').getDocument(relegatedPubKeyHex)
     assert.equal(owner.usedBytes, 0, 'Usage should be decremented')
   })
 })

@@ -7,19 +7,19 @@ describe('Bloom Filter Helper', () => {
     // 0.0001 => 0.01 false positive rate
     // 0.01 => 1% false positive rate
     const filter = await FastBloomFilter.createOptimal(200, 0.01)
-    filter.addString('item1')
-    filter.addString('item2')
-    filter.addString('item3')
+    filter.add(Buffer.from('item1'))
+    filter.add(Buffer.from('item2'))
+    filter.add(Buffer.from('item3'))
 
     const packed = await packFilter(filter)
     assert.ok(typeof packed === 'string')
     assert.ok(packed.length > 0)
 
     const unpacked = await unpackFilter(packed)
-    assert.equal(unpacked.hasString('item1'), true)
-    assert.equal(unpacked.hasString('item2'), true)
-    assert.equal(unpacked.hasString('item3'), true)
-    assert.equal(unpacked.hasString('item4'), false)
+    assert.equal(unpacked.has(Buffer.from('item1')), true)
+    assert.equal(unpacked.has(Buffer.from('item2')), true)
+    assert.equal(unpacked.has(Buffer.from('item3')), true)
+    assert.equal(unpacked.has(Buffer.from('item4')), false)
   })
 
   it('should handle large filters efficiently', async () => {
@@ -28,7 +28,7 @@ describe('Bloom Filter Helper', () => {
     const items = []
     for (let i = 0; i < 1000; i++) {
       const item = `large-test-${i}`
-      filter.addString(item)
+      filter.add(Buffer.from(item))
       items.push(item)
     }
 
@@ -37,7 +37,7 @@ describe('Bloom Filter Helper', () => {
 
     const unpacked = await unpackFilter(packed)
     for (const item of items) {
-      assert.equal(unpacked.hasString(item), true)
+      assert.equal(unpacked.has(Buffer.from(item)), true)
     }
   })
 

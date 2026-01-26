@@ -2,6 +2,7 @@ import { unpackFilter } from '#helpers/bloom.js'
 import mdb from '#services/db/mdb.js'
 import crypto from 'node:crypto'
 import { primaryKeyToIp, ipToPrimaryKey, isValidPrimaryKey } from '#helpers/mdb.js'
+import { base16ToBytes } from '#helpers/base16.js'
 
 const ONE_MB = 1024 * 1024
 const EVENT_BATCH_SIZE = 20
@@ -63,9 +64,10 @@ async function loadPopularityFilters () {
 function getPopularityLevel (pubkey) {
   if (process.env.IS_INTEGRATION_TEST === 'true') return 6
 
+  const pubkeyBytes = base16ToBytes(pubkey)
   for (let level = 1; level <= 5; level++) {
     const filter = popularFilters[level]
-    if (filter.normal?.hasString(pubkey) || filter.relegated?.hasString(pubkey)) {
+    if (filter.normal?.has(pubkeyBytes) || filter.relegated?.has(pubkeyBytes)) {
       return level
     }
   }

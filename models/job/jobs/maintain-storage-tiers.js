@@ -1,6 +1,7 @@
 import mdb from '#services/db/mdb.js'
 import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
 import { FastBloomFilter, packFilter, unpackFilter } from '#helpers/bloom.js'
+import { base16ToBytes } from '#helpers/base16.js'
 
 async function run () {
   console.log('Running storage tiers maintenance...')
@@ -112,7 +113,7 @@ async function run () {
       let { popularityLevel } = ownerDoc
 
       // --- Step 2: Update Popularity Level (if not done) ---
-      if (levelUpdateReachedUnprocessed || !state.levelUpdatedFilterRaw.hasString(pubkey)) {
+      if (levelUpdateReachedUnprocessed || !state.levelUpdatedFilterRaw.has(base16ToBytes(pubkey))) {
         levelUpdateReachedUnprocessed = true
         const newLevel = getPopularityLevel(pubkey)
 
@@ -128,11 +129,11 @@ async function run () {
         // Update local vars for next step
         popularityLevel = newLevel
 
-        state.levelUpdatedFilterRaw.addString(pubkey)
+        state.levelUpdatedFilterRaw.add(base16ToBytes(pubkey))
       }
 
       // --- Step 3: Maintenance (if not done) ---
-      if (maintenanceReachedUnprocessed || !state.maintenanceDoneFilterRaw.hasString(pubkey)) {
+      if (maintenanceReachedUnprocessed || !state.maintenanceDoneFilterRaw.has(base16ToBytes(pubkey))) {
         maintenanceReachedUnprocessed = true
         // Check for Relegation
         if (popularityLevel > 5) {
@@ -145,7 +146,7 @@ async function run () {
           await queueOps(ops)
         }
 
-        state.maintenanceDoneFilterRaw.addString(pubkey)
+        state.maintenanceDoneFilterRaw.add(base16ToBytes(pubkey))
       }
     }
 

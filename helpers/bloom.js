@@ -52,8 +52,8 @@ export async function unpackFilter (str) {
     const snapshot = deserialize(inflated)
 
     return await FastBloomFilter.import(snapshot)
-  } catch (_err) {
-    // console.warn('Failed to unpack bloom filter', _err)
+  } catch (err) {
+    console.warn('Failed to unpack bloom filter', err)
     return null
   }
 }
