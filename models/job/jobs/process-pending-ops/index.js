@@ -235,16 +235,28 @@ export async function processBatch (results, systemState) {
           isProcessed = true
         } else {
           const doc = await getDoc(targetIndex, opTargetKey, async () => ({
-            key: opTargetKey, hll: bytesToBase64(await compressAsync(new HLL(0).getRegisters())), count: 0
+            key: opTargetKey,
+            hll: bytesToBase64(await compressAsync(new HLL(0).getRegisters())),
+            count: 0,
+            firstSeenAt: Date.now()
           }))
 
           if (doc && data.hll) {
             const existingHll = HLL.newWithRegisters(await decompressAsync(base64ToBytes(doc.hll)), 0)
+            const oldHllCount = existingHll.count()
+
             const incomingHll = HLL.newWithRegisters(await decompressAsync(base64ToBytes(data.hll)), 0)
             existingHll.merge(incomingHll)
 
+            const newHllCount = existingHll.count()
+            const delta = newHllCount - oldHllCount
+
             doc.hll = bytesToBase64(await compressAsync(existingHll.getRegisters()))
-            doc.count = existingHll.count()
+            // instead of `doc.count = existingHll.count()`
+            // this way doc.count serves as a "Recent Popularity Score"
+            // that we can decay, while the HLL continues to track unique
+            // IP deduplication correctly
+            doc.count = (doc.count || 0) + delta
             docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
           }
         }
@@ -308,7 +320,10 @@ export async function processBatch (results, systemState) {
         err.name === 'MeiliSearchCommunicationError' ||
         err.code === 'ECONNREFUSED' ||
         err.code === 'ETIMEDOUT' ||
-        err.code === 'ENOTFOUND'
+        err.code === 'ENOTFOUND' ||
+        err.cause?.code === 'ECONNREFUSED' ||
+        err.cause?.code === 'ETIMEDOUT' ||
+        err.cause?.code === 'ENOTFOUND'
 
       if (isNetworkError) {
         throw err

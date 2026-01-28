@@ -7,8 +7,12 @@ export default {
     'count'
   ],
   settings: {
+    filterableAttributes: [
+      'firstSeenAt'
+    ],
     sortableAttributes: [
-      'count'
+      'count',
+      'firstSeenAt'
     ]
   }
 }

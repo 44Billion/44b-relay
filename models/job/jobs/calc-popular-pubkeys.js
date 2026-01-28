@@ -44,7 +44,8 @@ async function snapshotAndResetLiveIndex (
       console.log(`Swap complete. ${liveUid} is now empty.`)
     }
   } catch (error) {
-    if (error.code === 'index_not_found') {
+    const isNotFound = error.code === 'index_not_found' || error.cause?.code === 'index_not_found'
+    if (isNotFound) {
       console.log('Live index not found, nothing to snapshot.')
       return
     }

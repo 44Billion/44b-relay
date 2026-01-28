@@ -2,6 +2,10 @@ import { describe, it, beforeEach, after, before, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
+import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
+import { compressAsync } from '#helpers/buffer.js'
+import { bytesToBase64 } from '#helpers/base64.js'
+import { sha256 } from '@noble/hashes/sha2.js'
 
 describe('Job: Process Pending Ops', () => {
   let processPendingOps
@@ -195,6 +199,73 @@ describe('Job: Process Pending Ops', () => {
         const code = e.code || (e.cause && e.cause.code) || (e.response && e.response.status === 404 ? 'document_not_found' : undefined)
         assert.equal(code, 'document_not_found')
       }
+    })
+
+    it('should process mergeHll op and update count with delta', async () => {
+      const utf8Encoder = new TextEncoder()
+      const pubkey = 'pk_hll_1'
+      const hll1 = new HLL(12)
+      hll1.add(sha256(utf8Encoder.encode('ip1')))
+      const hllBase64 = bytesToBase64(await compressAsync(hll1.getRegisters()))
+
+      const op = {
+        key: 'op_hll_1',
+        createdAt: Date.now(),
+        type: 'mergeHll',
+        data: {
+          targetKey: pubkey,
+          hll: hllBase64
+        }
+      }
+
+      await mdb.index('pendingOps').addDocuments([op])
+      await runSingleBatch()
+
+      // Verify doc created in requestedPubkeys
+      const doc = await mdb.index('requestedPubkeys').getDocument(pubkey)
+      assert.equal(doc.count, 1) // 1 IP added
+      assert.ok(doc.firstSeenAt > 0)
+
+      // Add another op with NEW IP
+      const hll2 = new HLL(12)
+      hll2.add(sha256(utf8Encoder.encode('ip2')))
+      const otherHllBase64 = bytesToBase64(await compressAsync(hll2.getRegisters()))
+      const op2 = {
+        key: 'op_hll_2',
+        createdAt: Date.now(),
+        type: 'mergeHll',
+        data: {
+          targetKey: pubkey,
+          hll: otherHllBase64
+        }
+      }
+      await mdb.index('pendingOps').addDocuments([op2])
+      await runSingleBatch()
+
+      const doc2 = await mdb.index('requestedPubkeys').getDocument(pubkey)
+      assert.equal(doc2.count, 2) // 1 + 1 (delta) = 2
+
+      // Add another op with SAME IP (idempotency check for count)
+      // Note: In real world, trackRequestedPubkeys protects against this in short term via cache,
+      // but here we check if merge logic handles overlaps by correctly calculating delta.
+      // HLL merge of same content results in same count, so delta should be 0.
+      const hll3 = new HLL(12)
+      hll3.add(sha256(utf8Encoder.encode('ip1')))
+      const anotherHllBase64 = bytesToBase64(await compressAsync(hll3.getRegisters()))
+      const op3 = {
+        key: 'op_hll_3',
+        createdAt: Date.now(),
+        type: 'mergeHll',
+        data: {
+          targetKey: pubkey,
+          hll: anotherHllBase64
+        }
+      }
+      await mdb.index('pendingOps').addDocuments([op3])
+      await runSingleBatch()
+
+      const doc3 = await mdb.index('requestedPubkeys').getDocument(pubkey)
+      assert.equal(doc3.count, 2) // 2 + 0 = 2
     })
 
     it('should process pruneCheck and trigger pruning if limit exceeded', async () => {

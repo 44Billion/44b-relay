@@ -13,7 +13,9 @@ export async function globalSetup () {
   console.log('Starting Global Meilisearch Container...')
   container = await new GenericContainer('getmeili/meilisearch:v1.25')
     .withExposedPorts(7700)
-    .withEnvironment({ MEILI_MASTER_KEY: 'masterKey', MEILI_NO_ANALYTICS: 'true' })
+    .withEnvironment({
+      MEILI_NO_ANALYTICS: 'true'
+    })
     .withWaitStrategy(Wait.forHttp('/health', 7700).withStartupTimeout(40000))
     .start()
 

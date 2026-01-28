@@ -107,7 +107,9 @@ async function init () {
       console.log('Starting Meilisearch Container...')
       const container = await new GenericContainer('getmeili/meilisearch:v1.25')
         .withExposedPorts(7700)
-        .withEnvironment({ MEILI_MASTER_KEY: 'masterKey', MEILI_NO_ANALYTICS: 'true' })
+        .withEnvironment({
+          MEILI_NO_ANALYTICS: 'true'
+        })
         .withWaitStrategy(Wait.forHttp('/health', 7700).withStartupTimeout(40000))
         .start()
 
@@ -136,6 +138,16 @@ async function init () {
   }
 
   let db = new MeiliSearch(config)
+
+  // Enable experimental features
+  const features = await db.getExperimentalFeatures()
+  if (features.editDocumentsByFunction === false) { // it may not have this field
+    if (process.env.NODE_ENV !== 'test') console.log('Enabling experimental editDocumentsByFunction feature...')
+    await db.updateExperimentalFeatures({
+      editDocumentsByFunction: true
+    })
+  }
+
   const constants = {
     maxTotalHits: 1000, // https://www.meilisearch.com/docs/learn/advanced/known_limitations#maximum-number-of-results-per-search
     maxBigIndexes: 20, // https://www.meilisearch.com/docs/learn/advanced/known_limitations#maximum-number-of-indexes-in-an-instance
