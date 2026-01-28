@@ -5,10 +5,11 @@ import { eventKinds } from '#constants/event.js'
 import { queueOps } from '#services/event/maintainer/mdb/index.js'
 import { compressAsync } from '#helpers/buffer.js'
 import { getIpScore } from './ip-activity.js'
+import { shuffle } from '#helpers/array.js'
 
-// 50,000 requests per 24h window
+// 1,000 requests per 24h window (48h now that we use sliding window)
 // If an IP exceeds this, their votes for "popularity" are ignored.
-const SPAM_SCORE_THRESHOLD = 50000
+const SPAM_SCORE_THRESHOLD = 1000
 
 // Cache to hold HLL objects in memory before flushing
 // Map<Pubkey, HLL>
@@ -50,7 +51,9 @@ export function trackRequestedPubkeys ({ pubkeys, ip }) {
   // Spam Mitigation
   if (getIpScore(ip) > SPAM_SCORE_THRESHOLD) return
 
-  for (const pubkey of pubkeys) {
+  // We slice to 50 random pubkeys to avoid a single IP
+  // bloating the requestedPubkeys mdb index
+  for (const pubkey of shuffle(pubkeys).slice(0, 50)) {
     let hll = requestedPubkeysCache.get(pubkey)
     if (!hll) {
       hll = new HLL(0)
