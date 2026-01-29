@@ -1,14 +1,13 @@
 import { bytesToBase16, base16ToBytes } from '#helpers/base16.js'
 
 export function bytesToBase64 (uint8Array) {
-  let base64
-
   if (typeof Buffer === 'function' && typeof Buffer.from === 'function') {
-    base64 = Buffer.from(uint8Array).toString('base64')
-  } else {
-    const binaryString = String.fromCharCode.apply(null, uint8Array)
-    base64 = btoa(binaryString)
+    // Already removes padding
+    return Buffer.from(uint8Array).toString('base64url')
   }
+
+  const binaryString = String.fromCharCode.apply(null, uint8Array)
+  const base64 = btoa(binaryString)
 
   return base64
     .replace(/\+/g, '-') // Replace '+' with '-'
@@ -17,6 +16,11 @@ export function bytesToBase64 (uint8Array) {
 }
 
 export function base64ToBytes (base64Str) {
+  if (typeof Buffer === 'function' && typeof Buffer.from === 'function') {
+    // base64url encoding handles both standard and URL-safe base64
+    return new Uint8Array(Buffer.from(base64Str, 'base64url'))
+  }
+
   // Convert from URL-safe to standard base64 alphabet
   let standardBase64 = base64Str.replace(/-/g, '+').replace(/_/g, '/')
 
@@ -25,18 +29,14 @@ export function base64ToBytes (base64Str) {
   const paddingLength = (4 - (standardBase64.length % 4)) % 4
   standardBase64 += '='.repeat(paddingLength)
 
-  if (typeof Buffer === 'function' && typeof Buffer.from === 'function') {
-    return new Uint8Array(Buffer.from(standardBase64, 'base64'))
-  } else {
-    // In a browser, use the built-in atob function.
-    const binaryString = atob(standardBase64)
-    const len = binaryString.length
-    const bytes = new Uint8Array(len)
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryString.charCodeAt(i)
-    }
-    return bytes
+  // In a browser, use the built-in atob function.
+  const binaryString = atob(standardBase64)
+  const len = binaryString.length
+  const bytes = new Uint8Array(len)
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i)
   }
+  return bytes
 }
 
 export function base16ToBase64 (base16String) {
