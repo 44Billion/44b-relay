@@ -2,13 +2,45 @@ import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
 import * as calcPopularPubkeys from '#models/job/jobs/calc-popular-pubkeys.js'
+import maintenanceStateSchema from '#models/maintenance-state/schema.js'
 
 describe('Job: Calc Popular Pubkeys', () => {
+  async function seedUptime (hoursOfUptime = 24) {
+    const OneHourMs = 1000 * 60 * 60
+    const currentHour = Math.floor(Date.now() / OneHourMs)
+    const docs = []
+    // Fill 24 hours of history
+    for (let i = 1; i <= 24; i++) {
+      if (i <= hoursOfUptime) {
+        docs.push({
+          key: `uptime-${currentHour - i}`,
+          count: 60, // Full uptime
+          type: 'uptime'
+        })
+      }
+    }
+    const index = mdb.index('maintenanceStates')
+    try { await mdb.createIndex('maintenanceStates', { primaryKey: 'key' }) } catch {}
+    if (docs.length > 0) {
+      await index.addDocuments(docs)
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+  }
+
   beforeEach(async () => {
     // Clear relevant indexes
-    await mdb.index('requestedPubkeys').delete()
+    try { await mdb.index('maintenanceStates').delete() } catch {}
+    await mdb.createIndex('maintenanceStates', { primaryKey: 'key' })
+    await mdb.index('maintenanceStates').updateSettings(maintenanceStateSchema.settings)
+    // Wait for settings to apply
+    await new Promise(resolve => setTimeout(resolve, 200))
+
+    await mdb.index('requestedPubkeys').delete().catch(() => {})
     await mdb.createIndex('requestedPubkeys', { primaryKey: 'key' })
     await mdb.index('requestedPubkeys').updateSettings({ sortableAttributes: ['count'] })
+
+    await mdb.index('popularPubkeys').delete().catch(() => {})
+    await mdb.createIndex('popularPubkeys', { primaryKey: 'key' })
   })
 
   it('config should have correct structure', () => {
@@ -16,7 +48,25 @@ describe('Job: Calc Popular Pubkeys', () => {
     assert.equal(typeof calcPopularPubkeys.default.run, 'function')
   })
 
+  it('should skip if uptime is low (< 92%)', async () => {
+    // Seed only 10 hours (approx 41% uptime)
+    await seedUptime(10)
+
+    // Seed some requested pubkeys so we have work to do if it runs
+    await mdb.index('requestedPubkeys').addDocuments([{ key: 'abc', count: 100 }])
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    await calcPopularPubkeys.run()
+
+    // Should NOT have results in popularPubkeys
+    const { results } = await mdb.index('popularPubkeys').getDocuments()
+    assert.equal(results.length, 0)
+  })
+
   it('should run successfully with data', async () => {
+    // Ensure full uptime
+    await seedUptime(24)
+
     // Setup data
     // 1. Seed requestedPubkeys
     const pubkeys = Array.from({ length: 10 }, (_, i) => ({
@@ -63,6 +113,7 @@ describe('Job: Calc Popular Pubkeys', () => {
   })
 
   it('should handle empty live index', async () => {
+    await seedUptime(24)
     await mdb.index('requestedPubkeys').delete().catch(() => {})
     await mdb.createIndex('requestedPubkeys', { primaryKey: 'key' })
     await mdb.index('requestedPubkeys').update({ primaryKey: 'key' })

@@ -56,6 +56,58 @@ async function snapshotAndResetLiveIndex (
 export async function run () {
   console.log('Running daily popular pubkeys calculation...')
 
+  // 0. Check Server Uptime (Last 24h)
+  const hoursToCheck = 24
+  const OneHourMs = 1000 * 60 * 60
+  const currentHour = Math.floor(Date.now() / OneHourMs)
+
+  // We check the *previous* 24 closed hours to determine uptime
+  // e.g. if now is 14:30, we check 13:00 back to yesterday 14:00.
+  // Actually, checking "currentHour - i" (1 to 24) covers the last 24 FULL hours.
+  const keysToCheck = []
+  for (let i = 1; i <= hoursToCheck; i++) {
+    keysToCheck.push(`uptime-${currentHour - i}`)
+  }
+
+  try {
+    const { results } = await mdb.index('maintenanceStates').getDocuments({
+      filter: `key IN [${keysToCheck.map(k => `"${k}"`).join(',')}]`,
+      limit: hoursToCheck + 5 // buffer
+    })
+
+    const totalMinutesUp = results.reduce((sum, doc) => sum + (doc.count || 0), 0)
+    const UPTIME_THRESHOLD = 0.92 // 92% minimum uptime
+    // 92% of 24h * 60m
+    const requiredMinutes = hoursToCheck * 60 * UPTIME_THRESHOLD
+
+    console.log(`Uptime check: ${totalMinutesUp} minutes up in last 24h (Required: ${requiredMinutes})`)
+
+    if (totalMinutesUp < requiredMinutes) {
+      console.warn('Skipping calculation due to low uptime.')
+      return
+    }
+  } catch (err) {
+    if (err.code !== 'index_not_found' && err.cause?.code !== 'index_not_found') {
+      console.error('Failed to check uptime:', err)
+      // We proceed if check fails? Or fail safe?
+      // "skip the running if..." implies safety -> if we can't verify, we might proceed or skip.
+      // Assuming skip if we lack data (uptime system might be new).
+      // But for now, if error (e.g. maintenanceStates index missing), we log and proceed?
+      // Or maybe we treat "no data" as "0 uptime".
+      // Let's treat valid error (network) as blocking, but "missing index" as "no history yet" -> skip?
+      // Actually, if index_not_found, totalMinutesUp will effectively be 0.
+      // Let's just catch and log, and let the code proceed if it was just an empty result set logic?
+      // But getDocuments throws on missing index.
+      // Let's decide: If index missing, uptime is 0, so should skip.
+      // So return.
+      console.warn('Uptime checks failed or index not found. Skipping execution for safety.')
+      return
+    }
+    // If index not found, it means uptime is 0.
+    console.warn('Uptime stats not found. Skipping.')
+    return
+  }
+
   const liveUid = 'requestedPubkeys' // live index
   const stagingUid = 'metricsStagingRequestedPubkeys' // maintenance index
   await snapshotAndResetLiveIndex(liveUid, stagingUid)

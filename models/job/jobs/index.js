@@ -6,6 +6,7 @@ import deleteExpiredEventsConfig from './delete-expired-events.js'
 import flushIpActivityConfig from './flush-ip-activity.js'
 import deleteStaleIpsConfig from './delete-stale-ips.js'
 import decayRequestedPubkeysConfig from './decay-requested-pubkeys.js'
+import trackUptimeConfig from './track-uptime.js'
 
 const jobs = [
   // exampleConfig,
@@ -15,7 +16,8 @@ const jobs = [
   deleteExpiredEventsConfig,
   flushIpActivityConfig,
   deleteStaleIpsConfig,
-  decayRequestedPubkeysConfig
+  decayRequestedPubkeysConfig,
+  trackUptimeConfig
 ]
 
 export default jobs
