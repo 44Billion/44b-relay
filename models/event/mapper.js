@@ -14,18 +14,22 @@ export function idToRef (id) {
   return bytesToBase64(base16ToBytes(id))
 }
 
+export const MAX_INDEXABLE_TAGS = 10
+export const MAX_INDEXABLE_TAG_VALUE_LENGTH = 1000
 export function eventToRecord (event, { language, expiresAt, lastAccessedAt, receivedAt, isContentSearchable = false, fts } = {}) {
   const { id, kind, pubkey, created_at, sig } = event
   const record = { id, kind, pubkey, created_at, sig }
   const now = Math.floor(Date.now() / 1000)
 
   let dTag
+  let isIndexable
   let tagIndex = 0
   for (const [k, v, ...extraValues] of event.tags) {
-    if (/[A-Za-z]/.test(k) && (
-      v !== undefined ||
-      (k === 'd' && kind >= 10000 && kind < 20000) // defaults the value to '' in this case
-    )) {
+    isIndexable = v !== undefined &&
+      v.length <= MAX_INDEXABLE_TAG_VALUE_LENGTH &&
+      /^[A-Za-z]$/.test(k)
+
+    if (isIndexable && (record.indexableTags?.length || 0) < MAX_INDEXABLE_TAGS) {
       (record.indexableTags ??= []).push(`${k} ${v ?? ''}`)
       ;(record.indexableTagExtras ??= []).push([tagIndex, ...extraValues])
     } else {
