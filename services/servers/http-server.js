@@ -65,7 +65,7 @@ export function handleRequest (req, res) {
         if (req.headers.accept === 'application/nostr+json') {
           const relayInformationDocument = {
             name: '44billion.net Relay'.slice(0, 30),
-            description: 'Public Nostr relay focused on privacy and performance.'.slice(0, 100),
+            description: 'A free and sybil-resistant Nostr relay that respects your privacy.'.slice(0, 100),
             icon: 'https://nostr.build/i/53866b44135a27d624e99c6165cabd76ac8f72797209700acb189fce75021f47.jpg',
             pubkey: 'fc7085c383ba71745704bdc1c6efcf7fab0197501de598c5e6c537ac0b32a4cb', // arthurfranca - npub1l3cgtsurhfchg4cyhhqudm70074sr96srhje330xc5m6czej5n9s9q6vs2
             contact: 'https://github.com/arthurfranca',

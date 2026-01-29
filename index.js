@@ -42,6 +42,7 @@ export function handleWebSocketServerConnection (ws, req) {
   })
   relay.handleConnection(ws, req)
 }
+wss.on('connection', handleWebSocketServerConnection)
 
 function logReqRes (req, res) {
   console.log(`${req.method} ${req.url} (fwd: ${req.headers['x-forwarded-for']} - sckt: ${req.socket.remoteAddress})`)
@@ -52,5 +53,9 @@ function logReqRes (req, res) {
 const shouldSpinUpServer = process.env.NODE_ENV === 'development' || process.env.SHOULD_SPIN_UP_SERVER === 'true'
 if (shouldSpinUpServer) {
   server.on('upgrade', handleHttpServerUpgrade)
-  wss.on('connection', handleWebSocketServerConnection)
+}
+
+const shouldStartWorker = process.env.NODE_ENV !== 'test'
+if (shouldStartWorker) {
+  await (await import('#models/job/worker.js')).init()
 }
