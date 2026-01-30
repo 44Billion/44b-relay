@@ -211,18 +211,72 @@ describe('Job Worker (Integration)', () => {
     assert.equal(job.run.mock.callCount(), 1)
   })
 
+  it('should NOT start job if it is currently running', async () => {
+    job.frequency = 60
+    const nowSec = Math.floor(virtualTime / 1000)
+
+    await mdb.index('jobs').addDocuments([{
+      key: jobKey,
+      startedAt: nowSec - 10,     // Started 10s ago
+      endedAt: nowSec - 1000,     // Ended long ago (previous run)
+      heartbeatedAt: nowSec - 10, // Healthy heartbeat
+      lockKey: 'running-process'
+    }])
+    await new Promise(resolve => setTimeout(resolve, 200))
+
+    await init([job])
+
+    // Trigger scheduled job check - jitter is max 60s
+    await tickAndSync(60000 + 1000)
+
+    // Wait for DB read
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    // If it decided to start, it would have called startJob -> wait(2000).
+    // We advance time to see if it grabs lock.
+    await tickAndSync(3000)
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    // Should NOT have run because it considers the other process healthy
+    assert.equal(job.run.mock.callCount(), 0)
+  })
+
+  it('should handle maxDuration overflow (effectively no limit)', async () => {
+    job.maxDuration = Number.MAX_SAFE_INTEGER
+
+    // Ensure record exists and is expired so it starts
+    await mdb.index('jobs').addDocuments([{
+      key: jobKey,
+      startedAt: 0,
+      endedAt: 0,
+      lockKey: 'none'
+    }])
+    await new Promise(resolve => setTimeout(resolve, 200))
+
+    await init([job])
+
+    // Trigger
+    await tickAndSync(60000 + 1000)
+    await new Promise(resolve => setTimeout(resolve, 500))
+    // startJob wait
+    await tickAndSync(3000)
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    assert.equal(job.run.mock.callCount(), 1)
+  })
+
   it('should take over job if heartbeat stopped', async () => {
     job.frequency = 10000
     const nowSec = Math.floor(virtualTime / 1000)
 
     // Condition:
-    // isStalled: (now - heartbeatedAt) >= 90
+    // isStalled: (now - heartbeatedAt) >= 120
 
     await mdb.index('jobs').addDocuments([{
       key: jobKey,
       startedAt: nowSec - 200,
       endedAt: nowSec - 201,
-      heartbeatedAt: nowSec - 100, // 100s ago > 90s tolerance
+      heartbeatedAt: nowSec - 150, // 150s ago > 120s tolerance
       lockKey: 'stalled'
     }])
     await new Promise(resolve => setTimeout(resolve, 200))

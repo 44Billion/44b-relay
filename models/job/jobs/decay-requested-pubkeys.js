@@ -28,12 +28,13 @@ export async function run () {
   const filter = `firstSeenAt < ${twoHoursAgo}`
 
   try {
+    console.log('Decay task enqueued...')
     const task = await index.updateDocumentsByFunction({
       function: fn,
       filter,
       context: { now: Date.now() }
     })
-    console.log(`Decay task enqueued: ${task.taskUid}`)
+    console.log(`Decay task ${task.uid} done with status "${status}"`)
   } catch (err) {
     const isNotFound = err.code === 'index_not_found' || err.cause?.code === 'index_not_found'
     if (isNotFound) {

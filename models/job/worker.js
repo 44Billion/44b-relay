@@ -4,7 +4,7 @@ import { getJobByKey, patchJobByKey, putJobByKey } from './dao.js'
 import { setTimer, wait } from '#helpers/timer.js'
 
 const HEARTBEAT_INTERVAL = 30 // seconds
-const HEARTBEAT_TOLERANCE = 90 // seconds
+const HEARTBEAT_TOLERANCE = 120 // seconds
 const DEFAULT_MAX_DURATION = 12 * 60 * 60 // 12 hours
 
 // For each job:
@@ -88,9 +88,9 @@ async function maybeTriggerJob (job) {
 
   const maxDuration = job.maxDuration || DEFAULT_MAX_DURATION
 
-  const isExpired = !job.manual && ((now - record.endedAt) >= job.frequency)
-  const isRequested = record.requestedAt && record.requestedAt > record.endedAt
   const isRunning = record.endedAt < record.startedAt
+  const isExpired = !isRunning && !job.manual && ((now - record.endedAt) >= job.frequency)
+  const isRequested = record.requestedAt && record.requestedAt > record.endedAt
   const isRunningTooLong = isRunning && (now - record.startedAt) >= maxDuration
   const isStalled = isRunning &&
     (now - (record.heartbeatedAt || record.startedAt)) >= HEARTBEAT_TOLERANCE
@@ -152,7 +152,7 @@ async function startJob (job) {
       heartbeatTimeout = setTimer(heartbeatLoop, HEARTBEAT_INTERVAL * 1000)
     }
 
-    heartbeatTimeout = setTimer(heartbeatLoop, HEARTBEAT_INTERVAL * 1000)
+    heartbeatLoop()
 
     let error
     try {
@@ -166,15 +166,24 @@ async function startJob (job) {
       // connection overhead is very low (they're HTTP agents), unless we would want
       // to rate-limit them, e.g., 50 DB writes/second globally across all threads.
       const maxDuration = (job.maxDuration || DEFAULT_MAX_DURATION) * 1000
-      let timeoutId
-      const timeoutPromise = new Promise((resolve, reject) => {
-        timeoutId = setTimer(() => reject(new Error(`Job timed out after ${maxDuration}ms`)), maxDuration)
-      })
+      const MAX_TIMEOUT_MS = 2147483647 // 2^31 - 1
 
-      try {
-        await Promise.race([job.run(), timeoutPromise])
-      } finally {
-        clearTimeout(timeoutId)
+      // If maxDuration exceeds the max Node.js setTimeout delay, the worker will
+      // bypass the timeout logic and simply run the job indefinitely,
+      // which matches the intent of setting a very high job.maxDuration.
+      if (maxDuration > MAX_TIMEOUT_MS) {
+        await job.run()
+      } else {
+        let timeoutId
+        const timeoutPromise = new Promise((resolve, reject) => {
+          timeoutId = setTimer(() => reject(new Error(`Job timed out after ${maxDuration}ms`)), maxDuration)
+        })
+
+        try {
+          await Promise.race([job.run(), timeoutPromise])
+        } finally {
+          clearTimeout(timeoutId)
+        }
       }
     } catch (err) {
       console.error(err)
