@@ -17,12 +17,17 @@ const SYSTEM_STATE_KEY = '__processingState__'
 const INDEX_CONFIG = {
   events: { pkField: 'ref' },
   storedEventOwners: { pkField: 'key' },
-  ipActivity: { pkField: 'key' },
+  ipActivities: { pkField: 'key' },
   requestedPubkeys: { pkField: 'key' },
   pendingOps: { pkField: 'key' } // Should not be target of ops usually
 }
 
 const KNOWN_INDEXES = Object.keys(INDEX_CONFIG)
+
+const getPkField = (index) => {
+  if (!INDEX_CONFIG[index]?.pkField) throw new Error(`Missing "pkField" config for index: ${index}`)
+  return INDEX_CONFIG[index].pkField
+}
 
 export async function loadSystemState () {
   const state = {}
@@ -151,7 +156,7 @@ export async function processBatch (results, systemState) {
         } else {
           const doc = data.document
           if (doc) {
-            const pkField = INDEX_CONFIG[targetIndex]?.pkField || 'id'
+            const pkField = getPkField(targetIndex)
             docsToAddOrUpdate[targetIndex].set(doc[pkField], doc)
 
             // If we are replacing, make sure we don't delete it
@@ -181,7 +186,7 @@ export async function processBatch (results, systemState) {
           isProcessed = true
         } else {
           const partialDoc = data.document
-          const pkField = INDEX_CONFIG[targetIndex]?.pkField || 'id'
+          const pkField = getPkField(targetIndex)
           const key = partialDoc[pkField]
 
           if (key) {
@@ -348,8 +353,7 @@ export async function processBatch (results, systemState) {
     const keysDel = Array.from(keysToDelete[indexName])
     const processedIds = Array.from(processedOpsInBatch[indexName])
 
-    const config = INDEX_CONFIG[indexName]
-    const pkField = config?.pkField || 'id'
+    const pkField = getPkField(indexName)
 
     if (docs.length === 0 && keysDel.length === 0 && processedIds.length === 0) continue
 
