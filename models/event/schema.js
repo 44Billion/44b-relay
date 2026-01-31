@@ -49,6 +49,7 @@ export default {
       'fts'
     ],
     filterableAttributes: [
+      'ref',
       'id',
       'pubkey',
       'kind',

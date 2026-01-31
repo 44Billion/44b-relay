@@ -8,25 +8,32 @@ export async function getJobByKey (key) {
 
 // Won't add record if it doesn't exist
 export async function patchJobByKey (key, patch) {
-  const record = await mdb.index('jobs').getDocument(key)
-  if (!record) {
-    return { result: null, error: new Error('Job not found'), success: false }
-  }
-
-  return mdb.index('jobs').updateDocuments([{
-    key,
-    ...patch
-  }])
-    .then(() => ({ result: null, error: null, success: true }))
+  return mdb.index('jobs').updateDocumentsByFunction({
+    function: `
+      let keys = context.keys();
+      for key in keys {
+        doc[key] = context[key];
+      }
+      doc
+    `,
+    filter: `key = ${mdb.toMeiliValue(key)}`,
+    context: patch
+  })
+    .then(task => {
+      if (task.details.matchedDocuments === 0 || task.details.editedDocuments === 0) {
+        return { result: null, error: new Error('Job not found'), success: false }
+      }
+      return { result: null, error: null, success: true }
+    })
     .catch(error => ({ result: null, error, success: false }))
 }
 
 // Adds doc if it doesn't exist
-export async function putJobByKey (key, patch) {
-  // MeiliSearch updateDocuments (also addDocuments) acts as upsert
-  return mdb.index('jobs').updateDocuments([{
+export async function putJobByKey (key, data) {
+  // MeiliSearch addDocuments (also updateDocuments) acts as upsert
+  return mdb.index('jobs').addDocuments([{
     key,
-    ...patch
+    ...data
   }])
     .then(() => ({ result: null, error: null, success: true }))
     .catch(error => ({ result: null, error, success: false }))

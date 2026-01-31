@@ -12,22 +12,32 @@ export async function getEventByRef (ref, options = {}) {
 // Good to update metadata such as lastAccessedAt
 // Won't add record if it doesn't exist
 export async function patchEventByRef (ref, patch) {
-  const record = await mdb.index('events').getDocument(ref)
-  if (!record) {
-    return { result: null, error: new Error('Event not found'), success: false }
-  }
-
-  return record.update(patch)
-    .then(() => ({ result: null, error: null, success: true }))
+  return mdb.index('events').updateDocumentsByFunction({
+    function: `
+      let keys = context.keys();
+      for key in keys {
+        doc[key] = context[key];
+      }
+      doc
+    `,
+    filter: `ref = ${mdb.toMeiliValue(ref)}`,
+    context: patch
+  })
+    .then(task => {
+      if (task.details.matchedDocuments === 0 || task.details.editedDocuments === 0) {
+        return { result: null, error: new Error('Event not found'), success: false }
+      }
+      return { result: null, error: null, success: true }
+    })
     .catch(error => ({ result: null, error, success: false }))
 }
 
 // Adds doc if it doesn't exist, i.e., may create a record
 // missing fields for not being present on the patch arg
-export async function putEventByRef (ref, patch) {
-  return mdb.index('events').updateDocuments([{
+export async function putEventByRef (ref, data) {
+  return mdb.index('events').addDocuments([{
     ref,
-    ...patch
+    ...data
   }])
     .then(() => ({ result: null, error: null, success: true }))
     .catch(error => ({ result: null, error, success: false }))
@@ -96,7 +106,7 @@ export async function upsertEvent (event, options = {}) {
 }
 
 function validateEvent (_event) {
-  throw new Error('Not implemented yet')
+  return true
 }
 
 export async function deleteEventsById (ids) {

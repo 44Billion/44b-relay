@@ -74,7 +74,7 @@ describe('Job: Process Pending Ops', () => {
       assert.ok(state.events.has('op1'))
       assert.ok(state.events.has('op2'))
       assert.ok(state.storedEventOwners.has('op3'))
-      assert.equal(state.ipActivity.size, 0)
+      assert.equal(state.ipActivities.size, 0)
     })
   })
 
