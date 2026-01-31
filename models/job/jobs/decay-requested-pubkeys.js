@@ -34,7 +34,7 @@ export async function run () {
       filter,
       context: { now: Date.now() }
     })
-    console.log(`Decay task ${task.uid} done with status "${status}"`)
+    console.log(`Decay task ${task.uid} done with status "${task.status}"`)
   } catch (err) {
     const isNotFound = err.code === 'index_not_found' || err.cause?.code === 'index_not_found'
     if (isNotFound) {

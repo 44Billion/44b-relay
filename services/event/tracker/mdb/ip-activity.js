@@ -117,7 +117,7 @@ export async function deleteStaleIps () {
     const [docCurr, docPrev, docMeta] = await Promise.all([
       mdb.index('ipActivities').getDocument('sketch-current').catch(() => null),
       mdb.index('ipActivities').getDocument('sketch-previous').catch(() => null),
-      mdb.index('ipActivities').getDocument('sketch-meta').catch(() => ({ data: JSON.stringify({ lastRotation: 0 }) }))
+      mdb.index('ipActivities').getDocument('sketch-meta').catch(() => ({ lastRotation: 0 }))
     ])
 
     sketchCurrent = docCurr
@@ -132,11 +132,7 @@ export async function deleteStaleIps () {
     // If we passed WINDOW_DURATION, we shift:
     // Previous <- Current
     // Current <- New Empty
-    let lastRotation = 0
-    try {
-      lastRotation = JSON.parse(docMeta.data).lastRotation || 0
-    } catch { }
-
+    const lastRotation = docMeta.lastRotation || 0
     const now = Date.now()
 
     if (now - lastRotation > WINDOW_DURATION) {
@@ -148,7 +144,7 @@ export async function deleteStaleIps () {
       await Promise.all([
         mdb.index('ipActivities').addDocuments([{ key: 'sketch-previous', data: prevSerialized }]),
         mdb.index('ipActivities').addDocuments([{ key: 'sketch-current', data: newSerialized }]),
-        mdb.index('ipActivities').addDocuments([{ key: 'sketch-meta', data: JSON.stringify({ lastRotation: now }) }])
+        mdb.index('ipActivities').addDocuments([{ key: 'sketch-meta', lastRotation: now }])
       ])
 
       // Update local in-memory reference
