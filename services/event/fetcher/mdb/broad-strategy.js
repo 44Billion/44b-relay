@@ -1,5 +1,4 @@
 import { getEvents } from '#models/event/dao.js'
-import { isAllowedBroadFilter } from '#helpers/subscription.js'
 
 export default class BroadStrategy {
   static doesWorkFor () { return true }
@@ -26,8 +25,10 @@ export default class BroadStrategy {
     }
 
     // Popularity check for broad filters
-    if (isAllowedBroadFilter(filter) && process.env.IS_INTEGRATION_TEST !== 'true') {
-      query.popularityLevel = 6
+    if (filter.isBroad && process.env.IS_INTEGRATION_TEST !== 'true') {
+      if (!filter.includeSpam) {
+        query.popularityLevel = 6
+      }
     }
 
     try {

@@ -1,7 +1,7 @@
 import { isExpiredEvent, /* isReplaceableEvent, */ isEphemeralEvent, isValidEvent /* , getPublishedAt */ } from '#helpers/event.js'
 import { sendCommandResult, sendEvent, sendClosed } from '#helpers/message.js'
 import { nostrClientMessages } from '#constants/message.js'
-import { eventKinds } from '#constants/event.js'
+// import { eventKinds } from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
 // import { fightSpamOnNostrEvent } from '#services/spam-fighter/deta/index.js'
@@ -99,10 +99,10 @@ class EventHandler {
 
     if (this.isBlockedEventKind(event)) return { isBlocked: true, message: 'invalid: event kind not allowed' }
 
-    // don't support emoji reactions
-    if (event.kind === eventKinds.REACTION && !['+', '-'].includes(event.content)) {
-      return { isBlocked: true, message: 'invalid: we don\'t allow this reaction' }
-    }
+    // // don't support emoji reactions
+    // if (event.kind === eventKinds.REACTION && !['+', '-'].includes(event.content)) {
+    //   return { isBlocked: true, message: 'invalid: we don\'t allow this reaction' }
+    // }
 
     return { isBlocked: false, message: '' }
   }
@@ -128,7 +128,7 @@ class EventHandler {
         let shouldRelay = false
         for (const filter of filters) {
           if (doesMatchASubscriptionFilter({ filters: [filter], event })) {
-            if (!filter.isBroad || authorPopularityLevel <= 6) {
+            if (!filter.isBroad || authorPopularityLevel <= 6 || filter.includeSpam || process.env.IS_INTEGRATION_TEST === 'true') {
               shouldRelay = true
               break
             }

@@ -15,6 +15,14 @@ export function isAllowedBroadFilter (filter) {
   )
 }
 
+// NIP-50
+export function extractFilterExtensions (filter) {
+  const extensions = {}
+  extensions.includeSpam = filter.search?.includes('include:spam')
+  if (extensions.includeSpam) filter.search = filter.search.replace(/include:spam/g, '')
+  return extensions
+}
+
 function parseSubscriptionFilters ({ filters }) {
   return filters
     .flat() // in case filters[0] is wrongly [] instead of {}
@@ -95,6 +103,12 @@ function parseSubscriptionFilters ({ filters }) {
         filter.limit >= 0 // 0 will return EOSE and start streaming realtime
       ) {
         ret.limit = Math.min(200, filter.limit) // custom: 200 max limit
+      }
+
+      if (isType(filter.search, 'string')) {
+        const extensions = extractFilterExtensions(filter)
+        Object.assign(ret, extensions)
+        ret.search = filter.search.slice(0, 128) // custom: 128 chars limit
       }
 
       return ret

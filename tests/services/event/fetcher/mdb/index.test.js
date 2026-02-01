@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
 import { eventToRecord } from '#models/event/mapper.js'
 import EventFetcher from '#services/event/fetcher/mdb/index.js'
+import { parseSubscriptionFilters } from '#helpers/subscription.js'
 
 // Helper for valid hex strings
 const pad64 = (s) => s.padStart(64, '0')
@@ -20,7 +21,7 @@ describe('Event Fetcher (MDB)', () => {
   // Helper to seed events directly into MDB
   const seedEvents = async (events) => {
     const docs = events.map(evt => {
-      const record = eventToRecord(evt, { receivedAt: evt.created_at })
+      const record = eventToRecord(evt, { receivedAt: evt.created_at, isContentSearchable: true })
       return {
         ...record,
         byteSize: 100, // Dummy
@@ -130,7 +131,8 @@ describe('Event Fetcher (MDB)', () => {
 
     await seedEvents([popularEvent, unpopularEvent])
 
-    const filters = [{ kinds: [1] }] // Broad filter
+    const filters = parseSubscriptionFilters({ filters: [{ kinds: [1] }] })
+    filters[0].isBroad = true
     const fetched = []
 
     for await (const event of EventFetcher.run(filters)) {
@@ -239,5 +241,80 @@ describe('Event Fetcher (MDB)', () => {
     assert.equal(fetched[0].id, e3.id)
     assert.equal(fetched[1].id, e2.id)
     assert.equal(fetched[2].id, e1.id)
+  })
+
+  it('should include spam events only if search has include:spam', async () => {
+    // We intentionally disable integration test logic to test "production" behavior of popularity check
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      const normalEvent = {
+        id: pad64('10'),
+        pubkey: VALID_PUBKEY,
+        created_at: 1000,
+        kind: 1,
+        tags: [],
+        content: 'normal',
+        sig: VALID_SIG,
+        popularityLevel: 6
+      }
+      const spamEvent = {
+        id: pad64('11'),
+        pubkey: VALID_PUBKEY,
+        created_at: 1100,
+        kind: 1,
+        tags: [],
+        content: 'spam',
+        sig: VALID_SIG,
+        popularityLevel: 999
+      }
+
+      await seedEvents([normalEvent, spamEvent])
+
+      // Broad filter (just kinds) - should return only normal event
+      // We parse filters to mimic ReqHandler behavior where broad detection happens
+      // Note: isAllowedBroadFilter in BroadStrategy relies on env NOT being integration test
+      // and checking filter properties. In test we set a property manually if needed
+      // but BroadStrategy uses isAllowedBroadFilter which checks properties.
+
+      const broadFilter = parseSubscriptionFilters({ filters: [{ kinds: [1], limit: 10 }] })
+      // Manually flag as broad because ReqHandler usually does this
+      broadFilter[0].isBroad = true
+
+      const fetchedNormal = []
+
+      for await (const event of EventFetcher.run(broadFilter)) {
+        fetchedNormal.push(event)
+      }
+      assert.equal(fetchedNormal.length, 1)
+      assert.equal(fetchedNormal[0].id, normalEvent.id)
+
+      // Broad filter with include:spam - should return both
+      const spamFilter = parseSubscriptionFilters({ filters: [{ kinds: [1], limit: 10, search: 'include:spam' }] })
+      spamFilter[0].isBroad = true
+
+      const fetchedSpam = []
+      for await (const event of EventFetcher.run(spamFilter)) {
+        fetchedSpam.push(event)
+      }
+      assert.equal(fetchedSpam.length, 2)
+
+      // Broad filter with include:spam AND other query - should strip include:spam
+      const searchFilter = parseSubscriptionFilters({ filters: [{ kinds: [1], limit: 10, search: 'include:spam normal' }] })
+      searchFilter[0].isBroad = true
+
+      const fetchedSearch = []
+      for await (const event of EventFetcher.run(searchFilter)) {
+        fetchedSearch.push(event)
+      }
+
+      // Should find 'normal' event which is popularity 6.
+      // query becomes "normal". Matching normalEvent.
+      assert.equal(fetchedSearch.length, 1)
+      assert.equal(fetchedSearch[0].id, normalEvent.id)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
   })
 })
