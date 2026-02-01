@@ -19,6 +19,11 @@ const STORAGE_LIMITS = {
   3: 150 * ONE_MB,
   4: 70 * ONE_MB,
   5: 20 * ONE_MB,
+  // Level 6 doesn't have a special limit, cause these
+  // pubkeys are considered on the rise but not yet popular.
+  // Level 6 events are still stored under 'ip' ownership
+  // so they share the same limit as non-popular (999).
+  // Events from pubkeys up to level 6 aren't considered spam.
   DEFAULT: 10 * ONE_MB
 }
 
@@ -65,12 +70,15 @@ function getPopularityLevel (pubkey) {
   if (process.env.IS_INTEGRATION_TEST === 'true') return 6
 
   const pubkeyBytes = base16ToBytes(pubkey)
-  for (let level = 1; level <= 5; level++) {
+  for (let level = 1; level <= 6; level++) {
     const filter = popularFilters[level]
     if (filter.normal?.has(pubkeyBytes) || filter.relegated?.has(pubkeyBytes)) {
       return level
     }
   }
+
+  if (VIP_PUBKEYS.has(pubkey)) return 6
+
   return 999
 }
 
