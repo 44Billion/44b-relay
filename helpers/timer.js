@@ -3,8 +3,13 @@ export function maybeUnref (timer) {
   return timer
 }
 
-export function setTimer (callback, delay) {
-  return maybeUnref(setTimeout(callback, delay))
+export function setTimer (fn, callback, delay) {
+  if (typeof callback !== 'function') {
+    delay = callback
+    callback = fn
+    fn = setTimeout
+  }
+  return maybeUnref(fn(callback, delay))
 }
 
 export function wait (ms) {
