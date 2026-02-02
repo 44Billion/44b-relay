@@ -63,7 +63,7 @@ const nostMessageHandlers = {
   [nostrClientMessages.CLOSE] ({ wss, ws, nostrMessage }) { return CloseHandler.run({ wss, ws, nostrMessage }) }
 }
 
-function limitNostrMessageLength ({ ws, nostrMessage }) {
+export function limitNostrMessageLength ({ ws, nostrMessage }) {
   const nostrClientMessage = nostrMessage[0]
   const { byteLength: msgByteLength } = nostrMessage
   let event
@@ -102,6 +102,17 @@ function limitNostrMessageLength ({ ws, nostrMessage }) {
           } else {
             isInvalid = true
           }
+        } else if (
+          [
+            eventKinds.FOLLOWS,
+            eventKinds.MAIN_APP_BUNDLE,
+            eventKinds.NEXT_APP_BUNDLE,
+            eventKinds.DRAFT_APP_BUNDLE
+          ].includes(event.kind)
+        ) {
+          // A FOLLOWS event with 1000 p tags (NIP-02) can take up to ~128 KB
+          // assuming each tag has a pubkey, relay URL, and petname.
+          isInvalid = msgByteLength > 128 * 1024
         } else {
           // https://github.com/hoytech/strfry/blob/master/strfry.conf#L21
           // maxEventSize = 65536
