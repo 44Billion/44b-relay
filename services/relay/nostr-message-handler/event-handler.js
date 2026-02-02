@@ -4,6 +4,7 @@ import { nostrClientMessages } from '#constants/message.js'
 // import { eventKinds } from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
+import { isAppEvent } from '#helpers/app.js'
 // import { fightSpamOnNostrEvent } from '#services/spam-fighter/deta/index.js'
 import { isAuthenticated } from '#services/relay/authenticator.js'
 import { loadPopularityFilters, getPopularityLevel } from '#services/event/maintainer/mdb/index.js'
@@ -81,6 +82,9 @@ class EventHandler {
   applyCustomRelayRestrictionsToNostrEvent ({ event }) {
     const { ws } = this
     if (
+      // App events are an exception until we implement AUTH on nappup lib
+      // (app uploader CLI)
+      !isAppEvent(event) &&
       event.created_at < (Math.floor(Date.now() / 1000) - 60 * 10) &&
       // Annoying integration test tell use its a fail if we don't let it save 1 week ago events
       process.env.IS_INTEGRATION_TEST !== 'true'
