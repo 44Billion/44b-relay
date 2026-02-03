@@ -25,6 +25,9 @@ class NostrMessageHandler {
 
     if (!nostrMessage) return sendNotice({ ws, message: 'error: failed to parse Nostr message' })
 
+    // Here on top instead of below keeps the connection alive, even if it gets rate limited
+    ws.nostr.lastActiveAtMs = Date.now()
+
     // TODO: assess https://github.com/nostr-protocol/nips/issues/177
     // "[...] (to) remove the key-weakening concern of mined public keys,
     // A relay could require keys to be whitelisted in order to write events.
@@ -38,7 +41,6 @@ class NostrMessageHandler {
     const handleFn = nostMessageHandlers[nostrMessage[0]]
     if (!handleFn) return
 
-    ws.nostr.lastActiveAtMs = Date.now()
     handleFn({ wss, ws, nostrMessage })
   }
 

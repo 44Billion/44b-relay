@@ -167,5 +167,23 @@ describe('NostrMessageHandler', () => {
 
       assert.ok(blockedCount > 0, 'Should have blocked some requests due to rate limiting')
     })
+
+    it('should update lastActiveAtMs even if request is rate limited', async () => {
+      const ws = createWs()
+      wss.clients.add(ws)
+
+      const start = Date.now()
+      // Wait 1ms to ensure strict inequality
+      await new Promise(resolve => setTimeout(resolve, 1))
+
+      // Trigger rate limit
+      for (let i = 0; i < 50; i++) {
+        const nostrMessage = ['AUTH', { kind: 22242 }]
+        const handler = new NostrMessageHandler({ wss, ws, nostrMessage })
+        handler.run()
+      }
+
+      assert.ok(ws.nostr.lastActiveAtMs > start, 'Should have updated activity timestamp')
+    })
   })
 })

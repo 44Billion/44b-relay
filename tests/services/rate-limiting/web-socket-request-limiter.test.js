@@ -168,5 +168,19 @@ describe('WebSocket Request Limiter', () => {
       mock.timers.tick(1000 * 60 * 3) // another 3 minutes pass (from the moment first timeout fired)
       assert.equal(ws.close.mock.callCount(), 1, 'Should close after 3 minutes from rescheduling')
     })
+
+    it('should cleanup timeout reference when active subscriptions exist', () => {
+      const ws = {
+        nostr: { subscriptions: { sub1: {} } },
+        close: mock.fn()
+      }
+
+      limiter.disconnectWhenInactive(ws)
+
+      mock.timers.tick(1000 * 60 * 3)
+
+      assert.equal(ws.close.mock.callCount(), 0)
+      assert.equal(ws.nostr.inactivityTimeout, undefined, 'Should have deleted timeout reference')
+    })
   })
 })

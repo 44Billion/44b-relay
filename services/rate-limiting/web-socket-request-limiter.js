@@ -56,7 +56,10 @@ function disconnectWhenInactive (ws) {
   if (ws.nostr.inactivityTimeout) return
   const then = Date.now()
   ws.nostr.inactivityTimeout = maybeUnref(setTimeout(() => {
-    if (Object.keys(ws.nostr.subscriptions).length > 0) return // will reset timeout on close
+    if (Object.keys(ws.nostr.subscriptions).length > 0) {
+      delete ws.nostr.inactivityTimeout
+      return // will reset timeout on close: services/relay/nostr-message-handler/close-handler.js#L16
+    }
     if (ws.nostr.lastActiveAtMs > then) {
       delete ws.nostr.inactivityTimeout
       return disconnectWhenInactive(ws)

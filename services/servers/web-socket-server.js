@@ -32,8 +32,14 @@ wss.on('connection', (ws, req) => {
 export function truncateWsMessage (data) {
   if (typeof data !== 'string') return data
 
+  let json
   try {
-    const json = JSON.parse(data)
+    json = JSON.parse(data)
+  } catch {
+    return data.length > 140 ? `${data.slice(0, 140)}...(${data.length})` : data
+  }
+
+  try {
     if (Array.isArray(json) && json[0] === 'EVENT' && typeof json[1] === 'object') {
       const event = json[1]
 
@@ -61,6 +67,7 @@ export function truncateWsMessage (data) {
       return JSON.stringify([json[0], event])
     }
   } catch (err) {
+    if (process.env.NODE_ENV === 'test') throw err
     console.error('Error parsing WS message for truncation:', err)
   }
 
