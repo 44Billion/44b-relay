@@ -2,7 +2,7 @@ import { getFilterInterests, uninterestedIn, trackRequestedPubkeys } from '#serv
 import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import { sendEvent, sendEose, sendClosed } from '#helpers/message.js'
 // import { isAuthenticated, requestAuthentication } from '#services/relay/authenticator.js'
-import { parseSubscriptionFilters, isAllowedBroadFilter } from '#helpers/subscription.js'
+import { parseSubscriptionFilters, isBroadFilter, isAllowedEvenIfBroadFilter } from '#helpers/subscription.js'
 // import { eventKinds } from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { isType } from '#helpers/shared.js'
@@ -43,8 +43,8 @@ class ReqHandler {
 
       let isBlocked, message
       for (const filter of filters) {
-        filter.isBroad = isAllowedBroadFilter(filter)
-        ;({ isBlocked, message } = applyCustomRelayRestrictionsToNostrFilter({ ws, filter, _isAllowedBroadFilter: filter.isBroad }))
+        filter.isBroad = isBroadFilter(filter)
+        ;({ isBlocked, message } = applyCustomRelayRestrictionsToNostrFilter({ ws, filter, isBroad: filter.isBroad }))
         if (isBlocked) {
           // hasn't awaited anything (not async), so won't check replaceAtMs (hasNoFutureSubscriptionReplaceRequest)
           deleteSubscription({ ws, subscriptionId })
@@ -146,18 +146,8 @@ function blockHighFilterCount ({ ws, subscriptionId, filters }) {
 //   return { isIgnored }
 // }
 
-function isScraper (filter) {
-  let precision = 0
-  if (filter.ids?.length) precision += 2
-  if (filter.authors?.length) precision += 1
-  if (filter.kinds?.length) precision += 1
-  if (Object.entries(filter).some(([k, v]) => k.startsWith('#') && v?.length)) precision += 1
-
-  return precision < 2
-}
-
-function applyCustomRelayRestrictionsToNostrFilter ({ /* ws, */ filter, _isAllowedBroadFilter = isAllowedBroadFilter(filter) }) {
-  if (!_isAllowedBroadFilter && isScraper(filter)) return { isBlocked: true, message: 'error: overly broad filters are not allowed.' }
+function applyCustomRelayRestrictionsToNostrFilter ({ /* ws, */ filter, isBroad = isBroadFilter(filter) }) {
+  if (isBroad && !isAllowedEvenIfBroadFilter(filter)) return { isBlocked: true, message: 'error: overly broad filters are not allowed.' }
 
   // For now, Ignore Harvest Now, Decrypt Later (HNDL) attacks
   // (storing encrypted DMs for later decryption when having the key)

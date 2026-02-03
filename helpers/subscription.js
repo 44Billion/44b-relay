@@ -5,14 +5,33 @@ const isSingleLetterTagRegExp = /^#[A-Za-z]$/
 const isTagQuery = key => isSingleLetterTagRegExp.test(key)
 
 // We allow these broad filters now by returning less spammy events (of popularity <= 6)
-export function isAllowedBroadFilter (filter) {
-  if (process.env.IS_INTEGRATION_TEST === 'true') return true
+// These cover relay-based feed (just chosen kinds),
+// topic-based feeds (#t + kinds), category-based feeds (#l + kinds),
+// replies (#e/a/i + kinds) and notifications (#p with or without kinds) use-cases
+// There may be other use-cases we don't see yet involving other indexable tags but #d
+// so intead of /^#[aeilpt]$/i.test(k) we accept any one letter tag except #d
+export function isAllowedEvenIfBroadFilter (filter) {
   return (
     // specific kinds or
     !!filter.kinds?.length ||
     // referencing authors, ids, addresses, or external entities
-    Object.entries(filter).some(([k, v]) => v?.length && /^#[aeip]$/i.test(k))
+    Object.entries(filter).some(([k, v]) => v?.length && /^#[A-Za-ce-z]$/.test(k))
   )
+}
+
+export function isBroadFilter (filter) {
+  if (process.env.IS_INTEGRATION_TEST === 'true') return false
+  let precision = 0
+  if (filter.ids?.length) precision += 2
+  if (filter.authors?.length) precision += 1
+  if (filter.kinds?.length) {
+    precision += 1
+    if (Object.entries(filter).some(([k, v]) => k === '#d' && v?.length)) precision += 1
+  } else {
+    if (Object.entries(filter).some(([k, v]) => k.startsWith('#') && v?.length)) precision += 1
+  }
+
+  return precision < 2
 }
 
 // NIP-50
@@ -139,13 +158,14 @@ function doesMatchASubscriptionFilter ({ filters, event }) {
     // "From the Minds side, we will create initial keypairs for ALL users (as is working right now),
     // but we will allow users to set their root pubkey"
     if (filter.authors?.length > 0) {
-      const delegatorPubkey = event.tags.find(v => v[0] === eventTags.DELEGATION)?.[1] ?? ''
-      if (
-        !filter.authors.some(v =>
-          // won't use exactly as NIP: event.pubkey.startsWith(v) || delegatorPubkey.startsWith(v)
-          delegatorPubkey ? delegatorPubkey.startsWith(v) : event.pubkey.startsWith(v)
-        )
-      ) return false
+      if (filter.authors.every(v => !event.pubkey.startsWith(v))) return false
+      // const delegatorPubkey = event.tags.find(v => v[0] === eventTags.DELEGATION)?.[1] ?? ''
+      // if (
+      //   !filter.authors.some(v =>
+      //     // won't use exactly as NIP: event.pubkey.startsWith(v) || delegatorPubkey.startsWith(v)
+      //     delegatorPubkey ? delegatorPubkey.startsWith(v) : event.pubkey.startsWith(v)
+      //   )
+      // ) return false
     }
 
     // #e, #p and NIP-12: Generic Tag Queries
