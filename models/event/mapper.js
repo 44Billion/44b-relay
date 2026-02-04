@@ -3,6 +3,7 @@ import { maxDateNowSeconds } from '#config/mdb.js'
 import { bytesToBase64 } from '#helpers/base64.js'
 import { base16ToBytes } from '#helpers/base16.js'
 import { sha256 } from '@noble/hashes/sha2.js'
+import { eventKinds } from '#constants/event.js'
 
 const textEncoder = new TextEncoder()
 export function addressToRef ({ address, kind, pubkey, dTag }) {
@@ -13,6 +14,36 @@ export function addressToRef ({ address, kind, pubkey, dTag }) {
 export function idToRef (id) {
   return bytesToBase64(base16ToBytes(id))
 }
+
+const eventKindsToIgnoreIndexableTags = {
+  [eventKinds.FOLLOWS]: true,
+  [eventKinds.MUTE_LIST]: true,
+  [eventKinds.READ_WRITE_RELAYS]: true,
+  [eventKinds.PINNED_NOTES]: true,
+  [eventKinds.BOOKMARKS]: true,
+  [eventKinds.COMMUNITIES]: true,
+  [eventKinds.PUBLIC_CHATS]: true,
+  [eventKinds.SIMPLE_GROUPS]: true,
+  [eventKinds.RELAY_FEEDS]: true,
+  [eventKinds.INTERESTS]: true,
+  [eventKinds.MEDIA_FOLLOWS]: true,
+  [eventKinds.EMOJIS]: true,
+  [eventKinds.GOOD_WIKI_AUTHORS]: true,
+  [eventKinds.FOLLOW_SET]: true,
+  [eventKinds.BOOKMARK_SET]: true,
+  [eventKinds.CURATION_SET]: true,
+  [eventKinds.VIDEO_CURATION_SET]: true,
+  [eventKinds.PICTURE_CURATION_SET]: true,
+  [eventKinds.KIND_MUTE_SET]: true,
+  [eventKinds.INTEREST_SET]: true,
+  [eventKinds.RELEASE_ARTIFACT_SET]: true,
+  [eventKinds.APP_CURATION_SET]: true,
+  [eventKinds.CALENDAR]: true,
+  [eventKinds.STARTER_PACK]: true,
+  [eventKinds.MEDIA_STARTER_PACK]: true,
+  [eventKinds.LIST]: true
+}
+const almostAlwaysIndexableTags = new Set(['d', 'k'])
 
 export const MAX_INDEXABLE_TAGS = 10
 export const MAX_INDEXABLE_TAG_VALUE_LENGTH = 1000
@@ -27,7 +58,11 @@ export function eventToRecord (event, { language, expiresAt, lastAccessedAt, rec
   for (const [k, v, ...extraValues] of event.tags) {
     isIndexable = v !== undefined &&
       v.length <= MAX_INDEXABLE_TAG_VALUE_LENGTH &&
-      /^[A-Za-z]$/.test(k)
+      /^[A-Za-z]$/.test(k) &&
+      // The "k" tag is always indexable because some NIP-50 lists
+      // that allow many event kinds may use it to tell which
+      // kinds are included in the list.
+      (!eventKindsToIgnoreIndexableTags[kind] || almostAlwaysIndexableTags.has(k))
 
     if (isIndexable && (record.indexableTags?.length || 0) < MAX_INDEXABLE_TAGS) {
       (record.indexableTags ??= []).push(`${k} ${v ?? ''}`)

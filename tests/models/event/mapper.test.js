@@ -87,6 +87,27 @@ describe('Event Mapper', () => {
       assert.equal(record.nonIndexableTags.length, 5) // The rest
     })
 
+    it('should ignore indexable tags for specific kinds, except for "k" tag', () => {
+      const event = {
+        ...baseEvent,
+        kind: 10003, // BOOKMARKS
+        tags: [
+          ['a', 'example1'],
+          ['e', 'example2'],
+          ['k', '1']
+        ]
+      }
+      const record = eventToRecord(event)
+
+      // Only 'k' should be indexable for kind 10003
+      assert.equal(record.indexableTags.length, 1)
+      assert.equal(record.indexableTags[0], 'k 1')
+
+      assert.equal(record.nonIndexableTags.length, 2)
+      assert.deepEqual(record.nonIndexableTags[0], ['a', 'example1'])
+      assert.deepEqual(record.nonIndexableTags[1], ['e', 'example2'])
+    })
+
     it('should handle expiration tags correctly', () => {
       const event = {
         ...baseEvent,
