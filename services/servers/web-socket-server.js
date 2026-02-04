@@ -6,27 +6,45 @@ import { setTimer } from '#helpers/timer.js'
 const wss = new WebSocketServer({
   noServer: true,
   // https://github.com/hoytech/strfry/blob/master/src/apps/relay/golpe.yaml#L39
-  maxPayload: 131072 // 64 * 1024 // 8 * 1024 // 136 * 1024 // 8 kb note plus 128 kb data image
+  // Messages over this size produce an error event on the ws instance
+  maxPayload: 131072, // 512 * 1024 // 64 * 1024 // 8 * 1024 // 136 * 1024 // 8 kb note plus 128 kb data image
+  perMessageDeflate: false
 })
 addToCleanup(() => wss.close())
 
 const heartBeatInterval = setTimer(setInterval, function () {
   wss.clients.forEach(function (ws) {
-    if (ws.isAlive === false) return ws.terminate()
+    if (ws.isAlive === false) {
+      console.log('Terminating dead connection', ws.ip)
+      return ws.terminate()
+    }
 
     ws.isAlive = false
     ws.ping() // Pong messages are automatically sent in response to ping messages as required by the spec
   })
 }, 30000)
 
+// The close code and reason are set by the other peer via a close frame
+// When not using custom close codes, anything different from 1000 or 1005
+// indicates that connection was not cleanly closed.
+// https://www.rfc-editor.org/rfc/rfc6455.html#section-7.4.1
+function wasClean (code) {
+  return code === undefined || code === 1000 || code === 1005 // || (code >= 3000 && code <= 4999)
+}
 wss.on('connection', (ws, req) => {
   ws.ip = getIp(req)
   ws.isAlive = true
 
   ws.addEventListener('pong', function heartbeat () { this.isAlive = true })
   ws.addEventListener('error', error => { console.error(`Oops! Received this error: ${error}`) })
-  ws.addEventListener('message', ({ data }) => { console.log(`[RECV]: ${data.byteLength === undefined ? truncateWsMessage(data) : `${data.byteLength} Buffer bytes`}`) })
-  ws.addEventListener('close', function () { console.log('disconnected', Object.keys(this.nostr.subscriptions).join(', ')) })
+  ws.addEventListener('message', ({ data }) => {
+    ws.isAlive = true
+    console.log(`[RECV]: ${data.byteLength === undefined ? truncateWsMessage(data) : `${data.byteLength} Buffer bytes`}`)
+  })
+  ws.addEventListener('close', function ({ code, reason }) {
+    console.log(`disconnected (${wasClean(code) ? 'clean' : 'unclean'})- code:${code}, reason: ${reason || '<none>'
+    }, subs: ${Object.keys(this.nostr.subscriptions).join(', ') || '<none>'}`)
+  })
 })
 
 export function truncateWsMessage (data) {
