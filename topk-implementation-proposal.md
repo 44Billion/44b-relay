@@ -73,5 +73,13 @@ We could instead use an easier to serialize algo such as [Misra–Gries heavy hi
 1. Topk won't help with setting the rank for up to 50% of the pubkeys as we do today, which we use for broad filter responses. It would only assign ranks to the top x% pubkeys up until the top k max fixed number of pubkeys set (the k variable when instantiating the data structure), so x varies.
 We could use our custom TopP instead, which combines Count-Min Sketch with HLL and would allow us to
 atleast rank pubkeys outside of the "Candidates" (effectively the topk). See top-k.js or top-p.js services.
+We could still use TopK if we make the k variable grow or shrink on the next run based of previous runs
+so that it ends up being closer to the target percentage.
 
 2. Both TopK and TopP would have lower sybil-resistance.
+
+## Extra
+
+If top 10-50% pubkeys as popularity level 6 as we do today doesn't prove being that great
+to cut off spam. We could instead target top 10-50% of requests, that would probably translate
+to much less than that percentage of pubkeys.

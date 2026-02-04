@@ -78,4 +78,64 @@ describe('Job: Decay Requested Pubkeys', () => {
     // New Count = 500
     assert.equal(ancient.count, 500)
   })
+
+  it('should apply decrement_value when it is more aggressive than percentage decay', async () => {
+    const now = Date.now()
+    const threeHoursAgo = now - (3 * 60 * 60 * 1000)
+
+    const docs = [
+      {
+        key: 'max-setter',
+        count: 1000000, // maxCount will be 1M
+        firstSeenAt: now
+      },
+      {
+        key: 'test-doc',
+        count: 1000,
+        firstSeenAt: threeHoursAgo // 3h old -> decay factor ~0.948
+      }
+    ]
+
+    await mdb.index('requestedPubkeys').addDocuments(docs)
+    await decayJob.run()
+
+    const { results } = await mdb.index('requestedPubkeys').getDocuments({ limit: 10 })
+    const testDoc = results.find(d => d.key === 'test-doc')
+
+    // max_count = 1,000,000
+    // decrement_value = floor(1,000,000 * 0.0001) = 100
+    // doc.count - decrement_value = 1000 - 100 = 900
+    // decayed_count = floor(1000 * 0.948...) = 948
+    // new_count = min(948, 900) = 900
+    assert.equal(testDoc.count, 900)
+  })
+
+  it('should delete documents (dust) when count drops to zero or below', async () => {
+    const now = Date.now()
+    const threeHoursAgo = now - (3 * 60 * 60 * 1000)
+
+    const docs = [
+      {
+        key: 'max-setter',
+        count: 1000000,
+        firstSeenAt: now
+      },
+      {
+        key: 'dust',
+        count: 50,
+        firstSeenAt: threeHoursAgo
+      }
+    ]
+
+    await mdb.index('requestedPubkeys').addDocuments(docs)
+    await decayJob.run()
+
+    const { results } = await mdb.index('requestedPubkeys').getDocuments({ limit: 10 })
+    const dust = results.find(d => d.key === 'dust')
+
+    // max_count = 1,000,000 -> decrement_value = 100
+    // doc.count - decrement_value = 50 - 100 = -50
+    // new_count <= 0 -> document is deleted (doc = ())
+    assert.equal(dust, undefined)
+  })
 })
