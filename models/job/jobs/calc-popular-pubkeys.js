@@ -120,11 +120,12 @@ export async function run () {
     totalPubkeys = stats.numberOfDocuments
   } catch (_e) {
     console.log('Staging index stats failed, assuming 0')
-    return
+    totalPubkeys = 0
   }
 
   if (totalPubkeys === 0) {
     console.log('No requested pubkeys found.')
+    await mdb.index(stagingUid).delete()
     return
   }
 

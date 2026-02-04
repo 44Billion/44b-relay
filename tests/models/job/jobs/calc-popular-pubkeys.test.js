@@ -158,4 +158,26 @@ describe('Job: Calc Popular Pubkeys', () => {
       assert.ok(true)
     }
   })
+
+  it('should delete staging index if no pubkeys are found', async () => {
+    await seedUptime(24)
+    const stagingUid = 'metricsStagingRequestedPubkeys'
+
+    // Create an empty staging index
+    await mdb.createIndex(stagingUid, { primaryKey: 'key' })
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Run
+    await calcPopularPubkeys.run()
+
+    // Assertions
+    // Staging should be deleted
+    try {
+      await mdb.index(stagingUid).getStats()
+      assert.fail('Staging index should be deleted')
+    } catch (err) {
+      const isNotFound = err.code === 'index_not_found' || err.cause?.code === 'index_not_found'
+      assert.ok(isNotFound, 'Should fail with index_not_found')
+    }
+  })
 })
