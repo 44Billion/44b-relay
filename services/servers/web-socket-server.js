@@ -1,4 +1,5 @@
 import { WebSocketServer } from 'ws'
+import zlib from 'node:zlib'
 import { addToCleanup } from '#helpers/process.js'
 import { getIp } from '#helpers/request.js'
 import { setTimer } from '#helpers/timer.js'
@@ -8,7 +9,25 @@ const wss = new WebSocketServer({
   // https://github.com/hoytech/strfry/blob/master/src/apps/relay/golpe.yaml#L39
   // Messages over this size produce an error event on the ws instance
   maxPayload: 131072, // 512 * 1024 // 64 * 1024 // 8 * 1024 // 136 * 1024 // 8 kb note plus 128 kb data image
-  perMessageDeflate: false
+  perMessageDeflate: {
+    zlibDeflateOptions: {
+      // Use best speed (level 1) which gives ~73% reduction with large window
+      // avoiding the CPU cost of default level 6
+      level: zlib.constants.Z_BEST_SPEED,
+      memLevel: 9 // Use more memory for internal state to improve speed/ratio
+    },
+    // Use default window size (15) for best compression ratio.
+    threshold: 1024,
+    // Critical for high concurrency: disable context takeover.
+    // Without this, each connection holds ~300KB of memory for compression context.
+    // With 10k connections, that's 3GB RAM. Disabling it clears memory between messages.
+    clientNoContextTakeover: true,
+    serverNoContextTakeover: true,
+    // The number of concurrent calls to zlib. Calls above this limit will be queued.
+    // This confirms compression is ASYNC and limited to avoid blocking the event loop or overloading the thread pool.
+    // Default is 10.
+    concurrencyLimit: 10
+  }
 })
 addToCleanup(() => wss.close())
 
