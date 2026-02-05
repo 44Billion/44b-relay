@@ -24,19 +24,24 @@ class EventHandler {
   async run () {
     const { wss, ws, nostrMessage } = this
     const [, event = {}] = nostrMessage
-    trackIpActivity({ ip: ws.ip })
-    let { isSuccess, message } = await isValidEvent({ event, clientMessage: nostrClientMessages.EVENT })
-    if (!isSuccess) return sendCommandResult({ ws, event, isSuccess, message })
+    try {
+      trackIpActivity({ ip: ws.ip })
+      let { isSuccess, message } = await isValidEvent({ event, clientMessage: nostrClientMessages.EVENT })
+      if (!isSuccess) return sendCommandResult({ ws, event, isSuccess, message })
 
-    // TODO: Check impact on performance then move from deta to mdb
-    // const { isSpam } = await fightSpamOnNostrEvent(ws, event)
-    // if (isSpam) return sendCommandResult({ ws, event, isSuccess: false, message: 'blocked: your IP is involved with spam' })
+      // TODO: Check impact on performance then move from deta to mdb
+      // const { isSpam } = await fightSpamOnNostrEvent(ws, event)
+      // if (isSpam) return sendCommandResult({ ws, event, isSuccess: false, message: 'blocked: your IP is involved with spam' })
 
-    // if is duplicate, must start with 'duplicate:' see this and others at https://github.com/nostr-protocol/nips/blob/master/20.md
-    let shouldRelay // e.g.: don't relay duplicates
-    ;({ isSuccess, shouldRelay = isSuccess, message } = await this.processNostrEvent({ ws, event, ip: ws.ip }))
-    sendCommandResult({ ws, event, isSuccess, message })
-    if (shouldRelay) return this.sendToClientsWithAMatchingFilter({ wss, event })
+      // if is duplicate, must start with 'duplicate:' see this and others at https://github.com/nostr-protocol/nips/blob/master/20.md
+      let shouldRelay // e.g.: don't relay duplicates
+      ;({ isSuccess, shouldRelay = isSuccess, message } = await this.processNostrEvent({ ws, event, ip: ws.ip }))
+      sendCommandResult({ ws, event, isSuccess, message })
+      if (shouldRelay) return this.sendToClientsWithAMatchingFilter({ wss, event })
+    } catch (error) {
+      console.error('Error handling event:', error)
+      sendCommandResult({ ws, event, isSuccess: false, message: 'error: internal server error' })
+    }
   }
 
   async processNostrEvent ({ ws, event, ip }) {
