@@ -77,7 +77,7 @@ export function truncateWsMessage (data) {
   }
 
   try {
-    if (Array.isArray(json) && json[0] === 'EVENT' && typeof json[1] === 'object') {
+    if (Array.isArray(json) && ['EVENT', 'AUTH'].includes(json[0]) && typeof json[1] === 'object') {
       const event = json[1]
 
       if (typeof event.content === 'string' && event.content.length > 70) {
