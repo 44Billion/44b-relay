@@ -98,6 +98,7 @@ export async function flushIpActivityToMDB () {
   }
 
   try {
+    console.log(`Flushing IP Activity: ${currentActiveAts.size} IPs, ${ops.length} ops (including sketch merge)`)
     await queueOps(ops)
   } catch (err) {
     console.error('Failed to queue IP activity ops', err)

@@ -86,7 +86,7 @@ import { addToCleanup } from '#helpers/process.js'
 // Remember if deleting by filter, that filtering by <primaryKey> = xyz
 // would match XyZ xyZ too cause it is case-insensitive on strings
 //
-// const timestamp = Math.floor(timestampInMilliseconds / 1000) // UNIX timestamps must be in seconds!!
+// const timestamp = Math.floor(timestampInMilliseconds / 1000) // UNIX timestamps must be in seconds!! -> No longer the case
 async function init () {
   let config = {
     host: process.env.MDB_HOST || 'http://127.0.0.1:7700',
@@ -105,7 +105,7 @@ async function init () {
       }
 
       console.log('Starting Meilisearch Container...')
-      const container = await new GenericContainer('getmeili/meilisearch:v1.25')
+      const container = await new GenericContainer('getmeili/meilisearch:v1.35.1')
         .withExposedPorts(7700)
         .withEnvironment({
           MEILI_NO_ANALYTICS: 'true'
@@ -161,6 +161,8 @@ async function init () {
   // Also memo db.index(uid) calls (note it is not the same as .getIndex, which just get index metadata)
   db = Object.assign(createAutoWaitProxy(db, true), { constants, toMeiliValue })
 
+  const taskWaitTimeout = process.env.MDB_TASK_TIMEOUT ? parseInt(process.env.MDB_TASK_TIMEOUT) : 60000
+  const taskWaitInterval = process.env.NODE_ENV === 'test' ? 20 : 50
   function createAutoWaitProxy (target, useCache = false) {
     const cache = useCache ? new Map() : null
 
@@ -207,7 +209,7 @@ async function init () {
                   return v
                 }
 
-                return waitFn(v.taskUid, { timeout: 60000, interval: process.env.NODE_ENV === 'test' ? 20 : 50 }).then(task => {
+                return waitFn(v.taskUid, { timeout: taskWaitTimeout, interval: taskWaitInterval }).then(task => {
                   if (task.status !== 'succeeded') {
                     throw new Error(`Task ${task.status}: ${JSON.stringify(task.error ?? task.canceledBy)}`)
                   }

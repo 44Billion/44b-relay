@@ -8,7 +8,7 @@ import { createSketch } from '#services/event/tracker/mdb/ip-activity.js'
 import { wait } from '#helpers/timer.js'
 import { compressAsync, decompressAsync } from '#helpers/buffer.js'
 
-const BATCH_SIZE = 50
+const BATCH_SIZE = 100
 const MAX_FILL_ATTEMPTS = 2
 const FILL_WAIT_MS = 1500
 const SYSTEM_STATE_KEY = '__processingState__'

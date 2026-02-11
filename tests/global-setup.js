@@ -11,7 +11,7 @@ export async function globalSetup () {
   }
 
   console.log('Starting Global Meilisearch Container...')
-  container = await new GenericContainer('getmeili/meilisearch:v1.25')
+  container = await new GenericContainer('getmeili/meilisearch:v1.35.1')
     .withExposedPorts(7700)
     .withEnvironment({
       MEILI_NO_ANALYTICS: 'true'
