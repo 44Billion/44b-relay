@@ -115,7 +115,7 @@ async function sendFilteredEvents ({ ws, subscriptionId, filters }) {
 }
 
 const MAX_FILTERS_PER_SUBSCRIPTION = 5
-function blockHighFilterCount ({ ws, subscriptionId, filters }) {
+export function blockHighFilterCount ({ ws, subscriptionId, filters }) {
   const isBlocked = filters.length > MAX_FILTERS_PER_SUBSCRIPTION
   if (isBlocked) sendClosed({ ws, subscriptionId, message: 'error: too many filters' })
 
@@ -146,7 +146,7 @@ function blockHighFilterCount ({ ws, subscriptionId, filters }) {
 //   return { isIgnored }
 // }
 
-function applyCustomRelayRestrictionsToNostrFilter ({ /* ws, */ filter, isBroad = isBroadFilter(filter) }) {
+export function applyCustomRelayRestrictionsToNostrFilter ({ /* ws, */ filter, isBroad = isBroadFilter(filter) }) {
   if (isBroad && !isAllowedEvenIfBroadFilter(filter)) return { isBlocked: true, message: 'error: overly broad filters are not allowed.' }
 
   // For now, Ignore Harvest Now, Decrypt Later (HNDL) attacks
@@ -180,7 +180,7 @@ function applyCustomRelayRestrictionsToNostrFilter ({ /* ws, */ filter, isBroad 
   return { isBlocked: false, message: '' }
 }
 
-function adjustUntilFieldInFilters ({ ws, filters }) {
+export function adjustUntilFieldInFilters ({ ws, filters }) {
   const maxUntil = Math.floor(Date.now() / 1000) + 10 * 60 // 10 min buffer
   return filters.map(filter => {
     if (

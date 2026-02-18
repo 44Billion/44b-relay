@@ -3,6 +3,7 @@ import { nostrClientMessages } from '#constants/message.js'
 import AuthHandler from './auth-handler.js'
 import EventHandler from './event-handler.js'
 import ReqHandler from './req-handler.js'
+import CountHandler from './count-handler.js'
 import CloseHandler from './close-handler.js'
 import {
   rateLimitNostrMessageByPubkey,
@@ -62,6 +63,7 @@ const nostMessageHandlers = {
   [nostrClientMessages.AUTH] ({ wss, ws, nostrMessage }) { return AuthHandler.run({ wss, ws, nostrMessage }) },
   [nostrClientMessages.EVENT] ({ wss, ws, nostrMessage }) { return EventHandler.run({ wss, ws, nostrMessage }) },
   [nostrClientMessages.REQ] ({ wss, ws, nostrMessage }) { return ReqHandler.run({ wss, ws, nostrMessage }) },
+  [nostrClientMessages.COUNT] ({ wss, ws, nostrMessage }) { return CountHandler.run({ wss, ws, nostrMessage }) },
   [nostrClientMessages.CLOSE] ({ wss, ws, nostrMessage }) { return CloseHandler.run({ wss, ws, nostrMessage }) }
 }
 
@@ -71,7 +73,8 @@ export function limitNostrMessageLength ({ ws, nostrMessage }) {
   let event
   let isInvalid
   switch (nostrClientMessage) {
-    case nostrClientMessages.REQ: {
+    case nostrClientMessages.REQ:
+    case nostrClientMessages.COUNT: {
       const authorByteLength = 64
       // we slice 500 authors at parseSubscriptionFilter
       // keep 10 max filters per pubkey
