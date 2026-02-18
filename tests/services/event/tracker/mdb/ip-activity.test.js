@@ -149,7 +149,7 @@ describe('IP Activity Tracker', () => {
 
       const cmsOp = ops.find(op => op.type === 'mergeSketch')
       assert.ok(cmsOp)
-      assert.equal(cmsOp.data.targetKey, 'sketch-current')
+      assert.equal(cmsOp.data.key, 'sketch-current')
 
       const ownerOp = ops.find(op => op.type === 'patchDocumentIfExists')
       assert.ok(ownerOp)

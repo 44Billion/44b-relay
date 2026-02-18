@@ -27,7 +27,7 @@ describe('Event Maintainer (MDB)', () => {
 
     it('should queue operations to pendingOps index', async () => {
       const ops = [
-        { type: 'test', data: { targetKey: 'abc', foo: 'bar' } }
+        { type: 'test', data: { key: 'abc', foo: 'bar' } }
       ]
       await maintainer.queueOps(ops)
 
@@ -39,7 +39,7 @@ describe('Event Maintainer (MDB)', () => {
       // Data is stored as object now
       const parsedData = doc.data
       assert.equal(parsedData.foo, 'bar')
-      assert.equal(parsedData.targetKey, 'abc')
+      assert.equal(parsedData.key, 'abc')
       assert.ok(doc.key) // UUID present
       assert.ok(doc.createdAt)
     })
@@ -66,8 +66,8 @@ describe('Event Maintainer (MDB)', () => {
       const ops = result.ops
       const usageOp = ops.find(o => o.type === 'deltaUsage')
       assert.ok(usageOp)
-      // Now targetKey is encoded for IP
-      assert.equal(usageOp.data.targetKey, ipToPrimaryKey(ip))
+      // Now key is encoded for IP
+      assert.equal(usageOp.data.key, ipToPrimaryKey(ip))
       assert.equal(usageOp.data.delta, 1000)
 
       // Check that pruneCheck is NOT created (usage tiny)
@@ -92,7 +92,7 @@ describe('Event Maintainer (MDB)', () => {
 
       const ops = result.ops
       const usageOp = ops.find(o => o.type === 'deltaUsage')
-      assert.equal(usageOp.data.targetKey, pubkey)
+      assert.equal(usageOp.data.key, pubkey)
       assert.equal(usageOp.data.entityType, 'pubkey')
     })
 
@@ -123,7 +123,7 @@ describe('Event Maintainer (MDB)', () => {
       const pruneOp = result.ops.find(o => o.type === 'pruneCheck')
       assert.ok(pruneOp, 'Should generate pruneCheck op')
       assert.equal(pruneOp.data.limit, limit)
-      assert.equal(pruneOp.data.targetKey, pubkey)
+      assert.equal(pruneOp.data.key, pubkey)
     })
 
     it('should handle missing stored entity (404) by treating usage as 0', async () => {
@@ -166,7 +166,7 @@ describe('Event Maintainer (MDB)', () => {
       const ops = result.ops
       const usageOp = ops.find(o => o.type === 'deltaUsage')
       assert.ok(usageOp)
-      assert.equal(usageOp.data.targetKey, vipPubkey)
+      assert.equal(usageOp.data.key, vipPubkey)
 
       const pruneOp = ops.find(o => o.type === 'pruneCheck')
       assert.equal(pruneOp, undefined, 'Should skip pruneCheck for VIP')

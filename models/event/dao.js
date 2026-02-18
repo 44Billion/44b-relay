@@ -5,7 +5,7 @@ export async function getEventByRef (ref, options = {}) {
   return mdb.index('events').getDocument(ref, {
     ...(options.fields && { fields: options.fields })
   })
-    .then(record => ({ result: recordToEvent(record), error: null, success: true }))
+    .then(record => ({ result: recordToEvent(record, { withMeta: options.withMeta }), error: null, success: true }))
     .catch(error => ({ result: null, error, success: false }))
 }
 
@@ -43,9 +43,9 @@ export async function putEventByRef (ref, data) {
     .catch(error => ({ result: null, error, success: false }))
 }
 
-export async function getEvents (filter, { fields } = {}) {
+export async function getEvents (filter, { fields, withMeta = false } = {}) {
   return searchByNostrFilter(filter, { fields })
-    .then(v => ({ result: v.hits.map(recordToEvent), error: null, success: true }))
+    .then(v => ({ result: v.hits.map(v2 => recordToEvent(v2, { withMeta })), error: null, success: true }))
     .catch(error => ({ result: null, error, success: false }))
 }
 

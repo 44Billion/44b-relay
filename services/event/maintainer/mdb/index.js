@@ -235,7 +235,7 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
   // Queue the usage update
   ops.push({
     type: 'deltaUsage',
-    data: { targetKey: ownerKey, delta: newEventSize, entityType: ownerType, popularityLevel: level }
+    data: { key: ownerKey, delta: newEventSize, entityType: ownerType, popularityLevel: level }
   })
 
   // We optimize by checking current usage (even if slightly stale) to see if we should queue a prune check
@@ -252,7 +252,7 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
     if (currentUsage + newEventSize > limit * 0.9) {
       ops.push({
         type: 'pruneCheck',
-        data: { targetKey: ownerKey, limit, entityType: ownerType, popularityLevel: level }
+        data: { key: ownerKey, limit, entityType: ownerType, popularityLevel: level }
       })
     }
   } catch (_e) {

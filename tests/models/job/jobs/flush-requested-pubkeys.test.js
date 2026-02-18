@@ -24,7 +24,7 @@ describe('Job: Flush Requested Pubkeys', () => {
     assert.ok(results.length > 0)
     const mergeOp = results.find(op => op.type === 'mergeHll')
     assert.ok(mergeOp)
-    assert.equal(mergeOp.data.targetKey, 'pk1')
+    assert.equal(mergeOp.data.key, 'pk1')
   })
 
   it('config should have correct structure', () => {

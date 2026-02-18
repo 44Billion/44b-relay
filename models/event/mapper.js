@@ -47,7 +47,10 @@ const almostAlwaysIndexableTags = new Set(['d', 'k'])
 
 export const MAX_INDEXABLE_TAGS = 10
 export const MAX_INDEXABLE_TAG_VALUE_LENGTH = 1000
-export function eventToRecord (event, { language, expiresAt, lastAccessedAt, receivedAt, isContentSearchable = false, fts } = {}) {
+export function eventToRecord (event, {
+  language, expiresAt, lastAccessedAt, receivedAt, isContentSearchable = false, fts,
+  commentCounter, replyCounter, repostCounter, quoteCounter
+} = {}) {
   const { id, kind, pubkey, created_at, sig } = event
   const record = { id, kind, pubkey, created_at, sig }
   const now = Math.floor(Date.now() / 1000)
@@ -114,17 +117,21 @@ export function eventToRecord (event, { language, expiresAt, lastAccessedAt, rec
     ...(fts && { fts }),
     ...(isContentSearchable ? { ftsContent: event.content } : { nonFtsContent: event.content }),
     ...(expiresAt && { expiresAt }),
+    ...(commentCounter && { commentCounter }),
+    ...(replyCounter && { replyCounter }),
+    ...(repostCounter && { repostCounter }),
+    ...(quoteCounter && { quoteCounter }),
     lastAccessedAt: lastAccessedAt ?? now,
     receivedAt: receivedAt ?? now
   })
   return record
 }
 
-export function recordToEvent (record) {
+export function recordToEvent (record, { withMeta = false } = {}) {
   const {
     id, kind, pubkey, created_at, sig,
     indexableTags = [], indexableTagExtras = [], nonIndexableTags,
-    ftsContent, nonFtsContent
+    ftsContent, nonFtsContent, commentCounter, replyCounter, repostCounter, quoteCounter
   } = record
   const content = ftsContent ?? nonFtsContent ?? ''
   // reconstruct tags
@@ -134,5 +141,14 @@ export function recordToEvent (record) {
     const [tagIndex, ...extraValues] = indexableTagExtras[i]
     tags.splice(tagIndex, 0, [k, v, ...extraValues])
   }
-  return { id, kind, pubkey, tags, content, created_at, sig }
+  return {
+    id, kind, pubkey, tags, content, created_at, sig, ...(withMeta && {
+      meta: {
+        ...(commentCounter && { commentCounter }),
+        ...(replyCounter && { replyCounter }),
+        ...(repostCounter && { repostCounter }),
+        ...(quoteCounter && { quoteCounter })
+      }
+    })
+  }
 }

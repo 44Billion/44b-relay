@@ -477,7 +477,7 @@ describe('EventSaver (MDB) Integration', () => {
       ownerType: 'pubkey',
       ownerKey: vipPubkey,
       popularityLevel: 999,
-      ops: [{ type: 'deltaUsage', data: { targetKey: vipPubkey, delta: 100, entityType: 'pubkey', popularityLevel: 999 } }]
+      ops: [{ type: 'deltaUsage', data: { key: vipPubkey, delta: 100, entityType: 'pubkey', popularityLevel: 999 } }]
     }))
 
     const event = {
@@ -497,7 +497,7 @@ describe('EventSaver (MDB) Integration', () => {
 
     // Verify it queues usage update for the pubkey
     const usageOp = ops.find(op => op.type === 'deltaUsage')
-    assert.equal(usageOp.data.targetKey, vipPubkey)
+    assert.equal(usageOp.data.key, vipPubkey)
     assert.equal(usageOp.data.entityType, 'pubkey')
 
     // Verify it saves the document with popularityLevel 999

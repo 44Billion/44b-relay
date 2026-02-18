@@ -76,7 +76,7 @@ describe('Requested Pubkeys Tracker', () => {
       const ops = queueOpsMock.mock.calls[0].arguments[0]
       assert.equal(ops.length, 1)
       assert.equal(ops[0].type, 'mergeHll')
-      assert.equal(ops[0].data.targetKey, 'pubkeyA')
+      assert.equal(ops[0].data.key, 'pubkeyA')
       // Valid Base64 (URL safe or standard)
       assert.match(ops[0].data.hll, /^[A-Za-z0-9+/_=-]+$/)
     })
@@ -95,7 +95,7 @@ describe('Requested Pubkeys Tracker', () => {
       assert.equal(queueOpsMock.mock.callCount(), 1)
       const ops = queueOpsMock.mock.calls[0].arguments[0]
       assert.equal(ops.length, 1)
-      assert.equal(ops[0].data.targetKey, 'pubkeyB')
+      assert.equal(ops[0].data.key, 'pubkeyB')
     })
   })
 

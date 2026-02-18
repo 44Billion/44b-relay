@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
+import { idToRef } from '#models/event/mapper.js'
 
 // Mock dependencies
 mock.module('#services/rate-limiting/web-socket-request-limiter.js', {
@@ -167,5 +168,193 @@ describe('CountHandler', () => {
     } finally {
       process.env.IS_INTEGRATION_TEST = originalEnv
     }
+  })
+
+  it('should return hll field for kind 1111 filter targeting root event', async () => {
+    // 1. Seed root event with HLL value
+    const rootId = 'b'.repeat(64) // Use a different ID to avoid conflict with defaults if any
+    const hllValue = 'deadbeef'
+
+    const record = {
+      ref: idToRef(rootId),
+      id: rootId,
+      kind: 1,
+      pubkey: 'a'.repeat(64),
+      created_at: 1000,
+      content: '',
+      tags: [],
+      sig: 'sig',
+      commentCounter: hllValue,
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+
+    const commentEvent = {
+      id: 'c'.repeat(64),
+      kind: 1111,
+      pubkey: 'd'.repeat(64),
+      created_at: 1001,
+      content: 'comment',
+      tags: [['E', rootId, '', 'root']],
+      sig: 'sig'
+    }
+    const commentRecord = {
+      ...eventToRecord(commentEvent),
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+    await client.index('events').addDocuments([record, commentRecord])
+
+    // 2. Perform query
+    const ws = createWs()
+    // The filter must match: kinds: [1111], #E: [rootId]
+    // Note: hll field won't be shown if count for above filter is 0
+    const filters = [{ kinds: [1111], '#E': [rootId] }]
+    const message = ['COUNT', 'sub_hll', ...filters]
+
+    const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const calls = ws.send.mock.calls
+    const payload = JSON.parse(calls[0].arguments[0])
+    assert.equal(payload[2].hll, hllValue)
+  })
+
+  it('should return hll field for kind 1 filter targeting root event', async () => {
+    const rootId = 'b'.repeat(64)
+    const hllValue = 'deadbeef'
+
+    const record = {
+      ref: idToRef(rootId),
+      id: rootId,
+      kind: 1,
+      pubkey: 'a'.repeat(64),
+      created_at: 1000,
+      content: '',
+      tags: [],
+      sig: 'sig',
+      replyCounter: hllValue,
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+
+    const replyEvent = {
+      id: 'c'.repeat(64),
+      kind: 1,
+      pubkey: 'd'.repeat(64),
+      created_at: 1001,
+      content: 'reply',
+      tags: [['e', rootId, '', 'root']],
+      sig: 'sig'
+    }
+    const replyRecord = {
+      ...eventToRecord(replyEvent),
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+    await client.index('events').addDocuments([record, replyRecord])
+
+    const ws = createWs()
+    const filters = [{ kinds: [1], '#e': [rootId] }]
+    const message = ['COUNT', 'sub_hll_reply', ...filters]
+
+    const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const calls = ws.send.mock.calls
+    const payload = JSON.parse(calls[0].arguments[0])
+    assert.equal(payload[2].hll, hllValue)
+  })
+
+  it('should return hll field for kind 6 filter targeting root event', async () => {
+    const rootId = 'b'.repeat(64)
+    const hllValue = 'deadbeef'
+
+    const record = {
+      ref: idToRef(rootId),
+      id: rootId,
+      kind: 1,
+      pubkey: 'a'.repeat(64),
+      created_at: 1000,
+      content: '',
+      tags: [],
+      sig: 'sig',
+      repostCounter: hllValue,
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+
+    const repostEvent = {
+      id: 'c'.repeat(64),
+      kind: 6,
+      pubkey: 'd'.repeat(64),
+      created_at: 1001,
+      content: '',
+      tags: [['e', rootId, '', 'root']],
+      sig: 'sig'
+    }
+    const repostRecord = {
+      ...eventToRecord(repostEvent),
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+    await client.index('events').addDocuments([record, repostRecord])
+
+    const ws = createWs()
+    const filters = [{ kinds: [6], '#e': [rootId] }]
+    const message = ['COUNT', 'sub_hll_repost', ...filters]
+
+    const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const calls = ws.send.mock.calls
+    const payload = JSON.parse(calls[0].arguments[0])
+    assert.equal(payload[2].hll, hllValue)
+  })
+
+  it('should return hll field for kind 1, 1111 filter targeting root event (quote)', async () => {
+    const rootId = 'b'.repeat(64)
+    const hllValue = 'deadbeef'
+
+    const record = {
+      ref: idToRef(rootId),
+      id: rootId,
+      kind: 1,
+      pubkey: 'a'.repeat(64),
+      created_at: 1000,
+      content: '',
+      tags: [],
+      sig: 'sig',
+      quoteCounter: hllValue,
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+
+    const quoteEvent = {
+      id: 'c'.repeat(64),
+      kind: 1,
+      pubkey: 'd'.repeat(64),
+      created_at: 1001,
+      content: 'quote',
+      tags: [['q', rootId, '', 'root']],
+      sig: 'sig'
+    }
+    const quoteRecord = {
+      ...eventToRecord(quoteEvent),
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+    await client.index('events').addDocuments([record, quoteRecord])
+
+    const ws = createWs()
+    const filters = [{ kinds: [1, 1111], '#q': [rootId] }]
+    const message = ['COUNT', 'sub_hll_quote', ...filters]
+
+    const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const calls = ws.send.mock.calls
+    const payload = JSON.parse(calls[0].arguments[0])
+    assert.equal(payload[2].hll, hllValue)
   })
 })

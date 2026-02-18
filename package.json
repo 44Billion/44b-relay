@@ -35,6 +35,6 @@
     "eslint": "^9.39.2",
     "globals": "^17.0.0",
     "neostandard": "^0.12.2",
-    "testcontainers": "^11.11.0"
+    "testcontainers": "^11.12.0"
   }
 }

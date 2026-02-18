@@ -1,8 +1,10 @@
 import { getAuthorPubkey } from '#helpers/event.js'
 import { eventKinds, eventTags } from '#constants/event.js'
+import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
+import { base16ToBytes, bytesToBase16 } from '#helpers/base16.js'
 import mdb from '#services/db/mdb.js'
 import { checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
-import { eventToRecord } from '#models/event/mapper.js'
+import { eventToRecord, idToRef } from '#models/event/mapper.js'
 import { getEventByRef } from '#models/event/dao.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
 
@@ -104,7 +106,7 @@ export default class EventSaver {
         if (oldOwnerKey) {
           ops.push({
             type: 'deltaUsage',
-            data: { targetKey: oldOwnerKey, delta: -(oldEvent.byteSize || 0), entityType: oldOwnerType }
+            data: { key: oldOwnerKey, delta: -(oldEvent.byteSize || 0), entityType: oldOwnerType }
           })
         }
       }
@@ -115,7 +117,11 @@ export default class EventSaver {
         byteSize,
         ownerType,
         ip,
-        popularityLevel
+        popularityLevel,
+        ...(oldEvent?.commentCounter && { commentCounter: oldEvent.commentCounter }),
+        ...(oldEvent?.replyCounter && { replyCounter: oldEvent.replyCounter }),
+        ...(oldEvent?.repostCounter && { repostCounter: oldEvent.repostCounter }),
+        ...(oldEvent?.quoteCounter && { quoteCounter: oldEvent.quoteCounter })
         // receivedAt is already in record
       }
 
@@ -124,6 +130,46 @@ export default class EventSaver {
         type: 'insertOrReplaceDocument',
         data: { index: 'events', document: dbEvent }
       })
+
+      if (popularityLevel <= 6) {
+        const pushHllOp = (rootEventId, field) => {
+          if (!rootEventId) return
+          try {
+            const offset = parseInt(rootEventId[32], 16) + 8
+            const hll = new HLL(offset)
+            hll.add(base16ToBytes(author))
+            ops.push({
+              type: 'mergeNip45Hll',
+              data: {
+                key: idToRef(rootEventId),
+                hll: bytesToBase16(hll.getRegisters()),
+                field,
+                index: 'events',
+                offset
+              }
+            })
+          } catch (e) {
+            console.error(`Failed to process HLL for ${field}:`, e)
+          }
+        }
+
+        if (event.kind === eventKinds.COMMENT) {
+          const rootEventId = event.tags.find(t => t[0] === 'E')?.[1]
+          pushHllOp(rootEventId, 'commentCounter')
+        } else if (event.kind === eventKinds.TEXT_NOTE) {
+          const rootEventId = event.tags.find(t => t[0] === 'e')?.[1]
+          pushHllOp(rootEventId, 'replyCounter')
+        } else if (event.kind === eventKinds.REPOST || event.kind === eventKinds.GENERIC_REPOST) {
+          const rootEventId = event.tags.find(t => t[0] === 'e')?.[1]
+          pushHllOp(rootEventId, 'repostCounter')
+        }
+
+        // Quote counter
+        const quoteEventId = event.tags.find(t => t[0] === 'q')?.[1]
+        if (quoteEventId && (event.kind === eventKinds.TEXT_NOTE || event.kind === eventKinds.COMMENT)) {
+          pushHllOp(quoteEventId, 'quoteCounter')
+        }
+      }
 
       await queueOps(ops)
 
@@ -209,7 +255,7 @@ export default class EventSaver {
         if (ownerKey) {
           ops.push({
             type: 'deltaUsage',
-            data: { targetKey: ownerKey, delta: -(hit.byteSize || 0), entityType: ownerType }
+            data: { key: ownerKey, delta: -(hit.byteSize || 0), entityType: ownerType }
           })
         }
         ops.push({

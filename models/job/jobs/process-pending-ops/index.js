@@ -3,10 +3,12 @@ import { ConservativeCountMin } from 'sketch-oxide-node'
 import mdb from '#services/db/mdb.js'
 import { pruneEvents } from '#services/event/maintainer/mdb/index.js'
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
+import { base16ToBytes, bytesToBase16 } from '#helpers/base16.js'
 import { base64ToBytes, bytesToBase64 } from '#helpers/base64.js'
 import { createSketch } from '#services/event/tracker/mdb/ip-activity.js'
 import { wait } from '#helpers/timer.js'
 import { compressAsync, decompressAsync } from '#helpers/buffer.js'
+import { eventKinds } from '#constants/event.js'
 
 const BATCH_SIZE = 100
 const MAX_FILL_ATTEMPTS = 2
@@ -138,7 +140,8 @@ export async function processBatch (results, systemState) {
   for (const op of results) {
     const data = op.data || {}
 
-    const opTargetKey = data.targetKey
+    const targetKey = data.key ||
+      data.targetKey // legacy; may remove after some time
     const opType = op.type
     let targetIndex = null
     let isProcessed = false
@@ -172,10 +175,9 @@ export async function processBatch (results, systemState) {
         if (systemState[targetIndex].has(op.key)) {
           isProcessed = true
         } else {
-          const { key } = data
-          if (key) {
-            keysToDelete[targetIndex].add(key)
-            docsToAddOrUpdate[targetIndex].delete(key)
+          if (targetKey) {
+            keysToDelete[targetIndex].add(targetKey)
+            docsToAddOrUpdate[targetIndex].delete(targetKey)
           }
         }
       } else if (opType === 'patchDocumentIfExists') {
@@ -208,8 +210,8 @@ export async function processBatch (results, systemState) {
         if (systemState[targetIndex].has(op.key)) {
           isProcessed = true
         } else {
-          const doc = await getDoc(targetIndex, opTargetKey, () => ({
-            key: opTargetKey, data: createSketch().serialize().toString('base64url')
+          const doc = await getDoc(targetIndex, targetKey, () => ({
+            key: targetKey, data: createSketch().serialize().toString('base64url')
           }))
 
           if (doc && data.sketch) {
@@ -226,10 +228,59 @@ export async function processBatch (results, systemState) {
               globalSketch.merge(incomingSketch)
               const recompressed = await compressAsync(globalSketch.serialize())
               doc.data = recompressed.toString('base64url')
-              docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
+              docsToAddOrUpdate[targetIndex].set(targetKey, doc)
             } catch (err) {
               console.error('Failed to merge Sketch op', err)
             }
+          }
+        }
+      } else if (opType === 'mergeNip45Hll') {
+        const targetIndex = data.index
+        ensureIndexInit(targetIndex)
+
+        if (systemState[targetIndex].has(op.key)) {
+          isProcessed = true
+        } else {
+          const field = data.field || 'hll'
+          const doc = await getDoc(targetIndex, targetKey,
+            // doc must've been created before this op
+            async () => { return null }
+          )
+
+          if (doc && data.hll && data.offset !== undefined) {
+            const isRootTarget = // targetIndex !== 'events' ||
+              [
+                // pubkey counters are attached to metadata (profile)
+                eventKinds.METADATA,
+                eventKinds.TEXT_NOTE,
+                eventKinds.LONG_FORM_CONTENT,
+                eventKinds.PICTURE,
+                eventKinds.VOICE_MESSAGE,
+                eventKinds.VIDEO,
+                eventKinds.SHORT_VIDEO,
+                eventKinds.EDITABLE_VIDEO,
+                eventKinds.EDITABLE_SHORT_VIDEO,
+                // We expect calendars to be created even for
+                // holding a single event
+                // eventKinds.DATE_BASED_CALENDAR_EVENT,
+                // eventKinds.TIME_BASED_CALENDAR_EVENT,
+                eventKinds.CALENDAR
+              ].includes(doc.kind)
+            if (!isRootTarget) continue
+
+            const currentVal = doc[field]
+            const offset = data.offset
+
+            const existingHll = currentVal
+              ? HLL.newWithRegisters(base16ToBytes(currentVal), offset)
+              : new HLL(offset)
+
+            const incomingRegisters = base16ToBytes(data.hll)
+            const incomingHll = HLL.newWithRegisters(incomingRegisters, offset)
+            existingHll.merge(incomingHll)
+            doc[field] = bytesToBase16(existingHll.getRegisters())
+
+            docsToAddOrUpdate[targetIndex].set(targetKey, doc)
           }
         }
       } else if (opType === 'mergeHll') {
@@ -239,8 +290,8 @@ export async function processBatch (results, systemState) {
         if (systemState[targetIndex].has(op.key)) {
           isProcessed = true
         } else {
-          const doc = await getDoc(targetIndex, opTargetKey, async () => ({
-            key: opTargetKey,
+          const doc = await getDoc(targetIndex, targetKey, async () => ({
+            key: targetKey,
             hll: bytesToBase64(await compressAsync(new HLL(0).getRegisters())),
             count: 0,
             firstSeenAt: Date.now()
@@ -262,7 +313,7 @@ export async function processBatch (results, systemState) {
             // that we can decay, while the HLL continues to track unique
             // IP deduplication correctly
             doc.count = (doc.count || 0) + delta
-            docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
+            docsToAddOrUpdate[targetIndex].set(targetKey, doc)
           }
         }
       } else if (opType === 'deltaUsage' || opType === 'pruneCheck') {
@@ -274,8 +325,8 @@ export async function processBatch (results, systemState) {
         } else {
           const entityType = data.entityType || 'pubkey'
 
-          const doc = await getDoc(targetIndex, opTargetKey, () => ({
-            key: opTargetKey, entityType, usedBytes: 0, popularityLevel: 999
+          const doc = await getDoc(targetIndex, targetKey, () => ({
+            key: targetKey, entityType, usedBytes: 0, popularityLevel: 999
           }))
 
           if (doc) {
@@ -293,14 +344,14 @@ export async function processBatch (results, systemState) {
                 // But since `events` index deletes happen immediately, it's fine.
                 // We just assume they succeed.
                 const cleared = await pruneEvents({
-                  ownerKey: opTargetKey,
+                  ownerKey: targetKey,
                   ownerType: entityType,
                   bytesToRemove: doc.usedBytes - limit
                 })
                 doc.usedBytes = Math.max(0, doc.usedBytes - cleared)
               }
             }
-            docsToAddOrUpdate[targetIndex].set(opTargetKey, doc)
+            docsToAddOrUpdate[targetIndex].set(targetKey, doc)
           }
         }
       } else {

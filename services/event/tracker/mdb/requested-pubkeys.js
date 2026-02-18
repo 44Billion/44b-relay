@@ -128,7 +128,7 @@ export async function flushRequestedPubkeysToMDB () {
     const compressed = await compressAsync(hll.getRegisters())
     ops.push({
       type: 'mergeHll',
-      data: { targetKey: pubkey, hll: bytesToBase64(compressed) }
+      data: { key: pubkey, hll: bytesToBase64(compressed) }
     })
   }
 

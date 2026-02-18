@@ -215,7 +215,7 @@ async function relegateEvents (pubkey, state, popularityLevel) {
     if (totalBytesRemoved > 0) {
       allOps.push({
         type: 'deltaUsage',
-        data: { targetKey: pubkey, delta: -totalBytesRemoved, entityType: 'pubkey' }
+        data: { key: pubkey, delta: -totalBytesRemoved, entityType: 'pubkey' }
       })
     }
 

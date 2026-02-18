@@ -83,7 +83,7 @@ export async function flushIpActivityToMDB () {
   const compressedSketch = await compressAsync(currentSketch.serialize())
   ops.push({
     type: 'mergeSketch',
-    data: { targetKey: 'sketch-current', sketch: compressedSketch.toString('base64url') }
+    data: { key: 'sketch-current', sketch: compressedSketch.toString('base64url') }
   })
 
   // IP Activity Updates

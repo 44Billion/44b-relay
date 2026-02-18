@@ -121,7 +121,7 @@ describe('Job: Process Pending Ops', () => {
         createdAt: Date.now(),
         type: 'deltaUsage',
         data: {
-          targetKey: ownerKey,
+          key: ownerKey,
           entityType: 'pubkey',
           delta: 100
         }
@@ -143,7 +143,7 @@ describe('Job: Process Pending Ops', () => {
         createdAt: Date.now(),
         type: 'deltaUsage',
         data: {
-          targetKey: ownerKey, // Raw IP in ops
+          key: ownerKey, // Raw IP in ops
           entityType: 'ip',
           delta: 50
         }
@@ -213,7 +213,7 @@ describe('Job: Process Pending Ops', () => {
         createdAt: Date.now(),
         type: 'mergeHll',
         data: {
-          targetKey: pubkey,
+          key: pubkey,
           hll: hllBase64
         }
       }
@@ -235,7 +235,7 @@ describe('Job: Process Pending Ops', () => {
         createdAt: Date.now(),
         type: 'mergeHll',
         data: {
-          targetKey: pubkey,
+          key: pubkey,
           hll: otherHllBase64
         }
       }
@@ -257,7 +257,7 @@ describe('Job: Process Pending Ops', () => {
         createdAt: Date.now(),
         type: 'mergeHll',
         data: {
-          targetKey: pubkey,
+          key: pubkey,
           hll: anotherHllBase64
         }
       }
@@ -275,7 +275,7 @@ describe('Job: Process Pending Ops', () => {
         createdAt: Date.now(),
         type: 'pruneCheck',
         data: {
-          targetKey: ownerKey,
+          key: ownerKey,
           entityType: 'pubkey',
           limit: 1000
         }
