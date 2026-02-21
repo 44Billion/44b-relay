@@ -58,7 +58,8 @@ export async function countEvents (filter) {
 async function searchByNostrFilter ({
   ids, authors, kinds, tags, since, until, limit,
   search = '', // nip50
-  popularityLevel // not part of nostr spec
+  popularityLevel, // not part of nostr spec
+  sortTop // nip50 extension
 }, { metadataOnly = false, fields } = {}) {
   limit = Math.min(limit || 20, 100)
   let language
@@ -75,6 +76,8 @@ async function searchByNostrFilter ({
       .trim()
   }
 
+  const sort = sortTop ? ['engagementCount:desc', 'created_at:desc', 'id:asc'] : ['created_at:desc', 'id:asc']
+
   return mdb.index('events').search(q, {
     ...(fields && { attributesToRetrieve: fields }),
     limit,
@@ -89,7 +92,7 @@ async function searchByNostrFilter ({
       ...(language ? [`language = ${mdb.toMeiliValue(language)}`] : []),
       ...(popularityLevel ? [`popularityLevel <= ${mdb.toMeiliValue(popularityLevel)}`] : [])
     ],
-    sort: ['created_at:desc', 'id:asc'],
+    sort,
     offset: metadataOnly
       ? mdb.constants.maxTotalHits // hack to get no v.hits
       : 0

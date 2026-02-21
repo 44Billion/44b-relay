@@ -129,6 +129,30 @@ describe('ReqHandler', () => {
     }
   })
 
+  it('should sort events by engagement count when sort:top is provided', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      const ws = createWs()
+      // Broad filter with sort:top
+      const filters = [{ kinds: [1], search: 'sort:top' }]
+      const message = ['REQ', 'sub_hot', ...filters]
+
+      const handler = new ReqHandler({ wss: {}, ws, nostrMessage: message })
+      await handler.run()
+
+      const eventMsgs = ws.send.mock.calls
+        .map(c => JSON.parse(c.arguments[0]))
+        .filter(m => m[0] === 'EVENT')
+
+      // Should find events 1 and 2 (popularity 6)
+      assert.equal(eventMsgs.length, 2)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
   it('should block overly broad scraper filters', async () => {
     const ws = createWs()
     // Scraper filter: empty or just limit/since/until

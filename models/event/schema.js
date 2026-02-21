@@ -37,7 +37,16 @@ export default {
     'sig',
     'ownerType', // ip or pubkey
     'ip',
-    'popularityLevel'
+    'popularityLevel',
+    'commentCounter',
+    'replyCounter',
+    'repostCounter',
+    'quoteCounter',
+    'commentCount',
+    'replyCount',
+    'repostCount',
+    'quoteCount',
+    'engagementCount'
   ],
   // https://www.meilisearch.com/docs/reference/api/settings#settings-object
   settings: {
@@ -60,11 +69,13 @@ export default {
       'expiresAt',
       'ownerType',
       'ip',
-      'popularityLevel'
+      'popularityLevel',
+      'engagementCount'
     ],
     sortableAttributes: [
       'created_at',
-      'id'
+      'id',
+      'engagementCount'
     ],
     rankingRules: [
       ...defaultRankingRules,

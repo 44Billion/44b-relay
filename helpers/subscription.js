@@ -37,8 +37,12 @@ export function isBroadFilter (filter) {
 // NIP-50
 export function extractFilterExtensions (filter) {
   const extensions = {}
-  extensions.includeSpam = filter.search?.includes('include:spam')
-  if (extensions.includeSpam) filter.search = filter.search.replace(/include:spam/g, '')
+  extensions.includeSpam = filter.search.includes('include:spam')
+  if (extensions.includeSpam) filter.search = filter.search.replace(/include:spam/g, '').trim()
+
+  extensions.sortTop = filter.search.includes('sort:top')
+  if (extensions.sortTop) filter.search = filter.search.replace(/sort:top/g, '').trim()
+
   return extensions
 }
 

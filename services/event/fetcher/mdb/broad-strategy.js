@@ -31,6 +31,10 @@ export default class BroadStrategy {
       }
     }
 
+    if (filter.sortTop) {
+      query.sortTop = true
+    }
+
     try {
       // Dao handles defaults for fields if undefined
       const { result: events, success } = await getEvents(query)

@@ -166,7 +166,7 @@ async function countFilteredEvents ({ ws, filters }) {
       totalCount += result
     }
   }
-  if (totalCount) hll = await maybeGetHll(filters)
+  if (totalCount && !filters[0].includeSpam) hll = await maybeGetHll(filters)
 
   trackIpActivity({ ip: ws.ip })
   return {
