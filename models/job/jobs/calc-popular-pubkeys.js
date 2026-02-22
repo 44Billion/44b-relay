@@ -2,6 +2,7 @@ import mdb from '#services/db/mdb.js'
 import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
 import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
 import { base16ToBytes } from '#helpers/base16.js'
+import { patchJobByKey, putJobByKey } from '../dao.js'
 
 async function snapshotAndResetLiveIndex (
   liveUid,
@@ -239,10 +240,20 @@ export async function run () {
   try {
     // We update the maintenance job record to request a run.
     // Setting requestedAt > endedAt will signal the worker to start it.
-    await mdb.index('jobs').updateDocuments([{
-      key: 'maintainStorageTiers',
-      requestedAt: now
-    }])
+    // Since maintainStorageTiers is a manual job and not initialized by the worker,
+    // first try patching an existing record, then create it if missing.
+    const { success, error: patchError } = await patchJobByKey('maintainStorageTiers', { requestedAt: now })
+    if (!success) {
+      const isJobNotFound = patchError?.code === 'document_not_found'
+      if (!isJobNotFound) throw patchError || new Error('Failed to patch maintainStorageTiers job')
+
+      const { success, error } = await putJobByKey('maintainStorageTiers', {
+        startedAt: 0,
+        endedAt: 0,
+        requestedAt: now
+      })
+      if (!success) throw error || new Error('Failed to create maintainStorageTiers job')
+    }
   } catch (err) {
     console.error('Failed to trigger maintainStorageTiers:', err)
   }

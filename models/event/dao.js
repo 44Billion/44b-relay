@@ -25,7 +25,9 @@ export async function patchEventByRef (ref, patch) {
   })
     .then(task => {
       if (task.details.matchedDocuments === 0 || task.details.editedDocuments === 0) {
-        return { result: null, error: new Error('Event not found'), success: false }
+        const error = new Error('Event not found')
+        error.code = 'document_not_found'
+        return { result: null, error, success: false }
       }
       return { result: null, error: null, success: true }
     })

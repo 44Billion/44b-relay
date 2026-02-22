@@ -54,9 +54,15 @@ function scheduleJob (job, options = {}) {
     : Math.random() * 1000 * 60
 
   setTimer(async () => {
-    const { retriggerAfter } = await maybeTriggerJob(job)
-    if (retriggerAfter === null) return
-    scheduleJob(job, { retriggerAfter })
+    try {
+      const { retriggerAfter } = await maybeTriggerJob(job)
+      if (retriggerAfter === null) return
+      scheduleJob(job, { retriggerAfter })
+    } catch (err) {
+      console.error(`Error in job loop for ${job.key}:`, err)
+      // Retry after a default delay if an unexpected error occurs (e.g. DB down)
+      scheduleJob(job, { retriggerAfter: job.frequency || 60 })
+    }
   }, timeout)
 }
 
@@ -133,7 +139,10 @@ async function startJob (job) {
   const now = Math.floor(Date.now() / 1000)
   const lockKey = getRandomId()
 
-  await patchJobByKey(job.key, { startedAt: now, lockKey, heartbeatedAt: now })
+  const patchResult = await patchJobByKey(job.key, { startedAt: now, lockKey, heartbeatedAt: now })
+  if (!patchResult.success) {
+    console.error(`[worker] patchJobByKey FAILED for ${job.key}:`, patchResult.error)
+  }
 
   await wait(2000)
 

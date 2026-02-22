@@ -12,16 +12,13 @@ export const rhaiFunction = `
   let age_hours = age_ms / 3600000.0;
   if age_hours < 0.0 { age_hours = 0.0; }
 
-  let comment_count = doc.commentCount || 0;
-  let reply_count = doc.replyCount || 0;
-  let repost_count = doc.repostCount || 0;
-  let quote_count = doc.quoteCount || 0;
+  let comment_count = if doc.commentCount == () { 0 } else { doc.commentCount };
+  let reply_count = if doc.replyCount == () { 0 } else { doc.replyCount };
+  let repost_count = if doc.repostCount == () { 0 } else { doc.repostCount };
+  let quote_count = if doc.quoteCount == () { 0 } else { doc.quoteCount };
 
   let points = (comment_count * 2.0) + (reply_count * 2.0) + (repost_count * 1.0) + (quote_count * 1.5);
 
-  // Rhai doesn't have a built-in pow function for floats in all environments,
-  // but Meilisearch Rhai might support ** operator or we can approximate.
-  // Let's use the ** operator as shown in Meilisearch docs.
   doc.engagementCount = points / ((age_hours + 2.0) ** 1.8);
   doc
 `
