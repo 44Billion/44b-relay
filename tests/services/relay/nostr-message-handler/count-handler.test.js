@@ -191,6 +191,29 @@ describe('CountHandler', () => {
     }
   })
 
+  it('should count only events matching language extension', async () => {
+    // Add language-tagged events on top of existing ones
+    const enEvent = { id: '0000000000000000000000000000000000000000000000000000000000000004', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000a', created_at: 2000, content: 'English content', tags: [], sig: 'sig_en' }
+    const ptEvent = { id: '0000000000000000000000000000000000000000000000000000000000000005', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000b', created_at: 2001, content: 'Portuguese content', tags: [], sig: 'sig_pt' }
+    const records = [
+      { ...eventToRecord(enEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'en' },
+      { ...eventToRecord(ptEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'pt' }
+    ]
+    await client.index('events').addDocuments(records)
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    const ws = createWs()
+    const filters = [{ kinds: [1], search: 'language:pt' }]
+    const message = ['COUNT', 'sub_lang', ...filters]
+
+    const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const payload = JSON.parse(ws.send.mock.calls[0].arguments[0])
+    // Should count only the Portuguese event
+    assert.equal(payload[2].count, 1)
+  })
+
   it('should return hll field for kind 1111 filter targeting root event', async () => {
     // 1. Seed root event with HLL value
     const rootId = 'b'.repeat(64) // Use a different ID to avoid conflict with defaults if any

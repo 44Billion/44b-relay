@@ -62,15 +62,15 @@ async function searchByNostrFilter ({
   search = '', // nip50
   popularityLevel, // not part of nostr spec
   spamOnly, // not part of nostr spec
+  language, // nip50 extension
   sortTop // nip50 extension
 }, { metadataOnly = false, fields } = {}) {
   limit = Math.min(limit || 20, 100)
-  let language
   let q = search
 
   if (q) {
     const match = q.match(/language:([a-zA-Z]{2})/)
-    if (match) language = match[1].toLowerCase()
+    if (match) language ??= match[1].toLowerCase()
     q = q
       .replace(/language:[a-zA-Z]{2}/g, '')
       .replace(/followers:(>=|<=|>|<)?\d+/g, '')

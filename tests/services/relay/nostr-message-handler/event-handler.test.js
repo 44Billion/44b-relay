@@ -47,11 +47,19 @@ mock.module('#services/event/tracker/mdb/ip-activity.js', {
   }
 })
 
+// 7. Mock Language Detection
+mock.module('#helpers/language.js', {
+  namedExports: {
+    detectEventLanguage: mock.fn(() => undefined)
+  }
+})
+
 // Import SUT
 // Note: We need to import AFTER mocks
 const { default: EventHandler } = await import('#services/relay/nostr-message-handler/event-handler.js')
 const { default: EventSaver } = await import('#services/event/saver/mdb/index.js')
 const { getPopularityLevel } = await import('#services/event/maintainer/mdb/index.js')
+const { detectEventLanguage } = await import('#helpers/language.js')
 
 describe('EventHandler', () => {
   before(() => {
@@ -318,6 +326,128 @@ describe('EventHandler', () => {
     } finally {
       process.env.IS_INTEGRATION_TEST = originalEnv
     }
+  })
+
+  it('should relay to filter with language matching event language', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 1)
+      detectEventLanguage.mock.mockImplementation(() => 'pt')
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: 'pt' }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'pubkey1',
+        id: 'event_lang_match',
+        content: 'Olá mundo'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      assert.equal(wsReceiver.send.mock.calls.length, 1)
+      const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
+      assert.equal(relayMsg[1], 'sub1')
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should NOT relay to filter with language not matching event language', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 1)
+      detectEventLanguage.mock.mockImplementation(() => 'en')
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: 'pt' }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'pubkey1',
+        id: 'event_lang_mismatch',
+        content: 'Hello world'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      // Event is saved (OK), but NOT relayed to the receiver
+      const ackMsg = JSON.parse(wsSender.send.mock.calls[0].arguments[0])
+      assert.equal(ackMsg[2], true)
+      assert.equal(wsReceiver.send.mock.calls.length, 0)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should NOT relay to filter with language when event language is undefined', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 1)
+      detectEventLanguage.mock.mockImplementation(() => undefined)
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: 'en' }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'pubkey1',
+        id: 'event_no_lang',
+        content: '🎉'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      assert.equal(wsReceiver.send.mock.calls.length, 0)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should relay when filter has no language set (regardless of event language)', async () => {
+    getPopularityLevel.mock.mockImplementation(() => 1)
+    detectEventLanguage.mock.mockImplementation(() => 'fr')
+
+    const wsSender = createWs('sender')
+    const wsReceiver = createWs('receiver')
+    wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], isBroad: true }] }
+    const wss = { clients: [wsSender, wsReceiver] }
+
+    const event = {
+      kind: 1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      pubkey: 'pubkey1',
+      id: 'event_no_filter_lang',
+      content: 'Bonjour le monde'
+    }
+
+    const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+    await handler.run()
+
+    assert.equal(wsReceiver.send.mock.calls.length, 1)
   })
 
   it('should NOT relay future event to others', async () => {

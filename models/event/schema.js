@@ -65,6 +65,7 @@ export default {
       'indexableTags',
       'created_at',
       'receivedAt',
+      'language',
       'lastAccessedAt',
       'expiresAt',
       'ownerType',

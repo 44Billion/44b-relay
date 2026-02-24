@@ -46,6 +46,12 @@ export function extractFilterExtensions (filter) {
   extensions.sortTop = filter.search.includes('sort:top')
   if (extensions.sortTop) filter.search = filter.search.replace(/sort:top/g, '').trim()
 
+  const languageMatch = filter.search.match(/language:([a-zA-Z]{2})/)
+  if (languageMatch) {
+    extensions.language = languageMatch[1].toLowerCase()
+    filter.search = filter.search.replace(/language:[a-zA-Z]{2}/g, '').trim()
+  }
+
   return extensions
 }
 

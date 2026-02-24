@@ -637,4 +637,56 @@ describe('EventSaver (MDB) Integration', () => {
     assert.ok(!deletedKeys.includes(documents[2].ref), 'Event 3 (diff d-tag) should NOT be deleted')
     assert.ok(!deletedKeys.includes(documents[3].ref), 'Event 4 (diff kind) should NOT be deleted')
   })
+
+  it('should save language when provided', async () => {
+    const event = {
+      id: pad64('e1'),
+      pubkey: VALID_PUBKEY_1,
+      created_at: 1000,
+      kind: eventKinds.TEXT_NOTE,
+      tags: [],
+      content: 'hello world',
+      sig: VALID_SIG
+    }
+
+    checkStorageLimitAndPruneMock.mock.mockImplementation(async () => ({
+      ownerType: 'pubkey',
+      ownerKey: VALID_PUBKEY_1,
+      popularityLevel: 1,
+      ops: []
+    }))
+
+    const result = await EventSaver.run({ ws: {}, event, ip: '127.0.0.1', language: 'en' })
+    assert.ok(result.isSuccess)
+
+    const ops = queueOpsMock.mock.calls[0].arguments[0]
+    const insertOp = ops.find(op => op.type === 'insertOrReplaceDocument')
+    assert.equal(insertOp.data.document.language, 'en')
+  })
+
+  it('should not set language when not provided', async () => {
+    const event = {
+      id: pad64('e2'),
+      pubkey: VALID_PUBKEY_1,
+      created_at: 1000,
+      kind: eventKinds.TEXT_NOTE,
+      tags: [],
+      content: 'hello',
+      sig: VALID_SIG
+    }
+
+    checkStorageLimitAndPruneMock.mock.mockImplementation(async () => ({
+      ownerType: 'pubkey',
+      ownerKey: VALID_PUBKEY_1,
+      popularityLevel: 1,
+      ops: []
+    }))
+
+    const result = await EventSaver.run({ ws: {}, event, ip: '127.0.0.1' })
+    assert.ok(result.isSuccess)
+
+    const ops = queueOpsMock.mock.calls[0].arguments[0]
+    const insertOp = ops.find(op => op.type === 'insertOrReplaceDocument')
+    assert.equal(insertOp.data.document.language, undefined)
+  })
 })

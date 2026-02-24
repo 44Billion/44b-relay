@@ -19,15 +19,16 @@ describe('Event Fetcher (MDB)', () => {
   })
 
   // Helper to seed events directly into MDB
-  const seedEvents = async (events) => {
-    const docs = events.map(evt => {
+  const seedEvents = async (events, extras = []) => {
+    const docs = events.map((evt, i) => {
       const record = eventToRecord(evt, { receivedAt: evt.created_at, isContentSearchable: true })
       return {
         ...record,
         byteSize: 100, // Dummy
         ownerType: 'pubkey',
         ip: '127.0.0.1',
-        popularityLevel: evt.popularityLevel || 0
+        popularityLevel: evt.popularityLevel || 0,
+        ...(extras[i] || {})
       }
     })
     await mdb.index('events').addDocuments(docs)
@@ -373,5 +374,63 @@ describe('Event Fetcher (MDB)', () => {
     } finally {
       process.env.IS_INTEGRATION_TEST = originalEnv
     }
+  })
+
+  it('should return only events matching language extension', async () => {
+    const enEvent = {
+      id: pad64('30'),
+      pubkey: VALID_PUBKEY,
+      created_at: 1000,
+      kind: 1,
+      tags: [],
+      content: 'hello world',
+      sig: VALID_SIG,
+      popularityLevel: 6
+    }
+    const ptEvent = {
+      id: pad64('31'),
+      pubkey: VALID_PUBKEY,
+      created_at: 1100,
+      kind: 1,
+      tags: [],
+      content: 'olá mundo',
+      sig: VALID_SIG,
+      popularityLevel: 6
+    }
+
+    await seedEvents([enEvent, ptEvent], [{ language: 'en' }, { language: 'pt' }])
+
+    // Filter with language:pt - should return only the Portuguese event
+    const ptFilter = parseSubscriptionFilters({ filters: [{ kinds: [1], limit: 10, search: 'language:pt' }] })
+    ptFilter[0].isBroad = true
+
+    const fetchedPt = []
+    for await (const event of EventFetcher.run(ptFilter)) {
+      fetchedPt.push(event)
+    }
+    assert.equal(fetchedPt.length, 1)
+    assert.equal(fetchedPt[0].id, ptEvent.id)
+
+    // Filter with language:en - should return only the English event
+    const enFilter = parseSubscriptionFilters({ filters: [{ kinds: [1], limit: 10, search: 'language:en' }] })
+    enFilter[0].isBroad = true
+
+    const fetchedEn = []
+    for await (const event of EventFetcher.run(enFilter)) {
+      fetchedEn.push(event)
+    }
+    assert.equal(fetchedEn.length, 1)
+    assert.equal(fetchedEn[0].id, enEvent.id)
+
+    // Filter with language:pt and a text query
+    const searchFilter = parseSubscriptionFilters({ filters: [{ kinds: [1], limit: 10, search: 'language:pt mundo' }] })
+    searchFilter[0].isBroad = true
+
+    const fetchedSearch = []
+    for await (const event of EventFetcher.run(searchFilter)) {
+      fetchedSearch.push(event)
+    }
+    assert.equal(fetchedSearch.length, 1)
+    assert.equal(fetchedSearch[0].id, ptEvent.id)
   })
 })

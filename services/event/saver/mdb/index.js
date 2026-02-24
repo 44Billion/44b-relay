@@ -9,12 +9,12 @@ import { getEventByRef } from '#models/event/dao.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
 
 export default class EventSaver {
-  static run ({ ws, event, ip }) {
-    return new this({ ws, event, ip }).save()
+  static run ({ ws, event, ip, language }) {
+    return new this({ ws, event, ip, language }).save()
   }
 
-  constructor ({ ws, event, ip }) {
-    Object.assign(this, { ws, event, ip, receivedAt: Date.now() })
+  constructor ({ ws, event, ip, language }) {
+    Object.assign(this, { ws, event, ip, language, receivedAt: Date.now() })
   }
 
   async save () {
@@ -38,6 +38,7 @@ export default class EventSaver {
 
     try {
       let record
+      const recordOpts = { language: this.language, receivedAt: Math.floor(this.receivedAt / 1000) }
 
       if (event.kind !== eventKinds.DELETION) {
         const getDTagFromEvent = event => {
@@ -69,7 +70,7 @@ export default class EventSaver {
         }
 
         if (dTag !== undefined) {
-          record = eventToRecord(event, { receivedAt: Math.floor(this.receivedAt / 1000) })
+          record = eventToRecord(event, recordOpts)
           const { result: existingEvent } = await getEventByRef(record.ref)
           const hasMoreRecent =
             existingEvent && (
@@ -86,7 +87,7 @@ export default class EventSaver {
       const { ownerType, _ownerKey, popularityLevel, ops: storageOps } = await checkStorageLimitAndPrune({ pubkey: author, ip, newEventSize: byteSize })
 
       // Convert to MDB Record
-      record ??= eventToRecord(event, { receivedAt: Math.floor(this.receivedAt / 1000) })
+      record ??= eventToRecord(event, recordOpts)
 
       // 2. Handle Replacement info (subtract old event size)
       let oldEvent = null

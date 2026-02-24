@@ -178,6 +178,33 @@ describe('ReqHandler', () => {
     }
   })
 
+  it('should return only events matching language extension', async () => {
+    // Add language-tagged events on top of existing ones
+    const enEvent = { id: '0000000000000000000000000000000000000000000000000000000000000004', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000a', created_at: 2000, content: 'English content', tags: [], sig: 'sig_en' }
+    const ptEvent = { id: '0000000000000000000000000000000000000000000000000000000000000005', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000b', created_at: 2001, content: 'Portuguese content', tags: [], sig: 'sig_pt' }
+    const records = [
+      { ...eventToRecord(enEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'en' },
+      { ...eventToRecord(ptEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'pt' }
+    ]
+    await client.index('events').addDocuments(records)
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    const ws = createWs()
+    const filters = [{ kinds: [1], search: 'language:pt' }]
+    const message = ['REQ', 'sub_lang', ...filters]
+
+    const handler = new ReqHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const eventMsgs = ws.send.mock.calls
+      .map(c => JSON.parse(c.arguments[0]))
+      .filter(m => m[0] === 'EVENT')
+
+    // Should find only the Portuguese event
+    assert.equal(eventMsgs.length, 1)
+    assert.equal(eventMsgs[0][2].id, ptEvent.id)
+  })
+
   it('should block overly broad scraper filters', async () => {
     const ws = createWs()
     // Scraper filter: empty or just limit/since/until
