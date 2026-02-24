@@ -170,6 +170,27 @@ describe('CountHandler', () => {
     }
   })
 
+  it('should count only spam events if is:spam is provided', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      const ws = createWs()
+      // Broad filter with is:spam
+      const filters = [{ kinds: [1], search: 'is:spam' }]
+      const message = ['COUNT', 'sub_is_spam', ...filters]
+
+      const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+      await handler.run()
+
+      const payload = JSON.parse(ws.send.mock.calls[0].arguments[0])
+      // Should find only the spam event (popularity 999)
+      assert.equal(payload[2].count, 1)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
   it('should return hll field for kind 1111 filter targeting root event', async () => {
     // 1. Seed root event with HLL value
     const rootId = 'b'.repeat(64) // Use a different ID to avoid conflict with defaults if any

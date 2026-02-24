@@ -40,6 +40,9 @@ export function extractFilterExtensions (filter) {
   extensions.includeSpam = filter.search.includes('include:spam')
   if (extensions.includeSpam) filter.search = filter.search.replace(/include:spam/g, '').trim()
 
+  extensions.isSpam = filter.search.includes('is:spam')
+  if (extensions.isSpam) filter.search = filter.search.replace(/is:spam/g, '').trim()
+
   extensions.sortTop = filter.search.includes('sort:top')
   if (extensions.sortTop) filter.search = filter.search.replace(/sort:top/g, '').trim()
 

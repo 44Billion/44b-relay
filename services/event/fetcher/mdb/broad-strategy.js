@@ -26,7 +26,9 @@ export default class BroadStrategy {
 
     // Popularity check for broad filters
     if (filter.isBroad && process.env.IS_INTEGRATION_TEST !== 'true') {
-      if (!filter.includeSpam) {
+      if (filter.isSpam) {
+        query.spamOnly = true
+      } else if (!filter.includeSpam) {
         query.popularityLevel = 6
       }
     }

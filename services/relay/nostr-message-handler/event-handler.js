@@ -137,7 +137,9 @@ class EventHandler {
         let shouldRelay = false
         for (const filter of filters) {
           if (doesMatchASubscriptionFilter({ filters: [filter], event })) {
-            if (!filter.isBroad || authorPopularityLevel <= 6 || filter.includeSpam || process.env.IS_INTEGRATION_TEST === 'true') {
+            if (filter.isSpam) {
+              if (authorPopularityLevel > 6) { shouldRelay = true; break }
+            } else if (!filter.isBroad || authorPopularityLevel <= 6 || filter.includeSpam || process.env.IS_INTEGRATION_TEST === 'true') {
               shouldRelay = true
               break
             }

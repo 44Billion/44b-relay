@@ -153,6 +153,31 @@ describe('ReqHandler', () => {
     }
   })
 
+  it('should return only spam events in broad filters if is:spam is provided', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      const ws = createWs()
+      // Broad filter with is:spam
+      const filters = [{ kinds: [1], search: 'is:spam' }]
+      const message = ['REQ', 'sub_is_spam', ...filters]
+
+      const handler = new ReqHandler({ wss: {}, ws, nostrMessage: message })
+      await handler.run()
+
+      const eventMsgs = ws.send.mock.calls
+        .map(c => JSON.parse(c.arguments[0]))
+        .filter(m => m[0] === 'EVENT')
+
+      // Should find only the spam event (popularity 999)
+      assert.equal(eventMsgs.length, 1)
+      assert.equal(eventMsgs[0][2].id, '0000000000000000000000000000000000000000000000000000000000000003')
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
   it('should block overly broad scraper filters', async () => {
     const ws = createWs()
     // Scraper filter: empty or just limit/since/until

@@ -156,7 +156,9 @@ async function countFilteredEvents ({ ws, filters }) {
     // Popularity check for broad filters
     // as seen at services/event/fetcher/mdb/broad-strategy.js
     if (filter.isBroad && process.env.IS_INTEGRATION_TEST !== 'true') {
-      if (!filter.includeSpam) {
+      if (filter.isSpam) {
+        query.spamOnly = true
+      } else if (!filter.includeSpam) {
         query.popularityLevel = 6
       }
     }
@@ -166,7 +168,7 @@ async function countFilteredEvents ({ ws, filters }) {
       totalCount += result
     }
   }
-  if (totalCount && !filters[0].includeSpam) hll = await maybeGetHll(filters)
+  if (totalCount && !filters[0].includeSpam && !filters[0].isSpam) hll = await maybeGetHll(filters)
 
   trackIpActivity({ ip: ws.ip })
   return {

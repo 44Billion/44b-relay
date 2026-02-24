@@ -254,6 +254,72 @@ describe('EventHandler', () => {
     }
   })
 
+  it('should relay to broad filter with isSpam only if author popularity is high', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 999)
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      // Receiver has broad filter WITH isSpam
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isSpam: true }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'spam_pubkey',
+        id: 'event_is_spam',
+        content: 'only spam please'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      // Should be relayed because author popularity > 6
+      assert.equal(wsReceiver.send.mock.calls.length, 1)
+      const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
+      assert.equal(relayMsg[1], 'sub1')
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should NOT relay to broad filter with isSpam if author popularity is low', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 3)
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      // Receiver has broad filter WITH isSpam
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isSpam: true }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'nonspam_pubkey',
+        id: 'event_not_spam',
+        content: 'not spam'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      // Should NOT be relayed because author popularity <= 6
+      assert.equal(wsReceiver.send.mock.calls.length, 0)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
   it('should NOT relay future event to others', async () => {
     const wsSender = createWs('sender')
     wsSender.nostr.pubkey = 'sender_pubkey'

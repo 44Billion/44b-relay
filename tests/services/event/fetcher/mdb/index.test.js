@@ -317,4 +317,61 @@ describe('Event Fetcher (MDB)', () => {
       process.env.IS_INTEGRATION_TEST = originalEnv
     }
   })
+
+  it('should return only spam events if search has is:spam', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      const normalEvent = {
+        id: pad64('20'),
+        pubkey: VALID_PUBKEY,
+        created_at: 1000,
+        kind: 1,
+        tags: [],
+        content: 'normal',
+        sig: VALID_SIG,
+        popularityLevel: 6
+      }
+      const spamEvent = {
+        id: pad64('21'),
+        pubkey: VALID_PUBKEY,
+        created_at: 1100,
+        kind: 1,
+        tags: [],
+        content: 'spam',
+        sig: VALID_SIG,
+        popularityLevel: 999
+      }
+
+      await seedEvents([normalEvent, spamEvent])
+
+      // Broad filter with is:spam - should return only the spam event
+      const isSpamFilter = parseSubscriptionFilters({ filters: [{ kinds: [1], limit: 10, search: 'is:spam' }] })
+      isSpamFilter[0].isBroad = true
+
+      const fetchedSpam = []
+      for await (const event of EventFetcher.run(isSpamFilter)) {
+        fetchedSpam.push(event)
+      }
+      assert.equal(fetchedSpam.length, 1)
+      assert.equal(fetchedSpam[0].id, spamEvent.id)
+
+      // Broad filter with is:spam AND other query - should strip is:spam
+      const searchFilter = parseSubscriptionFilters({ filters: [{ kinds: [1], limit: 10, search: 'is:spam spam' }] })
+      searchFilter[0].isBroad = true
+
+      const fetchedSearch = []
+      for await (const event of EventFetcher.run(searchFilter)) {
+        fetchedSearch.push(event)
+      }
+
+      // Should find 'spam' event which has popularityLevel 999.
+      // query becomes "spam". Only the spam event matches both text and popularity.
+      assert.equal(fetchedSearch.length, 1)
+      assert.equal(fetchedSearch[0].id, spamEvent.id)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
 })

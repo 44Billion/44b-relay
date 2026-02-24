@@ -61,6 +61,7 @@ async function searchByNostrFilter ({
   ids, authors, kinds, tags, since, until, limit,
   search = '', // nip50
   popularityLevel, // not part of nostr spec
+  spamOnly, // not part of nostr spec
   sortTop // nip50 extension
 }, { metadataOnly = false, fields } = {}) {
   limit = Math.min(limit || 20, 100)
@@ -92,7 +93,8 @@ async function searchByNostrFilter ({
       ...(since ? [`created_at >= ${mdb.toMeiliValue(since)}`] : []),
       ...(until ? [`created_at <= ${mdb.toMeiliValue(until)}`] : []),
       ...(language ? [`language = ${mdb.toMeiliValue(language)}`] : []),
-      ...(popularityLevel ? [`popularityLevel <= ${mdb.toMeiliValue(popularityLevel)}`] : [])
+      ...(popularityLevel ? [`popularityLevel <= ${mdb.toMeiliValue(popularityLevel)}`] : []),
+      ...(spamOnly ? ['popularityLevel > 6'] : [])
     ],
     sort,
     offset: metadataOnly

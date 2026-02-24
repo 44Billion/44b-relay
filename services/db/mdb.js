@@ -13,6 +13,17 @@
 // Then restart the service (systemctl restart meilisearch) - see below for service setup
 // However, the v1.30.1 is the last version supporting S3-streaming snapshots without
 // an Enterprise Edition license as seen here: https://github.com/meilisearch/meilisearch/releases/tag/v1.31.0
+// For classic upgrade using a dump, see https://www.meilisearch.com/docs/learn/update_and_migration/updating#using-a-dump
+// and run the following commands:
+// await mdb.createDump()
+// sudo systemctl stop meilisearch
+// - Below cmd removes data folder content including sub folders
+// sudo find /var/lib/meilisearch/data -mindepth 1 -delete
+// sudo -u meilisearch /usr/local/bin/meilisearch \
+//   --config-file-path /etc/meilisearch.toml \
+//   --import-dump /var/lib/meilisearch/dumps/20260223-042333276.dump
+// ctrl + c
+// sudo systemctl start meilisearch
 //
 // Now add a user to run Meilisearch, a non-login one
 // useradd -d /var/lib/meilisearch -s /bin/false -m -r meilisearch
