@@ -223,26 +223,25 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
     await loadPopularityFilters()
     popularityLevel = getPopularityLevel(pubkey)
   }
-  const level = popularityLevel
   const isVip = VIP_PUBKEYS.has(pubkey)
 
-  const ownerType = isVip ? 'pubkey' : (level <= 5 ? 'pubkey' : 'ip')
+  const ownerType = isVip ? 'pubkey' : (popularityLevel <= 5 ? 'pubkey' : 'ip')
   const ownerKey = ownerType === 'pubkey' ? pubkey : ipToPrimaryKey(ip)
-  const limit = getStorageLimit(level)
+  const limit = getStorageLimit(popularityLevel)
 
   const ops = []
 
   // Queue the usage update
   ops.push({
     type: 'deltaUsage',
-    data: { key: ownerKey, delta: newEventSize, entityType: ownerType, popularityLevel: level }
+    data: { key: ownerKey, delta: newEventSize, entityType: ownerType, popularityLevel }
   })
 
   // We optimize by checking current usage (even if slightly stale) to see if we should queue a prune check
   // We don't strictly need to queue 'prune' if we are far from limit, to save job processing time.
   // But if we are close or over, we queue it.
 
-  if (isVip) return { ownerType, ownerKey, popularityLevel: level, ops }
+  if (isVip) return { ownerType, ownerKey, popularityLevel, ops }
 
   try {
     const storedEntity = await getStoredEntity({ key: ownerKey, type: ownerType })
@@ -252,15 +251,14 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
     if (currentUsage + newEventSize > limit * 0.9) {
       ops.push({
         type: 'pruneCheck',
-        data: { key: ownerKey, limit, entityType: ownerType, popularityLevel: level }
+        data: { key: ownerKey, limit, entityType: ownerType, popularityLevel }
       })
     }
-  } catch (_e) {
-    // If error reading entity, we might still want to queue the check just in case?
-    // Or just ignore.
+  } catch (err) {
+    console.log('Error reading entity. Can\'t schedule prune check for', ownerKey, err)
   }
 
-  return { ownerType, ownerKey, popularityLevel: level, ops }
+  return { ownerType, ownerKey, popularityLevel, ops }
 }
 
 export {
