@@ -12,6 +12,7 @@ import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import EventSaver from '#services/event/saver/mdb/index.js'
 import { detectEventLanguage } from '#helpers/language.js'
 import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
+import { broadcast } from '#services/ipc/cross-process-broadcaster.js'
 
 class EventHandler {
   static run ({ wss, ws, nostrMessage }) {
@@ -40,7 +41,10 @@ class EventHandler {
       let shouldRelay // e.g.: don't relay duplicates
       ;({ isSuccess, shouldRelay = isSuccess, message } = await this.processNostrEvent({ ws, event, ip: ws.ip, eventLanguage }))
       sendCommandResult({ ws, event, isSuccess, message })
-      if (shouldRelay) return this.sendToClientsWithAMatchingFilter({ wss, event, eventLanguage })
+      if (shouldRelay) {
+        broadcast({ event, eventLanguage })
+        return sendToClientsWithAMatchingFilter({ wss, event, eventLanguage })
+      }
     } catch (error) {
       console.error('Error handling event:', error)
       sendCommandResult({ ws, event, isSuccess: false, message: 'error: internal server error' })
@@ -119,63 +123,64 @@ class EventHandler {
     return { isBlocked: false, message: '' }
   }
 
-  async sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage }) {
-    // Better to relay for those who may have subscribed to (e.g.: online status update)
-    // if (isReplaceableEvent(event)) return
-
-    const maxUntil = Math.floor(Date.now() / 1000) + 10 * 60
-    const isFutureEvent = event.created_at > maxUntil
-
-    await loadPopularityFilters()
-    const authorPopularityLevel = getPopularityLevel(event.pubkey)
-
-    for (const ws of wss.clients) {
-      if (ws.readyState !== webSocketReadyState.OPEN) continue
-      if (isFutureEvent && ws.nostr.pubkey !== event.pubkey) continue
-
-      for (const [subscriptionId, { filters }] of Object.entries(ws.nostr.subscriptions)) {
-        // Check popularity for broad filters
-        // If the matching filter is broad, we only relay if popularity <= 6
-        // If MULTIPLE filters match, and at least ONE is NOT broad/restricted, we should relay.
-        let shouldRelay = false
-        for (const filter of filters) {
-          if (doesMatchASubscriptionFilter({ filters: [filter], event })) {
-            if (filter.language && filter.language !== eventLanguage) continue
-            if (filter.isSpam) {
-              if (authorPopularityLevel > 6) { shouldRelay = true; break }
-            } else if (!filter.isBroad || authorPopularityLevel <= 6 || filter.includeSpam || process.env.IS_INTEGRATION_TEST === 'true') {
-              shouldRelay = true
-              break
-            }
-          }
-        }
-
-        if (!shouldRelay) continue
-
-        await sendEvent({ ws, subscriptionId, event })
-
-        const nowSecs = Math.floor(Date.now() / 1000)
-        ws.nostr.subscriptions[subscriptionId].filters = filters.filter(filter => {
-          if (filter.until !== undefined && filter.until < nowSecs) return false
-          if (filter.ids?.includes(event.id)) {
-            filter.ids = filter.ids.filter(id => id !== event.id)
-            if (filter.ids.length === 0) return false
-          }
-          return true
-        })
-
-        if (ws.nostr.subscriptions[subscriptionId].filters.length === 0) {
-          delete ws.nostr.subscriptions[subscriptionId]
-          sendClosed({ ws, subscriptionId, message: 'completed: subscription ended' })
-          if (Object.keys(ws.nostr.subscriptions).length === 0) disconnectWhenInactive(ws)
-        }
-      }
-    }
-  }
-
   maybePersistEvent ({ ws, event, ip, language }) {
     return EventSaver.run({ ws, event, ip, language })
   }
 }
 
+async function sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage }) {
+  // Better to relay for those who may have subscribed to (e.g.: online status update)
+  // if (isReplaceableEvent(event)) return
+
+  const maxUntil = Math.floor(Date.now() / 1000) + 10 * 60
+  const isFutureEvent = event.created_at > maxUntil
+
+  await loadPopularityFilters()
+  const authorPopularityLevel = getPopularityLevel(event.pubkey)
+
+  for (const ws of wss.clients) {
+    if (ws.readyState !== webSocketReadyState.OPEN) continue
+    if (isFutureEvent && ws.nostr.pubkey !== event.pubkey) continue
+
+    for (const [subscriptionId, { filters }] of Object.entries(ws.nostr.subscriptions)) {
+      // Check popularity for broad filters
+      // If the matching filter is broad, we only relay if popularity <= 6
+      // If MULTIPLE filters match, and at least ONE is NOT broad/restricted, we should relay.
+      let shouldRelay = false
+      for (const filter of filters) {
+        if (doesMatchASubscriptionFilter({ filters: [filter], event })) {
+          if (filter.language && filter.language !== eventLanguage) continue
+          if (filter.isSpam) {
+            if (authorPopularityLevel > 6) { shouldRelay = true; break }
+          } else if (!filter.isBroad || authorPopularityLevel <= 6 || filter.includeSpam || process.env.IS_INTEGRATION_TEST === 'true') {
+            shouldRelay = true
+            break
+          }
+        }
+      }
+
+      if (!shouldRelay) continue
+
+      await sendEvent({ ws, subscriptionId, event })
+
+      const nowSecs = Math.floor(Date.now() / 1000)
+      ws.nostr.subscriptions[subscriptionId].filters = filters.filter(filter => {
+        if (filter.until !== undefined && filter.until < nowSecs) return false
+        if (filter.ids?.includes(event.id)) {
+          filter.ids = filter.ids.filter(id => id !== event.id)
+          if (filter.ids.length === 0) return false
+        }
+        return true
+      })
+
+      if (ws.nostr.subscriptions[subscriptionId].filters.length === 0) {
+        delete ws.nostr.subscriptions[subscriptionId]
+        sendClosed({ ws, subscriptionId, message: 'completed: subscription ended' })
+        if (Object.keys(ws.nostr.subscriptions).length === 0) disconnectWhenInactive(ws)
+      }
+    }
+  }
+}
+
 export default EventHandler
+export { sendToClientsWithAMatchingFilter }

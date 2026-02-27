@@ -43,8 +43,10 @@ yarn-error.log*
 
 # vscode
 .history
+.kilocode
 
 todo
+plans
 
 # integration tests
 tests/integration/relay-tester/target/

@@ -11,6 +11,8 @@ import {
   // disconnectIfNotAuthenticatedAfterSomeTime
 } from '#services/rate-limiting/web-socket-request-limiter.js'
 import { rateLimitReqByIp as serverRateLimitReqByIp } from '#services/rate-limiting/server-request-limiter.js'
+import { init as initBroadcaster } from '#services/ipc/cross-process-broadcaster.js'
+import { sendToClientsWithAMatchingFilter } from '#services/relay/nostr-message-handler/event-handler.js'
 
 export function handleHttpServerUpgrade (req, socket, upgradeHead) {
   logReqRes(req, socket)
@@ -54,6 +56,10 @@ const shouldSpinUpServer = process.env.NODE_ENV === 'development' || process.env
 if (shouldSpinUpServer) {
   server.on('upgrade', handleHttpServerUpgrade)
 }
+
+initBroadcaster(({ event, eventLanguage }) => {
+  sendToClientsWithAMatchingFilter({ wss, event, eventLanguage })
+})
 
 const shouldStartWorker = process.env.NODE_ENV !== 'test'
 if (shouldStartWorker) {
