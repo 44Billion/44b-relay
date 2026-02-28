@@ -105,11 +105,12 @@ describe('Job: Calc Popular Pubkeys', () => {
     const level1 = results.find(r => r.key === '1')
     assert.ok(level1)
 
-    // 3. Maintenance triggered
+    // 3. Maintenance triggered (via triggerManualJob which uses the DB lock)
+    await new Promise(resolve => setTimeout(resolve, 200))
     const jobs = await mdb.index('jobs').getDocuments()
     const maintJob = jobs.results.find(j => j.key === 'maintainStorageTiers')
-    assert.ok(maintJob)
-    assert.ok(maintJob.requestedAt > 0)
+    assert.ok(maintJob, 'maintainStorageTiers job record should exist')
+    assert.ok(maintJob.startedAt > 0, 'maintainStorageTiers should have been started')
   })
 
   it('should handle empty live index', async () => {
