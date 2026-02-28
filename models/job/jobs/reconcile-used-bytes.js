@@ -12,7 +12,8 @@ async function run () {
   while (true) {
     const { results } = await mdb.index('storedEventOwners').getDocuments({
       offset,
-      limit: BATCH_SIZE
+      limit: BATCH_SIZE,
+      sort: ['key:asc']
     })
 
     if (results.length === 0) break
@@ -30,21 +31,22 @@ async function run () {
           ? `pubkey = ${mdb.toMeiliValue(filterValue)} AND ownerType = "pubkey"`
           : `ip = ${mdb.toMeiliValue(filterValue)} AND ownerType = "ip"`
 
-        const { hits } = await mdb.index('events').search('', {
+        // Use getDocuments() instead of search() to bypass maxTotalHits limitation
+        const { results: evResults } = await mdb.index('events').getDocuments({
           filter,
           limit: BATCH_SIZE,
           offset: evOffset,
-          attributesToRetrieve: ['ref', 'byteSize']
+          fields: ['ref', 'byteSize']
         })
 
-        if (hits.length === 0) break
+        if (evResults.length === 0) break
 
-        for (const hit of hits) {
-          actualUsedBytes += (hit.byteSize || 0)
+        for (const ev of evResults) {
+          actualUsedBytes += (ev.byteSize || 0)
         }
 
-        if (hits.length < BATCH_SIZE) break
-        evOffset += hits.length
+        if (evResults.length < BATCH_SIZE) break
+        evOffset += evResults.length
       }
 
       const oldUsedBytes = owner.usedBytes || 0
