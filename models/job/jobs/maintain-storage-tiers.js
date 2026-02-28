@@ -1,5 +1,5 @@
 import mdb from '#services/db/mdb.js'
-import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
+import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps, VIP_PUBKEYS } from '#services/event/maintainer/mdb/index.js'
 import { FastBloomFilter, packFilter, unpackFilter } from '#helpers/bloom.js'
 import { base16ToBytes } from '#helpers/base16.js'
 
@@ -136,7 +136,9 @@ async function run () {
       if (maintenanceReachedUnprocessed || !state.maintenanceDoneFilterRaw.has(base16ToBytes(pubkey))) {
         maintenanceReachedUnprocessed = true
         // Check for Relegation
-        if (popularityLevel > 5) {
+        if (VIP_PUBKEYS.has(pubkey)) {
+          // VIP pubkeys are exempt from relegation and pruning
+        } else if (popularityLevel > 5) {
           // Relegation Logic: Move 'pubkey' events to 'ip'
           await relegateEvents(pubkey, state, popularityLevel)
         } else {

@@ -1,5 +1,7 @@
 import mdb from '#services/db/mdb.js'
 import { eventToRecord, recordToEvent } from './mapper.js'
+import { queueOps } from '#services/event/maintainer/mdb/index.js'
+import { ipToPrimaryKey } from '#helpers/mdb.js'
 
 export async function getEventByRef (ref, options = {}) {
   return mdb.index('events').getDocument(ref, {
@@ -135,11 +137,60 @@ export async function deleteEventsByRef (refs) {
 
 export async function deleteExpiredEvents () {
   const now = Math.floor(Date.now() / 1000)
-  return mdb.index('events').deleteDocuments({
-    filter: [
-      `expiresAt <= ${mdb.toMeiliValue(now)}`
-    ]
-  })
-    .then(() => ({ result: null, error: null, success: true }))
-    .catch(error => ({ result: null, error, success: false }))
+  const filter = `expiresAt <= ${mdb.toMeiliValue(now)}`
+  const BATCH_SIZE = 100
+
+  try {
+    let offset = 0
+    while (true) {
+      const { hits } = await mdb.index('events').search('', {
+        filter,
+        limit: BATCH_SIZE,
+        offset,
+        attributesToRetrieve: ['ref', 'byteSize', 'ownerType', 'pubkey', 'ip']
+      })
+
+      if (hits.length === 0) break
+
+      // Group by owner to batch deltaUsage ops
+      const usageByOwner = {}
+      const ops = []
+
+      for (const hit of hits) {
+        // Schedule event deletion as a queued operation (atomic with usage update)
+        ops.push({
+          type: 'deleteDocumentIfExists',
+          data: { index: 'events', key: hit.ref }
+        })
+
+        const ownerType = hit.ownerType || 'pubkey'
+        const ownerKey = ownerType === 'pubkey' ? hit.pubkey : ipToPrimaryKey(hit.ip)
+        if (!ownerKey) continue
+        if (!usageByOwner[ownerKey]) usageByOwner[ownerKey] = { entityType: ownerType, delta: 0 }
+        usageByOwner[ownerKey].delta -= (hit.byteSize || 0)
+      }
+
+      // Queue deltaUsage ops to decrement usedBytes
+      for (const [key, { entityType, delta }] of Object.entries(usageByOwner)) {
+        if (delta === 0) continue
+        ops.push({
+          type: 'deltaUsage',
+          data: { key, delta, entityType }
+        })
+      }
+
+      if (ops.length > 0) await queueOps(ops)
+
+      // If we got fewer than BATCH_SIZE, we've exhausted the results
+      if (hits.length < BATCH_SIZE) break
+      // Increment offset since we're not deleting directly anymore;
+      // deletes will happen when processPendingOps runs.
+      offset += hits.length
+    }
+
+    return { result: null, error: null, success: true }
+  } catch (error) {
+    console.error('Error in deleteExpiredEvents:', error)
+    return { result: null, error, success: false }
+  }
 }

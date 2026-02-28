@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
 import { processBatch, loadSystemState } from '#models/job/jobs/process-pending-ops/index.js'
 import * as maintainStorageTiersJob from '#models/job/jobs/maintain-storage-tiers.js'
+import { VIP_PUBKEYS } from '#services/event/maintainer/mdb/index.js'
 import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
 import { base16ToBytes } from '#helpers/base16.js'
 
@@ -214,5 +215,63 @@ describe('Job: Maintain Storage Tiers', () => {
     // But update is delta.
     const owner = await mdb.index('storedEventOwners').getDocument(relegatedPubKeyHex)
     assert.equal(owner.usedBytes, 0, 'Usage should be decremented')
+  })
+
+  it('should NOT relegate VIP pubkey events even when popularity > 5', async () => {
+    // 1. Setup Jobs
+    await mdb.index('jobs').addDocuments([{ key: 'calcPopularPubkeys', endedAt: 999999 }])
+
+    // 2. Use a VIP pubkey
+    const vipPubkey = [...VIP_PUBKEYS][0]
+
+    // 3. Setup Stored Event Owner for VIP
+    await mdb.index('storedEventOwners').addDocuments([{
+      key: vipPubkey,
+      entityType: 'pubkey',
+      popularityLevel: 999, // VIP may not be in any popular filter
+      usedBytes: 500
+    }])
+
+    // 4. Setup Events for VIP
+    await mdb.index('events').addDocuments([{
+      ref: 'vip_ev1',
+      pubkey: vipPubkey,
+      ip: '5.5.5.5',
+      byteSize: 500,
+      ownerType: 'pubkey',
+      kind: 1, created_at: 100, tags: [], content: 'vip event', sig: 'sig'
+    }])
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Run with background processor
+    const runLoop = async () => {
+      try {
+        await runPendingOps()
+      } catch (e) {
+        if (e.code !== 'document_not_found') console.error(e)
+      } finally {
+        if (processor) processor = setTimeout(runLoop, 200)
+      }
+    }
+    let processor = setTimeout(runLoop, 200)
+
+    try {
+      await maintainStorageTiersJob.default.run()
+    } finally {
+      clearTimeout(processor)
+      processor = null
+      await runPendingOps() // Drain remaining
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    // VIP event should still be owned by pubkey (NOT relegated to ip)
+    const event = await mdb.index('events').getDocument('vip_ev1')
+    assert.equal(event.ownerType, 'pubkey', 'VIP event should NOT be relegated to ip')
+
+    // VIP owner usedBytes should be unchanged
+    const owner = await mdb.index('storedEventOwners').getDocument(vipPubkey)
+    assert.equal(owner.usedBytes, 500, 'VIP usedBytes should remain unchanged')
   })
 })
