@@ -235,7 +235,7 @@ export async function processBatch (results, systemState) {
           }
         }
       } else if (opType === 'mergeNip45Hll') {
-        const targetIndex = data.index
+        targetIndex = data.index
         ensureIndexInit(targetIndex)
 
         if (systemState[targetIndex].has(op.key)) {
@@ -266,34 +266,35 @@ export async function processBatch (results, systemState) {
                 // eventKinds.TIME_BASED_CALENDAR_EVENT,
                 eventKinds.CALENDAR
               ].includes(doc.kind)
-            if (!isRootTarget) continue
 
-            const currentVal = doc[field]
-            const offset = data.offset
+            if (isRootTarget) {
+              const currentVal = doc[field]
+              const offset = data.offset
 
-            const existingHll = currentVal
-              ? HLL.newWithRegisters(base16ToBytes(currentVal), offset)
-              : new HLL(offset)
+              const existingHll = currentVal
+                ? HLL.newWithRegisters(base16ToBytes(currentVal), offset)
+                : new HLL(offset)
 
-            const incomingRegisters = base16ToBytes(data.hll)
-            const incomingHll = HLL.newWithRegisters(incomingRegisters, offset)
-            existingHll.merge(incomingHll)
-            doc[field] = bytesToBase16(existingHll.getRegisters())
+              const incomingRegisters = base16ToBytes(data.hll)
+              const incomingHll = HLL.newWithRegisters(incomingRegisters, offset)
+              existingHll.merge(incomingHll)
+              doc[field] = bytesToBase16(existingHll.getRegisters())
 
-            const countField = field.replace('Counter', 'Count')
-            doc[countField] = existingHll.count()
+              const countField = field.replace('Counter', 'Count')
+              doc[countField] = existingHll.count()
 
-            const commentCount = doc.commentCount || 0
-            const replyCount = doc.replyCount || 0
-            const repostCount = doc.repostCount || 0
-            const quoteCount = doc.quoteCount || 0
+              const commentCount = doc.commentCount || 0
+              const replyCount = doc.replyCount || 0
+              const repostCount = doc.repostCount || 0
+              const quoteCount = doc.quoteCount || 0
 
-            const points = (commentCount * 2.0) + (replyCount * 2.0) + (repostCount * 1.0) + (quoteCount * 1.5)
-            const ageMs = Date.now() - (doc.created_at * 1000)
-            const ageHours = Math.max(0, ageMs / 3600000)
-            doc.engagementCount = points / Math.pow(ageHours + 2.0, 1.8)
+              const points = (commentCount * 2.0) + (replyCount * 2.0) + (repostCount * 1.0) + (quoteCount * 1.5)
+              const ageMs = Date.now() - (doc.created_at * 1000)
+              const ageHours = Math.max(0, ageMs / 3600000)
+              doc.engagementCount = points / Math.pow(ageHours + 2.0, 1.8)
 
-            docsToAddOrUpdate[targetIndex].set(targetKey, doc)
+              docsToAddOrUpdate[targetIndex].set(targetKey, doc)
+            }
           }
         }
       } else if (opType === 'mergeHll') {
