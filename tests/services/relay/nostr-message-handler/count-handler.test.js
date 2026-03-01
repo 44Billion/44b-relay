@@ -214,6 +214,30 @@ describe('CountHandler', () => {
     assert.equal(payload[2].count, 1)
   })
 
+  it('should count events matching multiple languages', async () => {
+    const enEvent = { id: '0000000000000000000000000000000000000000000000000000000000000006', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000a', created_at: 2002, content: 'English content', tags: [], sig: 'sig_en2' }
+    const ptEvent = { id: '0000000000000000000000000000000000000000000000000000000000000007', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000b', created_at: 2003, content: 'Portuguese content', tags: [], sig: 'sig_pt2' }
+    const frEvent = { id: '0000000000000000000000000000000000000000000000000000000000000008', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000c', created_at: 2004, content: 'French content', tags: [], sig: 'sig_fr' }
+    const records = [
+      { ...eventToRecord(enEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'en' },
+      { ...eventToRecord(ptEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'pt' },
+      { ...eventToRecord(frEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'fr' }
+    ]
+    await client.index('events').addDocuments(records)
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    const ws = createWs()
+    const filters = [{ kinds: [1], search: 'language:pt language:en' }]
+    const message = ['COUNT', 'sub_multi_lang', ...filters]
+
+    const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const payload = JSON.parse(ws.send.mock.calls[0].arguments[0])
+    // Should count both Portuguese and English events but not French
+    assert.equal(payload[2].count, 2)
+  })
+
   it('should return hll field for kind 1111 filter targeting root event', async () => {
     // 1. Seed root event with HLL value
     const rootId = 'b'.repeat(64) // Use a different ID to avoid conflict with defaults if any

@@ -205,6 +205,37 @@ describe('ReqHandler', () => {
     assert.equal(eventMsgs[0][2].id, ptEvent.id)
   })
 
+  it('should return events matching multiple languages', async () => {
+    const enEvent = { id: '0000000000000000000000000000000000000000000000000000000000000006', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000a', created_at: 2002, content: 'English content', tags: [], sig: 'sig_en2' }
+    const ptEvent = { id: '0000000000000000000000000000000000000000000000000000000000000007', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000b', created_at: 2003, content: 'Portuguese content', tags: [], sig: 'sig_pt2' }
+    const frEvent = { id: '0000000000000000000000000000000000000000000000000000000000000008', kind: 1, pubkey: '000000000000000000000000000000000000000000000000000000000000000c', created_at: 2004, content: 'French content', tags: [], sig: 'sig_fr' }
+    const records = [
+      { ...eventToRecord(enEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'en' },
+      { ...eventToRecord(ptEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'pt' },
+      { ...eventToRecord(frEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'fr' }
+    ]
+    await client.index('events').addDocuments(records)
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    const ws = createWs()
+    const filters = [{ kinds: [1], search: 'language:pt language:en' }]
+    const message = ['REQ', 'sub_multi_lang', ...filters]
+
+    const handler = new ReqHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const eventMsgs = ws.send.mock.calls
+      .map(c => JSON.parse(c.arguments[0]))
+      .filter(m => m[0] === 'EVENT')
+
+    // Should find both Portuguese and English events but not French
+    assert.equal(eventMsgs.length, 2)
+    const ids = eventMsgs.map(m => m[2].id)
+    assert.ok(ids.includes(enEvent.id))
+    assert.ok(ids.includes(ptEvent.id))
+    assert.ok(!ids.includes(frEvent.id))
+  })
+
   it('should block overly broad scraper filters', async () => {
     const ws = createWs()
     // Scraper filter: empty or just limit/since/until

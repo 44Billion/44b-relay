@@ -433,4 +433,53 @@ describe('Event Fetcher (MDB)', () => {
     assert.equal(fetchedSearch.length, 1)
     assert.equal(fetchedSearch[0].id, ptEvent.id)
   })
+
+  it('should return events matching multiple languages', async () => {
+    const enEvent = {
+      id: pad64('32'),
+      pubkey: VALID_PUBKEY,
+      created_at: 1000,
+      kind: 1,
+      tags: [],
+      content: 'hello world',
+      sig: VALID_SIG,
+      popularityLevel: 6
+    }
+    const ptEvent = {
+      id: pad64('33'),
+      pubkey: VALID_PUBKEY,
+      created_at: 1100,
+      kind: 1,
+      tags: [],
+      content: 'olá mundo',
+      sig: VALID_SIG,
+      popularityLevel: 6
+    }
+    const frEvent = {
+      id: pad64('34'),
+      pubkey: VALID_PUBKEY,
+      created_at: 1200,
+      kind: 1,
+      tags: [],
+      content: 'bonjour le monde',
+      sig: VALID_SIG,
+      popularityLevel: 6
+    }
+
+    await seedEvents([enEvent, ptEvent, frEvent], [{ language: 'en' }, { language: 'pt' }, { language: 'fr' }])
+
+    // Filter with language:pt language:en - should return both Portuguese and English events
+    const multiLangFilter = parseSubscriptionFilters({ filters: [{ kinds: [1], limit: 10, search: 'language:pt language:en' }] })
+    multiLangFilter[0].isBroad = true
+
+    const fetched = []
+    for await (const event of EventFetcher.run(multiLangFilter)) {
+      fetched.push(event)
+    }
+    assert.equal(fetched.length, 2)
+    const ids = fetched.map(e => e.id)
+    assert.ok(ids.includes(enEvent.id))
+    assert.ok(ids.includes(ptEvent.id))
+    assert.ok(!ids.includes(frEvent.id))
+  })
 })

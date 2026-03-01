@@ -348,7 +348,7 @@ describe('EventHandler', () => {
 
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
-      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: 'pt' }] }
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['pt'] }] }
       const wss = { clients: [wsSender, wsReceiver] }
 
       const event = {
@@ -381,7 +381,7 @@ describe('EventHandler', () => {
 
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
-      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: 'pt' }] }
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['pt'] }] }
       const wss = { clients: [wsSender, wsReceiver] }
 
       const event = {
@@ -415,7 +415,7 @@ describe('EventHandler', () => {
 
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
-      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: 'en' }] }
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['en'] }] }
       const wss = { clients: [wsSender, wsReceiver] }
 
       const event = {
@@ -458,6 +458,72 @@ describe('EventHandler', () => {
     await handler.run()
 
     assert.equal(wsReceiver.send.mock.calls.length, 1)
+  })
+
+  it('should relay to filter with multiple languages if event language matches one', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 1)
+      detectEventLanguage.mock.mockImplementation(() => 'en')
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['pt', 'en'] }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'pubkey1',
+        id: 'event_multi_lang_match',
+        content: 'Hello world'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      assert.equal(wsReceiver.send.mock.calls.length, 1)
+      const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
+      assert.equal(relayMsg[1], 'sub1')
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should NOT relay to filter with multiple languages if event language matches none', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 1)
+      detectEventLanguage.mock.mockImplementation(() => 'fr')
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['pt', 'en'] }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'pubkey1',
+        id: 'event_multi_lang_no_match',
+        content: 'Bonjour le monde'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      const ackMsg = JSON.parse(wsSender.send.mock.calls[0].arguments[0])
+      assert.equal(ackMsg[2], true)
+      assert.equal(wsReceiver.send.mock.calls.length, 0)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
   })
 
   it('should NOT relay future event to others', async () => {

@@ -71,12 +71,10 @@ async function searchByNostrFilter ({
   let q = search
 
   if (q) {
-    const match = q.match(/language:([a-zA-Z]{2})/)
-    if (match) language ??= match[1].toLowerCase()
+    // remove known unsupported search extensions
     q = q
-      .replace(/language:[a-zA-Z]{2}/g, '')
       .replace(/followers:(>=|<=|>|<)?\d+/g, '')
-      .replace(/sort:(hot|top|new|old)/g, '')
+      .replace(/sort:(hot|new|old)/g, '')
       .replace(/\s+/g, ' ')
       .trim()
   }
@@ -94,7 +92,7 @@ async function searchByNostrFilter ({
       ...(tags ? Object.entries(tags).map(([k, vs]) => vs.map(v => `indexableTags = ${mdb.toMeiliValue(`${k} ${v}`)}`)) : []),
       ...(since ? [`created_at >= ${mdb.toMeiliValue(since)}`] : []),
       ...(until ? [`created_at <= ${mdb.toMeiliValue(until)}`] : []),
-      ...(language ? [`language = ${mdb.toMeiliValue(language)}`] : []),
+      ...(language?.length ? [language.map(lang => `language = ${mdb.toMeiliValue(lang)}`)] : []),
       ...(popularityLevel ? [`popularityLevel <= ${mdb.toMeiliValue(popularityLevel)}`] : []),
       ...(spamOnly ? ['popularityLevel > 6'] : [])
     ],

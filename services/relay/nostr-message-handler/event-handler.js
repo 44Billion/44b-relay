@@ -149,7 +149,7 @@ async function sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage }) 
       let shouldRelay = false
       for (const filter of filters) {
         if (doesMatchASubscriptionFilter({ filters: [filter], event })) {
-          if (filter.language && filter.language !== eventLanguage) continue
+          if (filter.language && !filter.language.includes(eventLanguage)) continue
           if (filter.isSpam) {
             if (authorPopularityLevel > 6) { shouldRelay = true; break }
           } else if (!filter.isBroad || authorPopularityLevel <= 6 || filter.includeSpam || process.env.IS_INTEGRATION_TEST === 'true') {
