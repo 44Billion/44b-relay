@@ -1,4 +1,6 @@
 import { createServer } from 'node:http'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { addToCleanup } from '#helpers/process.js'
 // eslint-disable-next-line n/no-deprecated-api
 import { parse } from 'node:url'
@@ -6,6 +8,7 @@ import { getIp } from '#helpers/request.js'
 import { rateLimitReqByIp } from '#services/rate-limiting/server-request-limiter.js'
 import { parseNip50PathExtensions } from '#helpers/subscription.js'
 
+const isProduction = process.env.NODE_ENV === 'production'
 const shouldSpinUpServer = process.env.NODE_ENV === 'development' || process.env.SHOULD_SPIN_UP_SERVER === 'true'
 const server = shouldSpinUpServer
   ? createServer(httpOnlyHandler)
@@ -41,7 +44,7 @@ function sendRateLimitResponnse (res, retrySecs) {
   res.writeHead(429)
   res.end(JSON.stringify({ errors: { base: ['Too Many Requests'] } }))
 }
-const RELAY_DOMAIN = process.env.RELAY_HOST || 'relay.44billion.net'
+const RELAY_URL = `wss://${process.env.RELAY_HOST || 'relay.44billion.net'}`
 const BASE_RELAY_INFO = {
   pubkey: 'fc7085c383ba71745704bdc1c6efcf7fab0197501de598c5e6c537ac0b32a4cb', // arthurfranca - npub1l3cgtsurhfchg4cyhhqudm70074sr96srhje330xc5m6czej5n9s9q6vs2
   contact: 'https://github.com/arthurfranca',
@@ -51,12 +54,25 @@ const BASE_RELAY_INFO = {
   version: '0.0.1'
 }
 
+const mediaDir = join(import.meta.dirname, '..', '..', 'assets', 'media')
+const loadImg = filename => {
+  try {
+    const img = readFileSync(join(mediaDir, filename))
+    const ext = filename.split('.').pop()
+    const mime = ext === 'svg' ? 'svg+xml' : ext
+    return `data:image/${mime};base64,${img.toString('base64')}`
+  } catch (err) {
+    console.error(`Could not load media ${filename}:`, err.message)
+    return ''
+  }
+}
+
 const ICONS = {
-  default: 'https://nostr.build/i/53866b44135a27d624e99c6165cabd76ac8f72797209700acb189fce75021f47.jpg',
-  trending: 'https://nostr.build/i/53866b44135a27d624e99c6165cabd76ac8f72797209700acb189fce75021f47.jpg',
-  spam: 'https://nostr.build/i/53866b44135a27d624e99c6165cabd76ac8f72797209700acb189fce75021f47.jpg',
-  rising: 'https://nostr.build/i/53866b44135a27d624e99c6165cabd76ac8f72797209700acb189fce75021f47.jpg',
-  popular: 'https://nostr.build/i/53866b44135a27d624e99c6165cabd76ac8f72797209700acb189fce75021f47.jpg'
+  default: loadImg('44b.png'),
+  trending: loadImg('trending.png'),
+  spam: loadImg('spam.png'),
+  rising: loadImg('rising.png'),
+  popular: loadImg('popular.png')
 }
 
 const LANGUAGE_NAMES = {
@@ -73,14 +89,14 @@ const LANGUAGE_NAMES = {
 function buildRelayInfoDocument (pathExtensions) {
   if (!pathExtensions) {
     return {
-      name: '44billion.net Relay'.slice(0, 30),
-      description: 'A free and sybil-resistant Nostr relay that respects your privacy.'.slice(0, 100),
+      name: '44'.slice(0, 30),
+      description: 'Auto-curation by user popularity. Bye-bye spam if you make it a write/read relay.'.slice(0, 100),
       icon: ICONS.default,
       ...BASE_RELAY_INFO
     }
   }
 
-  const { sortTop, isSpam, isRising, isPopular, language } = pathExtensions
+  const { sortTop, isSpam, isRising, isPopular, includeSpam, language } = pathExtensions
 
   // Build language label
   const langLabel = language?.length
@@ -100,46 +116,54 @@ function buildRelayInfoDocument (pathExtensions) {
   if (sortTop) {
     if (langLabel) {
       name = `Trending in ${langLabel}`
-      description = `Trending notes in ${langLabel} of ${RELAY_DOMAIN}`
+      description = `Trending notes in ${langLabel} of ${RELAY_URL}`
     } else {
       name = 'Trending'
-      description = `Trending notes of ${RELAY_DOMAIN}`
+      description = `Trending notes of ${RELAY_URL}`
     }
   } else if (isPopular) {
     if (langLabel) {
       name = `Influencers in ${langLabel}`
-      description = `Notes from popular authors in ${langLabel} on ${RELAY_DOMAIN}`
+      description = `Notes from popular authors in ${langLabel} on ${RELAY_URL}`
     } else {
       name = 'Influencers'
-      description = `Notes from popular authors on ${RELAY_DOMAIN}`
+      description = `Notes from popular authors on ${RELAY_URL}`
     }
   } else if (isRising) {
     if (langLabel) {
       name = `Rising in ${langLabel}`
-      description = `Notes from rising authors in ${langLabel} on ${RELAY_DOMAIN}`
+      description = `Notes from rising authors in ${langLabel} on ${RELAY_URL}`
     } else {
       name = 'Rising'
-      description = `Notes from rising authors on ${RELAY_DOMAIN}`
+      description = `Notes from rising authors on ${RELAY_URL}`
     }
   } else if (isSpam) {
     if (langLabel) {
       name = `Spam in ${langLabel}`
-      description = `Spam-classified notes in ${langLabel} on ${RELAY_DOMAIN}`
+      description = `Spam-classified notes in ${langLabel} on ${RELAY_URL}`
     } else {
       name = 'Spam'
-      description = `Spam-classified notes on ${RELAY_DOMAIN}`
+      description = `Spam-classified notes on ${RELAY_URL}`
+    }
+  } else if (includeSpam) {
+    if (langLabel) {
+      name = `Unfiltered in ${langLabel}`
+      description = `Unfiltered notes in ${langLabel} on ${RELAY_URL}`
+    } else {
+      name = 'Unfiltered'
+      description = `Unfiltered notes on ${RELAY_URL}`
     }
   } else if (langLabel) {
     name = langLabel
-    description = `Notes in ${langLabel} on ${RELAY_DOMAIN}`
+    description = `Notes in ${langLabel} on ${RELAY_URL}`
   } else {
-    // Fallback: only include:spam was set, or some unexpected combination
-    name = '44billion.net Relay'
-    description = 'A free and sybil-resistant Nostr relay that respects your privacy.'
+    // Fallback: some unexpected combination
+    name = 'Custom'
+    description = 'A free and sybil-resistant relay that respects your privacy.'
   }
 
   return {
-    name: name.slice(0, 30),
+    name: `44's ${name.slice(0, 30)}`,
     description: description.slice(0, 100),
     icon,
     ...BASE_RELAY_INFO
@@ -171,7 +195,7 @@ export function handleRequest (req, res) {
       if (pathname.startsWith('/.well-known/nip50/')) {
         pathExtensions = parseNip50PathExtensions(pathname)
         if (!pathExtensions) {
-          if (shouldSpinUpServer) return sendDefaultErrorResponse(res)
+          if (shouldSpinUpServer || isProduction) return sendDefaultErrorResponse(res)
           return
         }
       }
@@ -192,7 +216,7 @@ export function handleRequest (req, res) {
         res.end(JSON.stringify({ error: { base: ['Please connect with a Nostr client'] } }))
       }
     } else {
-      if (shouldSpinUpServer) return sendDefaultErrorResponse(res)
+      if (shouldSpinUpServer || isProduction) return sendDefaultErrorResponse(res)
     }
   } catch (err) {
     if (!shouldSpinUpServer) return console.log(err)

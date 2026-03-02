@@ -25,11 +25,10 @@ export function handleHttpServerUpgrade (req, socket, upgradeHead) {
   if (isRateLimited) return socket.end('HTTP/1.1 429 Too Many Requests\r\n\r\n', 'ascii')
 
   // Parse NIP-50 path extensions from /.well-known/nip50/<ext>/...
-  const pathname = req.url?.split('?')[0] || '/'
+  const pathname = req.webUrl?.pathname /* from production: req.webUrl = new URL(...) */ ?? (req.url?.split('?')[0] || '/')
   const pathExtensions = parseNip50PathExtensions(pathname)
-  if (pathname.startsWith('/.well-known/nip50/') && !pathExtensions) {
-    return socket.end('HTTP/1.1 400 Bad Request\r\n\r\n', 'ascii')
-  }
+  if (pathname !== '/' && !pathExtensions) return socket.end('HTTP/1.1 400 Bad Request\r\n\r\n', 'ascii')
+
   req.nip50PathExtensions = pathExtensions
 
   // Could implement authentication here through `authorization` query param

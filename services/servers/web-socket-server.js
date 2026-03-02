@@ -55,7 +55,7 @@ wss.on('connection', (ws, req) => {
   ws.isAlive = true
 
   ws.addEventListener('pong', function heartbeat () { this.isAlive = true })
-  ws.addEventListener('error', error => { console.error(`Oops! Received this error: ${error}`) })
+  ws.addEventListener('error', error => { console.error('Oops! Received this error:', error) })
   ws.addEventListener('message', ({ data }) => {
     ws.isAlive = true
     console.log(`[RECV]: ${data.byteLength === undefined ? truncateWsMessage(data) : `${data.byteLength} Buffer bytes`}`)
