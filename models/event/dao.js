@@ -62,8 +62,7 @@ export async function countEvents (filter) {
 async function searchByNostrFilter ({
   ids, authors, kinds, tags, since, until, limit,
   search = '', // nip50
-  popularityLevel, // not part of nostr spec
-  spamOnly, // not part of nostr spec
+  popularityFilter, // not part of nostr spec — OR-able popularity clauses e.g. ['popularityLevel = 6', 'popularityLevel > 6']
   language, // nip50 extension
   sortTop // nip50 extension
 }, { metadataOnly = false, fields } = {}) {
@@ -93,8 +92,7 @@ async function searchByNostrFilter ({
       ...(since ? [`created_at >= ${mdb.toMeiliValue(since)}`] : []),
       ...(until ? [`created_at <= ${mdb.toMeiliValue(until)}`] : []),
       ...(language?.length ? [language.map(lang => `language = ${mdb.toMeiliValue(lang)}`)] : []),
-      ...(popularityLevel ? [`popularityLevel <= ${mdb.toMeiliValue(popularityLevel)}`] : []),
-      ...(spamOnly ? ['popularityLevel > 6'] : [])
+      ...(popularityFilter?.length ? [popularityFilter] : [])
     ],
     sort,
     offset: metadataOnly

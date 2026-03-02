@@ -143,6 +143,106 @@ describe('HTTP Server handleRequest', () => {
     assert.equal(res.writeHead.mock.calls[0].arguments[0], 404)
   })
 
+  it('should return dynamic NIP-11 for /.well-known/nip50/sort:top', () => {
+    const req = {
+      method: 'GET',
+      url: '/.well-known/nip50/sort:top',
+      headers: { accept: 'application/nostr+json' },
+      socket: {}
+    }
+    const res = {
+      setHeader: mock.fn(),
+      writeHead: mock.fn(),
+      end: mock.fn()
+    }
+
+    handleRequest(req, res)
+
+    assert.equal(res.writeHead.mock.calls[0].arguments[0], 200)
+    const body = JSON.parse(res.end.mock.calls[0].arguments[0])
+    assert.equal(body.name, 'Trending')
+    assert.ok(body.description.includes('Trending'))
+  })
+
+  it('should return dynamic NIP-11 for /.well-known/nip50/sort:top/language:en', () => {
+    const req = {
+      method: 'GET',
+      url: '/.well-known/nip50/sort:top/language:en',
+      headers: { accept: 'application/nostr+json' },
+      socket: {}
+    }
+    const res = {
+      setHeader: mock.fn(),
+      writeHead: mock.fn(),
+      end: mock.fn()
+    }
+
+    handleRequest(req, res)
+
+    assert.equal(res.writeHead.mock.calls[0].arguments[0], 200)
+    const body = JSON.parse(res.end.mock.calls[0].arguments[0])
+    assert.equal(body.name, 'Trending in English')
+    assert.ok(body.description.includes('English'))
+  })
+
+  it('should return dynamic NIP-11 for /.well-known/nip50/is:popular', () => {
+    const req = {
+      method: 'GET',
+      url: '/.well-known/nip50/is:popular',
+      headers: { accept: 'application/nostr+json' },
+      socket: {}
+    }
+    const res = {
+      setHeader: mock.fn(),
+      writeHead: mock.fn(),
+      end: mock.fn()
+    }
+
+    handleRequest(req, res)
+
+    assert.equal(res.writeHead.mock.calls[0].arguments[0], 200)
+    const body = JSON.parse(res.end.mock.calls[0].arguments[0])
+    assert.equal(body.name, 'Popular')
+  })
+
+  it('should return dynamic NIP-11 for /.well-known/nip50/language:pt', () => {
+    const req = {
+      method: 'GET',
+      url: '/.well-known/nip50/language:pt',
+      headers: { accept: 'application/nostr+json' },
+      socket: {}
+    }
+    const res = {
+      setHeader: mock.fn(),
+      writeHead: mock.fn(),
+      end: mock.fn()
+    }
+
+    handleRequest(req, res)
+
+    assert.equal(res.writeHead.mock.calls[0].arguments[0], 200)
+    const body = JSON.parse(res.end.mock.calls[0].arguments[0])
+    assert.equal(body.name, 'Portuguese')
+  })
+
+  it('should return 404 for invalid NIP-50 path extension', () => {
+    const req = {
+      method: 'GET',
+      url: '/.well-known/nip50/invalid:ext',
+      headers: { accept: 'application/nostr+json' },
+      socket: {}
+    }
+    const res = {
+      setHeader: mock.fn(),
+      writeHead: mock.fn(),
+      end: mock.fn()
+    }
+
+    handleRequest(req, res)
+
+    assert.equal(res.writeHead.mock.calls[0].arguments[0], 404)
+  })
+
   it('should return 500 on error', () => {
     const req = {
       url: '/',

@@ -2,7 +2,7 @@ import { getFilterInterests, uninterestedIn, trackRequestedPubkeys } from '#serv
 import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import { sendEvent, sendEose, sendClosed } from '#helpers/message.js'
 // import { isAuthenticated, requestAuthentication } from '#services/relay/authenticator.js'
-import { parseSubscriptionFilters, isBroadFilter, isAllowedEvenIfBroadFilter } from '#helpers/subscription.js'
+import { parseSubscriptionFilters, isBroadFilter, isAllowedEvenIfBroadFilter, applyPathExtensionsToFilter } from '#helpers/subscription.js'
 // import { eventKinds } from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { isType } from '#helpers/shared.js'
@@ -44,6 +44,7 @@ class ReqHandler {
       let isBlocked, message
       for (const filter of filters) {
         filter.isBroad = isBroadFilter(filter)
+        applyPathExtensionsToFilter(filter, ws.nostr.pathExtensions)
         ;({ isBlocked, message } = applyCustomRelayRestrictionsToNostrFilter({ ws, filter, isBroad: filter.isBroad }))
         if (isBlocked) {
           // hasn't awaited anything (not async), so won't check replaceAtMs (hasNoFutureSubscriptionReplaceRequest)

@@ -8,19 +8,20 @@ class Relay {
     Object.assign(this, { wss })
   }
 
-  handleConnection (ws, _req) {
-    this.decorateClient(ws)
+  handleConnection (ws, req) {
+    this.decorateClient(ws, req)
     this.attachMessageHandler(ws)
     this.requestAuthentication(ws)
     this.setInactivityTimeout(ws)
   }
 
-  decorateClient (ws) {
+  decorateClient (ws, req) {
     const challenge = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
     ws.nostr = {
       subscriptions: { /* [subId]: { filters, replaceAtMs } */ },
       challenge, /* , pubkey */
-      lastActiveAtMs: Date.now() /* , inactivityTimeout */
+      lastActiveAtMs: Date.now(), /* , inactivityTimeout */
+      ...(req.nip50PathExtensions && { pathExtensions: req.nip50PathExtensions })
     }
   }
 

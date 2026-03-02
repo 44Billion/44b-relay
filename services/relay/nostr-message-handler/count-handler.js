@@ -1,6 +1,6 @@
 import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import { sendCount, sendClosed } from '#helpers/message.js'
-import { parseSubscriptionFilters, isBroadFilter } from '#helpers/subscription.js'
+import { parseSubscriptionFilters, isBroadFilter, buildPopularityFilter, applyPathExtensionsToFilter } from '#helpers/subscription.js'
 import { blockHighFilterCount, applyCustomRelayRestrictionsToNostrFilter, adjustUntilFieldInFilters } from './req-handler.js'
 import { isType } from '#helpers/shared.js'
 import { countEvents, getEventByRef } from '#models/event/dao.js'
@@ -31,6 +31,7 @@ class CountHandler {
       let isBlocked, message
       for (const filter of filters) {
         filter.isBroad = isBroadFilter(filter)
+        applyPathExtensionsToFilter(filter, ws.nostr.pathExtensions)
         ;({ isBlocked, message } = applyCustomRelayRestrictionsToNostrFilter({ ws, filter, isBroad: filter.isBroad }))
         if (isBlocked) {
           return sendClosed({ ws, subscriptionId, message })
@@ -156,11 +157,8 @@ async function countFilteredEvents ({ ws, filters }) {
     // Popularity check for broad filters
     // as seen at services/event/fetcher/mdb/broad-strategy.js
     if (filter.isBroad && process.env.IS_INTEGRATION_TEST !== 'true') {
-      if (filter.isSpam) {
-        query.spamOnly = true
-      } else if (!filter.includeSpam) {
-        query.popularityLevel = 6
-      }
+      const popularityFilter = buildPopularityFilter(filter)
+      if (popularityFilter) query.popularityFilter = popularityFilter
     }
 
     const { result, success } = await countEvents(query)

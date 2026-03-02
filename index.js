@@ -13,6 +13,7 @@ import {
 import { rateLimitReqByIp as serverRateLimitReqByIp } from '#services/rate-limiting/server-request-limiter.js'
 import { init as initBroadcaster } from '#services/ipc/cross-process-broadcaster.js'
 import { sendToClientsWithAMatchingFilter } from '#services/relay/nostr-message-handler/event-handler.js'
+import { parseNip50PathExtensions } from '#helpers/subscription.js'
 
 export function handleHttpServerUpgrade (req, socket, upgradeHead) {
   logReqRes(req, socket)
@@ -22,6 +23,14 @@ export function handleHttpServerUpgrade (req, socket, upgradeHead) {
   let { isRateLimited } = serverRateLimitReqByIp(req)
   if (!isRateLimited) ({ isRateLimited } = rateLimitReqByIp(req))
   if (isRateLimited) return socket.end('HTTP/1.1 429 Too Many Requests\r\n\r\n', 'ascii')
+
+  // Parse NIP-50 path extensions from /.well-known/nip50/<ext>/...
+  const pathname = req.url?.split('?')[0] || '/'
+  const pathExtensions = parseNip50PathExtensions(pathname)
+  if (pathname.startsWith('/.well-known/nip50/') && !pathExtensions) {
+    return socket.end('HTTP/1.1 400 Bad Request\r\n\r\n', 'ascii')
+  }
+  req.nip50PathExtensions = pathExtensions
 
   // Could implement authentication here through `authorization` query param
   // although it wouldn't support many users on same connection

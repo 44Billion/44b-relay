@@ -52,13 +52,28 @@ describe('Relay Service', () => {
   describe('decorateClient', () => {
     it('should initialize ws.nostr with required properties', () => {
       const ws = {}
-      relay.decorateClient(ws)
+      relay.decorateClient(ws, {})
 
       assert.ok(ws.nostr)
       assert.equal(typeof ws.nostr.challenge, 'string')
       assert.equal(ws.nostr.challenge.length > 0, true)
       assert.deepEqual(ws.nostr.subscriptions, {})
       assert.equal(typeof ws.nostr.lastActiveAtMs, 'number')
+    })
+
+    it('should store pathExtensions from req.nip50PathExtensions', () => {
+      const ws = {}
+      const req = { nip50PathExtensions: { sortTop: true, language: ['en'] } }
+      relay.decorateClient(ws, req)
+
+      assert.deepEqual(ws.nostr.pathExtensions, { sortTop: true, language: ['en'] })
+    })
+
+    it('should not set pathExtensions when req has no nip50PathExtensions', () => {
+      const ws = {}
+      relay.decorateClient(ws, {})
+
+      assert.equal(ws.nostr.pathExtensions, undefined)
     })
   })
 

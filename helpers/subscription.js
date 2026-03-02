@@ -43,12 +43,23 @@ export function extractFilterExtensions (filter) {
   extensions.isSpam = filter.search.includes('is:spam')
   if (extensions.isSpam) filter.search = filter.search.replace(/is:spam/g, '').trim()
 
+  extensions.isRising = filter.search.includes('is:rising')
+  if (extensions.isRising) filter.search = filter.search.replace(/is:rising/g, '').trim()
+
+  extensions.isPopular = filter.search.includes('is:popular')
+  if (extensions.isPopular) filter.search = filter.search.replace(/is:popular/g, '').trim()
+
+  // includeSpam is shadowed when any explicit audience filter is set
+  if (extensions.includeSpam && (extensions.isSpam || extensions.isRising || extensions.isPopular)) {
+    extensions.includeSpam = false
+  }
+
   extensions.sortTop = filter.search.includes('sort:top')
   if (extensions.sortTop) filter.search = filter.search.replace(/sort:top/g, '').trim()
 
   const languageMatches = [...filter.search.matchAll(/language:([a-zA-Z]{2})/g)]
   if (languageMatches.length > 0) {
-    extensions.language = [...new Set(languageMatches.map(m => m[1].toLowerCase()))]
+    extensions.language = [...new Set(languageMatches.map(m => m[1].toLowerCase()))].slice(0, 5) // max 5 languages
     filter.search = filter.search.replace(/language:[a-zA-Z]{2}/g, '').trim()
   }
 
@@ -193,4 +204,109 @@ function doesMatchASubscriptionFilter ({ filters, event }) {
 export {
   parseSubscriptionFilters,
   doesMatchASubscriptionFilter
+}
+
+/**
+ * Builds a Meilisearch-compatible OR popularity filter array for broad filters.
+ * is:popular → popularityLevel <= 5
+ * is:rising → popularityLevel = 6
+ * is:spam → popularityLevel > 6
+ * includeSpam → no filter (all levels)
+ * default (none of the above) → popularityLevel <= 6
+ *
+ * Multiple is:* extensions are OR-combined.
+ * includeSpam is ignored when any is:* extension is set.
+ */
+export function buildPopularityFilter ({ isSpam, isRising, isPopular, includeSpam }) {
+  const clauses = []
+  if (isPopular) clauses.push('popularityLevel <= 5')
+  if (isRising) clauses.push('popularityLevel = 6')
+  if (isSpam) clauses.push('popularityLevel > 6')
+
+  if (clauses.length > 0) return clauses
+
+  // includeSpam (already shadowed to false if any is:* was set)
+  if (includeSpam) return null // no filter → all levels
+
+  // default: only non-spam
+  return ['popularityLevel <= 6']
+}
+
+const SUPPORTED_PATH_EXTENSIONS = new Set([
+  'include:spam', 'is:spam', 'is:rising', 'is:popular', 'sort:top'
+  // language:xx are handled separately (dynamic)
+])
+
+/**
+ * Parses a /.well-known/nip50/<ext1>/<ext2>/... pathname into an object
+ * with extension flags and languages array.
+ * Returns null if the pathname is not a valid /.well-known/nip50/ path.
+ *
+ * Valid extensions: include:spam, is:spam, is:rising, is:popular, sort:top, language:xx
+ * Example: /.well-known/nip50/sort:top/language:en → { sortTop: true, language: ['en'] }
+ */
+export function parseNip50PathExtensions (pathname) {
+  if (!pathname.startsWith('/.well-known/nip50/')) return null
+
+  const segments = pathname.slice('/.well-known/nip50/'.length).split('/').filter(Boolean)
+  if (segments.length === 0) return null
+
+  const extensions = {}
+  const languages = []
+
+  for (const segment of segments) {
+    const decoded = decodeURIComponent(segment).toLowerCase()
+    if (SUPPORTED_PATH_EXTENSIONS.has(decoded)) {
+      switch (decoded) {
+        case 'include:spam': extensions.includeSpam = true; break
+        case 'is:spam': extensions.isSpam = true; break
+        case 'is:rising': extensions.isRising = true; break
+        case 'is:popular': extensions.isPopular = true; break
+        case 'sort:top': extensions.sortTop = true; break
+      }
+    } else if (/^language:[a-z]{2}$/.test(decoded)) {
+      languages.push(decoded.slice(9))
+    } else {
+      return null // unknown extension → invalid path
+    }
+  }
+
+  // includeSpam is shadowed when any explicit audience filter is set
+  if (extensions.includeSpam && (extensions.isSpam || extensions.isRising || extensions.isPopular)) {
+    extensions.includeSpam = false
+  }
+
+  if (languages.length > 0) {
+    extensions.language = [...new Set(languages)].slice(0, 5)
+  }
+
+  return extensions
+}
+
+/**
+ * Merges path-based extensions into a parsed filter.
+ * Path extensions act as defaults — they are applied only if the filter
+ * doesn't already have the corresponding extension set via search field.
+ */
+export function applyPathExtensionsToFilter (filter, pathExtensions) {
+  if (!pathExtensions) return
+
+  // Boolean extensions: only apply if not set on the filter
+  for (const key of ['includeSpam', 'isSpam', 'isRising', 'isPopular', 'sortTop']) {
+    if (pathExtensions[key] && !filter[key]) filter[key] = true
+  }
+
+  // Language: merge path languages with filter languages (dedupe)
+  if (pathExtensions.language?.length) {
+    if (filter.language?.length) {
+      filter.language = [...new Set([...filter.language, ...pathExtensions.language])].slice(0, 5)
+    } else {
+      filter.language = pathExtensions.language
+    }
+  }
+
+  // Re-apply shadowing: explicit audience filters shadow includeSpam
+  if (filter.includeSpam && (filter.isSpam || filter.isRising || filter.isPopular)) {
+    filter.includeSpam = false
+  }
 }

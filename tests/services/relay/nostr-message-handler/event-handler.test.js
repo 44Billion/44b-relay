@@ -526,6 +526,194 @@ describe('EventHandler', () => {
     }
   })
 
+  it('should relay to filter with isRising when author popularity is exactly 6', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 6)
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isRising: true }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'rising_pubkey',
+        id: 'event_is_rising',
+        content: 'rising author'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      assert.equal(wsReceiver.send.mock.calls.length, 1)
+      const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
+      assert.equal(relayMsg[1], 'sub1')
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should NOT relay to filter with isRising when author popularity is not 6', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 3)
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isRising: true }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'popular_pubkey',
+        id: 'event_not_rising',
+        content: 'popular author'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      assert.equal(wsReceiver.send.mock.calls.length, 0)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should relay to filter with isPopular when author popularity is <= 5', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 3)
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isPopular: true }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'popular_pubkey',
+        id: 'event_is_popular',
+        content: 'popular author'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      assert.equal(wsReceiver.send.mock.calls.length, 1)
+      const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
+      assert.equal(relayMsg[1], 'sub1')
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should NOT relay to filter with isPopular when author popularity is > 5', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 6)
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isPopular: true }] }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'rising_pubkey',
+        id: 'event_not_popular',
+        content: 'rising author'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      assert.equal(wsReceiver.send.mock.calls.length, 0)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should relay to OR-combined audience filters (isSpam OR isRising)', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 6) // matches isRising but not isSpam
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = {
+        filters: [{ isBroad: true, isSpam: true, isRising: true }]
+      }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'rising_pubkey',
+        id: 'event_or_combined',
+        content: 'OR combined'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      assert.equal(wsReceiver.send.mock.calls.length, 1)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should NOT relay to OR-combined audience filters when author matches none', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      getPopularityLevel.mock.mockImplementation(() => 3) // matches neither isSpam nor isRising
+
+      const wsSender = createWs('sender')
+      const wsReceiver = createWs('receiver')
+      wsReceiver.nostr.subscriptions['sub1'] = {
+        filters: [{ isBroad: true, isSpam: true, isRising: true }]
+      }
+      const wss = { clients: [wsSender, wsReceiver] }
+
+      const event = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [],
+        pubkey: 'popular_pubkey',
+        id: 'event_or_combined_no_match',
+        content: 'OR combined no match'
+      }
+
+      const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+      await handler.run()
+
+      assert.equal(wsReceiver.send.mock.calls.length, 0)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
   it('should NOT relay future event to others', async () => {
     const wsSender = createWs('sender')
     wsSender.nostr.pubkey = 'sender_pubkey'
