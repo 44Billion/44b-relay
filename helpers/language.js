@@ -3,7 +3,8 @@ import { franc } from 'franc'
 import { iso6393To1 } from 'iso-639-3'
 import { eventKinds } from '#constants/event.js'
 
-const SHORT_TEXT_THRESHOLD = 50
+const MIN_ALPHA_CHARS = 10
+const LANDE_MIN_CONFIDENCE = 0.55
 
 const kindsUsingContent = new Set([
   eventKinds.TEXT_NOTE,
@@ -41,9 +42,25 @@ const LIGHTNING_REGEX = /(?:lightning:)?ln(?:bc|tb|bcrt|tbs|url)\S+/gi
 // Cashu tokens
 const CASHU_REGEX = /cashu[AB][A-Za-z0-9_-]{20,}/g
 
+// Hex-like sequences (file hashes, event ids, etc.) — 20+ hex chars
+const HEX_SEQUENCE_REGEX = /\b[a-f0-9]{20,}\b/gi
+
+// File extensions left over from stripped URLs
+const FILE_EXT_REGEX = /\.[a-zA-Z0-9]{2,5}\b/g
+
+// Domain-like fragments left after URL stripping (e.g. ".blossom.band/")
+const DOMAIN_FRAGMENT_REGEX = /(?:\.[a-zA-Z0-9-]+){2,}(?:\/\S*)?/g
+
+// Leftover protocol prefixes (e.g. "https://") after URL host was stripped
+const PROTOCOL_PREFIX_REGEX = /(?:https?|wss?):\/\/\s*/gi
+
+// Repeated characters (3+ of the same) — collapse to 2 to reduce n-gram noise
+const REPEATED_CHARS_REGEX = /(.)\1{2,}/g
+
 /**
  * Removes common non-language tokens from text before language detection.
- * Strips NIP-19 entities, URLs, emails, social handles, Lightning invoices, etc.
+ * Strips NIP-19 entities, URLs, emails, social handles, Lightning invoices,
+ * hex sequences, leftover domain/protocol fragments, and collapses repeated chars.
  */
 export function sanitizeText (text) {
   if (!text || typeof text !== 'string') return ''
@@ -55,6 +72,11 @@ export function sanitizeText (text) {
     .replace(MASTODON_HANDLE_REGEX, ' ')
     .replace(EMAIL_REGEX, ' ')
     .replace(TWITTER_HANDLE_REGEX, ' ')
+    .replace(DOMAIN_FRAGMENT_REGEX, ' ')
+    .replace(HEX_SEQUENCE_REGEX, ' ')
+    .replace(FILE_EXT_REGEX, ' ')
+    .replace(PROTOCOL_PREFIX_REGEX, ' ')
+    .replace(REPEATED_CHARS_REGEX, '$1$1')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -100,8 +122,18 @@ export function stripMarkdown (text) {
 }
 
 /**
+ * Counts Unicode letters in a string (works for Latin, CJK, Cyrillic, etc.).
+ */
+function countAlphaChars (text) {
+  const matches = text.match(/\p{L}/gu)
+  return matches ? matches.length : 0
+}
+
+/**
  * Detects the ISO 639-1 two-letter language code from a text string.
- * Uses franc for texts >= 50 chars, lande for shorter texts.
+ * Tries franc first (better on longer text), falls back to lande with a
+ * confidence threshold for shorter or ambiguous text.
+ * Requires a minimum number of alphabetic characters to avoid false positives.
  * Returns undefined if no language could be determined.
  */
 export function detectLanguage (text) {
@@ -109,15 +141,11 @@ export function detectLanguage (text) {
   text = text.trim()
   if (!text) return undefined
 
-  let iso3
+  if (countAlphaChars(text) < MIN_ALPHA_CHARS) return undefined
 
-  if (text.length < SHORT_TEXT_THRESHOLD) {
+  let iso3 = franc(text)
+  if (iso3 === 'und') {
     iso3 = detectWithLande(text)
-  } else {
-    iso3 = franc(text)
-    if (iso3 === 'und') {
-      iso3 = detectWithLande(text)
-    }
   }
 
   if (!iso3) return undefined
@@ -126,8 +154,10 @@ export function detectLanguage (text) {
 
 function detectWithLande (text) {
   const results = lande(text)
-  if (results?.length > 0) return results[0][0]
-  return undefined
+  if (!results?.length) return undefined
+  const [lang, confidence] = results[0]
+  if (confidence < LANDE_MIN_CONFIDENCE) return undefined
+  return lang
 }
 
 /**

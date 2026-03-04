@@ -129,6 +129,41 @@ describe('sanitizeText', () => {
     const text = 'Check nostr:npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6 and https://example.com via @alice@mastodon.social 🎉'
     assert.equal(sanitizeText(text), 'Check and via 🎉')
   })
+
+  it('should remove hex sequences (file hashes, event ids)', () => {
+    assert.equal(
+      sanitizeText('File 9844fc24a6beea76e42d790266740e43def2fda6d07cca07baa24418809c1b00 uploaded'),
+      'File uploaded'
+    )
+  })
+
+  it('should remove domain-like fragments left after URL stripping', () => {
+    assert.equal(
+      sanitizeText('Check .blossom.band/something here'),
+      'Check here'
+    )
+  })
+
+  it('should remove leftover protocol prefixes', () => {
+    assert.equal(
+      sanitizeText('Visit https:// for more'),
+      'Visit for more'
+    )
+  })
+
+  it('should collapse repeated characters (3+) to at most 2', () => {
+    assert.equal(
+      sanitizeText('oooooof this is cooool'),
+      'oof this is cool'
+    )
+  })
+
+  it('should strip URL-only content with npub subdomain to empty', () => {
+    assert.equal(
+      sanitizeText('https://npub1m64hnkh6rs47fd9x6wk2zdtmdj4qkazt734d22d94ery9zzhne5qw9uaks.blossom.band/9844fc24a6beea76e42d790266740e43def2fda6d07cca07baa24418809c1b00.jpg'),
+      ''
+    )
+  })
 })
 
 describe('stripMarkdown', () => {
@@ -297,12 +332,21 @@ describe('detectLanguage', () => {
     assert.equal(detectLanguage(text), 'fr')
   })
 
-  it('should detect language for short text using lande', () => {
-    // Short text (< 50 chars) uses lande
-    const result = detectLanguage('Hola mundo')
-    // lande may or may not detect Spanish for such short text,
-    // but it should return *some* two-letter code or undefined
+  it('should detect language for short text using lande fallback', () => {
+    // Short text where franc returns 'und' falls back to lande
+    const result = detectLanguage('Hola mundo amigos')
+    // may return a two-letter code or undefined depending on confidence
     assert.equal(typeof result === 'string' || result === undefined, true)
+  })
+
+  it('should return undefined for text with too few alphabetic characters', () => {
+    assert.equal(detectLanguage('12345 67890'), undefined)
+    assert.equal(detectLanguage('... !!!'), undefined)
+  })
+
+  it('should return undefined for short ambiguous text below confidence threshold', () => {
+    // Very short English-like text that detectors struggle with
+    assert.equal(detectLanguage("He's definitely Gen X.."), undefined)
   })
 
   it('should return a two-letter ISO 639-1 code', () => {
@@ -450,5 +494,33 @@ describe('detectEventLanguage', () => {
       tags: [['title', 'Uma bela fotografia tirada nostr:npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6 nas montanhas dos Alpes']]
     }
     assert.equal(detectEventLanguage(event), 'pt')
+  })
+
+  it('should not misdetect short English text with trailing URL as Dutch', () => {
+    const event = {
+      kind: 1,
+      content: "He's definitely Gen X... https://video.nostr.build/d35051f8d978969d9f86e00bdc4ebb818ed527dc21d10976af43a415da22516d.mp4",
+      tags: []
+    }
+    // After sanitization the text is too short/ambiguous; undefined is correct
+    assert.notEqual(detectEventLanguage(event), 'nl')
+  })
+
+  it('should return undefined for URL-only content with npub subdomain', () => {
+    const event = {
+      kind: 1,
+      content: 'https://npub1m64hnkh6rs47fd9x6wk2zdtmdj4qkazt734d22d94ery9zzhne5qw9uaks.blossom.band/9844fc24a6beea76e42d790266740e43def2fda6d07cca07baa24418809c1b00.jpg',
+      tags: []
+    }
+    assert.equal(detectEventLanguage(event), undefined)
+  })
+
+  it('should detect English for text with repeated characters, not Portuguese', () => {
+    const event = {
+      kind: 1,
+      content: 'oooooof. Attacks or provider issues?',
+      tags: []
+    }
+    assert.equal(detectEventLanguage(event), 'en')
   })
 })
