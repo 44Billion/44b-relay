@@ -523,4 +523,22 @@ describe('detectEventLanguage', () => {
     }
     assert.equal(detectEventLanguage(event), 'en')
   })
+
+  it('should detect English for informal short English content, not Portuguese', () => {
+    const cases = [
+      "GM Beth! \nYou don't recognize this video? Mom & dad 🤭",
+      '1. Yes\n2. Yes\n3. Enter zapstore, enter into a new world 😂',
+      'Nostr continues to suck',
+      "Oh I've got em, let's do this!",
+      "now brew an espresso directly into it\n\nyou're welcome",
+      'How else would you propose that we propegate our species? Or would you prefer that we no longer do so?'
+    ]
+    for (const content of cases) {
+      const event = { kind: 1, content, tags: [] }
+      assert.equal(
+        detectEventLanguage(event), 'en',
+        `Expected 'en' for: ${content.slice(0, 50)}`
+      )
+    }
+  })
 })

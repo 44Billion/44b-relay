@@ -131,8 +131,8 @@ function countAlphaChars (text) {
 
 /**
  * Detects the ISO 639-1 two-letter language code from a text string.
- * Tries franc first (better on longer text), falls back to lande with a
- * confidence threshold for shorter or ambiguous text.
+ * Uses lande as the primary detector (better accuracy on short/medium text),
+ * falls back to franc when lande confidence is low.
  * Requires a minimum number of alphabetic characters to avoid false positives.
  * Returns undefined if no language could be determined.
  */
@@ -143,21 +143,24 @@ export function detectLanguage (text) {
 
   if (countAlphaChars(text) < MIN_ALPHA_CHARS) return undefined
 
-  let iso3 = franc(text)
-  if (iso3 === 'und') {
-    iso3 = detectWithLande(text)
+  const landeResult = topLandeResult(text)
+
+  if (landeResult && landeResult[1] >= LANDE_MIN_CONFIDENCE) {
+    return iso6393To1[landeResult[0]]
   }
 
-  if (!iso3) return undefined
-  return iso6393To1[iso3]
+  const francResult = franc(text)
+  if (francResult !== 'und') return iso6393To1[francResult]
+
+  if (landeResult) return iso6393To1[landeResult[0]]
+
+  return undefined
 }
 
-function detectWithLande (text) {
+function topLandeResult (text) {
   const results = lande(text)
   if (!results?.length) return undefined
-  const [lang, confidence] = results[0]
-  if (confidence < LANDE_MIN_CONFIDENCE) return undefined
-  return lang
+  return results[0]
 }
 
 /**
