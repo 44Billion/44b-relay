@@ -49,7 +49,7 @@ const BASE_RELAY_INFO = {
   pubkey: 'fc7085c383ba71745704bdc1c6efcf7fab0197501de598c5e6c537ac0b32a4cb', // arthurfranca - npub1l3cgtsurhfchg4cyhhqudm70074sr96srhje330xc5m6czej5n9s9q6vs2
   contact: 'https://github.com/arthurfranca',
   // just server-side nips
-  supported_nips: ['1', '9', '11', '40', '42', '50'],
+  supported_nips: ['1', '9', '11', '40', '42', '45', '50'],
   software: 'Bananânia Relay Deluxe',
   version: '0.0.1'
 }
@@ -105,23 +105,15 @@ function buildRelayInfoDocument (pathExtensions) {
 
   // Determine the primary icon (sort:top > is:popular > is:rising > is:spam)
   let icon = ICONS.default
-  if (sortTop) icon = ICONS.trending
-  else if (isPopular) icon = ICONS.popular
+  if (isPopular) icon = ICONS.popular
   else if (isRising) icon = ICONS.rising
   else if (isSpam) icon = ICONS.spam
+  else if (sortTop) icon = ICONS.trending
 
   // Build name and description based on extensions
   let name, description
 
-  if (sortTop) {
-    if (langLabel) {
-      name = `Trending in ${langLabel}`
-      description = `Trending notes in ${langLabel} of ${RELAY_URL}`
-    } else {
-      name = 'Trending'
-      description = `Trending notes of ${RELAY_URL}`
-    }
-  } else if (isPopular) {
+  if (isPopular) {
     if (langLabel) {
       name = `Influencers in ${langLabel}`
       description = `Notes from popular authors in ${langLabel} on ${RELAY_URL}`
@@ -144,6 +136,14 @@ function buildRelayInfoDocument (pathExtensions) {
     } else {
       name = 'Spam'
       description = `Spam-classified notes on ${RELAY_URL}`
+    }
+  } else if (sortTop) {
+    if (langLabel) {
+      name = `Trending in ${langLabel}`
+      description = `Trending notes in ${langLabel} of ${RELAY_URL}`
+    } else {
+      name = 'Trending'
+      description = `Trending notes of ${RELAY_URL}`
     }
   } else if (includeSpam) {
     if (langLabel) {
