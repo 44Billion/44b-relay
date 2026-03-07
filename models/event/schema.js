@@ -46,7 +46,8 @@ export default {
     'replyCount',
     'repostCount',
     'quoteCount',
-    'engagementCount'
+    'engagementCount',
+    'topics' // detected topic hashtags (array of normalized strings, no '#' prefix)
   ],
   // https://www.meilisearch.com/docs/reference/api/settings#settings-object
   settings: {
@@ -71,7 +72,8 @@ export default {
       'ownerType',
       'ip',
       'popularityLevel',
-      'engagementCount'
+      'engagementCount',
+      'topics'
     ],
     sortableAttributes: [
       'created_at',

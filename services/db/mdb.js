@@ -92,6 +92,7 @@ import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
 import popularPubkeySchema from '#models/popular-pubkey/schema.js'
 import ipActivitySchema from '#models/ip-activity/schema.js'
 import maintenanceStateSchema from '#models/maintenance-state/schema.js'
+import hashtagStatsSchema from '#models/hashtag-stats/schema.js'
 import { addToCleanup } from '#helpers/process.js'
 
 // Remember if deleting by filter, that filtering by <primaryKey> = xyz
@@ -259,7 +260,8 @@ export async function migrate (db, log = console.log) {
     requestedPubkeySchema,
     popularPubkeySchema,
     ipActivitySchema,
-    maintenanceStateSchema
+    maintenanceStateSchema,
+    hashtagStatsSchema
   ]
   const idxsByUid = idxs.reduce((r, v) => ({ ...r, [v.uid]: v }), {})
   const currentIdxsByUid = await db.getIndexes({ limit: db.constants.maxBigIndexes })

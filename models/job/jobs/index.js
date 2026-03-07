@@ -9,6 +9,8 @@ import decayRequestedPubkeysConfig from './decay-requested-pubkeys.js'
 import decayTrendingEventsConfig from './decay-trending-events.js'
 import decayOldTrendingEventsConfig from './decay-old-trending-events.js'
 import trackUptimeConfig from './track-uptime.js'
+import flushHashtagStatsConfig from './flush-hashtag-stats.js'
+import decayHashtagStatsConfig from './decay-hashtag-stats.js'
 
 const jobs = [
   // exampleConfig,
@@ -21,7 +23,9 @@ const jobs = [
   decayRequestedPubkeysConfig,
   decayTrendingEventsConfig,
   decayOldTrendingEventsConfig,
-  trackUptimeConfig
+  trackUptimeConfig,
+  flushHashtagStatsConfig,
+  decayHashtagStatsConfig
 ]
 
 export default jobs

@@ -63,6 +63,12 @@ export function extractFilterExtensions (filter) {
     filter.search = filter.search.replace(/language:[a-zA-Z]{2}/g, '').trim()
   }
 
+  const topicMatches = [...filter.search.matchAll(/topic:([a-zA-Z0-9_-]{1,80})/g)]
+  if (topicMatches.length > 0) {
+    extensions.topic = [...new Set(topicMatches.map(m => m[1].toLowerCase()))].slice(0, 10) // max 10 topics
+    filter.search = filter.search.replace(/topic:[a-zA-Z0-9_-]{1,80}/g, '').trim()
+  }
+
   return extensions
 }
 
@@ -253,6 +259,7 @@ export function parseNip50PathExtensions (pathname) {
 
   const extensions = {}
   const languages = []
+  const topicValues = []
 
   for (const segment of segments) {
     const decoded = decodeURIComponent(segment).toLowerCase()
@@ -266,6 +273,8 @@ export function parseNip50PathExtensions (pathname) {
       }
     } else if (/^language:[a-z]{2}$/.test(decoded)) {
       languages.push(decoded.slice(9))
+    } else if (/^topic:[a-z0-9_-]{1,80}$/.test(decoded)) {
+      topicValues.push(decoded.slice(6))
     } else {
       return null // unknown extension → invalid path
     }
@@ -278,6 +287,10 @@ export function parseNip50PathExtensions (pathname) {
 
   if (languages.length > 0) {
     extensions.language = [...new Set(languages)].slice(0, 5)
+  }
+
+  if (topicValues.length > 0) {
+    extensions.topic = [...new Set(topicValues)].slice(0, 10)
   }
 
   return extensions
@@ -302,6 +315,15 @@ export function applyPathExtensionsToFilter (filter, pathExtensions) {
       filter.language = [...new Set([...filter.language, ...pathExtensions.language])].slice(0, 5)
     } else {
       filter.language = pathExtensions.language
+    }
+  }
+
+  // Topic: merge path topics with filter topics (dedupe)
+  if (pathExtensions.topic?.length) {
+    if (filter.topic?.length) {
+      filter.topic = [...new Set([...filter.topic, ...pathExtensions.topic])].slice(0, 10)
+    } else {
+      filter.topic = pathExtensions.topic
     }
   }
 

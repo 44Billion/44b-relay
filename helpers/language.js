@@ -164,6 +164,28 @@ function topLandeResult (text) {
 }
 
 /**
+ * Extracts the raw textual content from a supported event kind,
+ * applying markdown stripping for LONG_FORM_CONTENT.
+ * Returns the raw text string or undefined for unsupported kinds.
+ * Does NOT sanitize — call sanitizeText() separately if needed.
+ */
+export function getEventText (event) {
+  if (kindsUsingContent.has(event.kind)) {
+    let text = event.content
+    if (event.kind === eventKinds.LONG_FORM_CONTENT) text = stripMarkdown(text)
+    return text
+  }
+
+  if (kindsUsingContentOrTitle.has(event.kind)) {
+    if (event.content) return event.content
+    const titleTag = event.tags?.find(t => t[0] === 'title')
+    return titleTag?.[1]
+  }
+
+  return undefined
+}
+
+/**
  * Detects language for supported event kinds.
  * Sanitizes content before detection. Strips markdown for LONG_FORM_CONTENT.
  * Returns the ISO 639-1 code or undefined.

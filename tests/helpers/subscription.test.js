@@ -71,6 +71,39 @@ describe('extractFilterExtensions', () => {
     assert.deepEqual(ext.language, ['en'])
     assert.equal(filter.search, 'test query')
   })
+
+  it('should extract single topic', () => {
+    const filter = { search: 'topic:pokemon test' }
+    const ext = extractFilterExtensions(filter)
+    assert.deepEqual(ext.topic, ['pokemon'])
+    assert.equal(filter.search, 'test')
+  })
+
+  it('should extract multiple topics and deduplicate', () => {
+    const filter = { search: 'topic:bitcoin topic:crypto topic:bitcoin' }
+    const ext = extractFilterExtensions(filter)
+    assert.deepEqual(ext.topic, ['bitcoin', 'crypto'])
+    assert.equal(filter.search, '')
+  })
+
+  it('should limit topics to 10', () => {
+    const topics = Array.from({ length: 12 }, (_, i) => `topic:tag${i}`).join(' ')
+    const filter = { search: topics }
+    const ext = extractFilterExtensions(filter)
+    assert.equal(ext.topic.length, 10)
+  })
+
+  it('should lowercase topic values', () => {
+    const filter = { search: 'topic:Pokemon' }
+    const ext = extractFilterExtensions(filter)
+    assert.deepEqual(ext.topic, ['pokemon'])
+  })
+
+  it('should support topic with dashes and underscores', () => {
+    const filter = { search: 'topic:open-source topic:my_topic' }
+    const ext = extractFilterExtensions(filter)
+    assert.deepEqual(ext.topic, ['open-source', 'my_topic'])
+  })
 })
 
 describe('buildPopularityFilter', () => {
@@ -176,6 +209,27 @@ describe('parseNip50PathExtensions', () => {
     const ext = parseNip50PathExtensions('/.well-known/nip50/language:en/language:en')
     assert.deepEqual(ext.language, ['en'])
   })
+
+  it('should parse topic:xxx', () => {
+    const ext = parseNip50PathExtensions('/.well-known/nip50/topic:pokemon')
+    assert.deepEqual(ext, { topic: ['pokemon'] })
+  })
+
+  it('should parse multiple topics and deduplicate', () => {
+    const ext = parseNip50PathExtensions('/.well-known/nip50/topic:bitcoin/topic:crypto/topic:bitcoin')
+    assert.deepEqual(ext.topic, ['bitcoin', 'crypto'])
+  })
+
+  it('should parse topic with combined extensions', () => {
+    const ext = parseNip50PathExtensions('/.well-known/nip50/sort:top/topic:anime/language:en')
+    assert.deepEqual(ext, { sortTop: true, topic: ['anime'], language: ['en'] })
+  })
+
+  it('should limit topics to 10 via path', () => {
+    const segments = Array.from({ length: 12 }, (_, i) => `topic:tag${i}`).join('/')
+    const ext = parseNip50PathExtensions(`/.well-known/nip50/${segments}`)
+    assert.equal(ext.topic.length, 10)
+  })
 })
 
 describe('applyPathExtensionsToFilter', () => {
@@ -223,5 +277,25 @@ describe('applyPathExtensionsToFilter', () => {
     applyPathExtensionsToFilter(filter, { isRising: true })
     assert.equal(filter.includeSpam, false)
     assert.equal(filter.isRising, true)
+  })
+
+  it('should merge topics', () => {
+    const filter = { topic: ['bitcoin'] }
+    applyPathExtensionsToFilter(filter, { topic: ['crypto'] })
+    assert.deepEqual(filter.topic, ['bitcoin', 'crypto'])
+  })
+
+  it('should set topics when filter has none', () => {
+    const filter = {}
+    applyPathExtensionsToFilter(filter, { topic: ['pokemon'] })
+    assert.deepEqual(filter.topic, ['pokemon'])
+  })
+
+  it('should dedupe merged topics and limit to 10', () => {
+    const filter = { topic: ['a', 'b', 'c'] }
+    const pathTopics = Array.from({ length: 10 }, (_, i) => `t${i}`)
+    applyPathExtensionsToFilter(filter, { topic: pathTopics })
+    assert.equal(filter.topic.length, 10)
+    assert.ok(filter.topic.includes('a'))
   })
 })

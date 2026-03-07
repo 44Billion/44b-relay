@@ -64,6 +64,7 @@ async function searchByNostrFilter ({
   search = '', // nip50
   popularityFilter, // not part of nostr spec — OR-able popularity clauses e.g. ['popularityLevel = 6', 'popularityLevel > 6']
   language, // nip50 extension
+  topic, // nip50 extension — topic:<tag> filters against detected event topics
   sortTop // nip50 extension
 }, { metadataOnly = false, fields } = {}) {
   limit = Math.min(limit || 20, 100)
@@ -92,6 +93,7 @@ async function searchByNostrFilter ({
       ...(since ? [`created_at >= ${mdb.toMeiliValue(since)}`] : []),
       ...(until ? [`created_at <= ${mdb.toMeiliValue(until)}`] : []),
       ...(language?.length ? [language.map(lang => `language = ${mdb.toMeiliValue(lang)}`)] : []),
+      ...(topic?.length ? [topic.map(t => `topics = ${mdb.toMeiliValue(t)}`)] : []),
       ...(popularityFilter?.length ? [popularityFilter] : [])
     ],
     sort,

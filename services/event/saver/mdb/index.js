@@ -7,6 +7,10 @@ import { checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/
 import { eventToRecord, idToRef } from '#models/event/mapper.js'
 import { getEventByRef } from '#models/event/dao.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
+import { extractHashtags } from '#helpers/hashtag.js'
+import { getEventText } from '#helpers/language.js'
+import { detectTopics } from '#services/topic/detector.js'
+import { trackHashtagStats } from '#services/event/tracker/mdb/hashtag-stats.js'
 
 export default class EventSaver {
   static run ({ ws, event, ip, language }) {
@@ -86,8 +90,16 @@ export default class EventSaver {
       // 1. Check Limits & Prepare Ops
       const { ownerType, _ownerKey, popularityLevel, ops: storageOps } = await checkStorageLimitAndPrune({ pubkey: author, ip, newEventSize: byteSize })
 
+      // Extract hashtags and detect topics
+      const hashtags = extractHashtags(event)
+      const text = getEventText(event)
+      const topics = detectTopics({ language: this.language, hashtags, text })
+
       // Convert to MDB Record
-      record ??= eventToRecord(event, recordOpts)
+      record ??= eventToRecord(event, { ...recordOpts, topics })
+      if (record.topics === undefined && topics?.length) {
+        record.topics = topics
+      }
 
       // 2. Handle Replacement info (subtract old event size)
       let oldEvent = null
@@ -173,6 +185,11 @@ export default class EventSaver {
       }
 
       await queueOps(ops)
+
+      // Track hashtag stats after successful save (fire-and-forget)
+      if (hashtags.length > 0 || text) {
+        trackHashtagStats({ language: this.language, hashtags })
+      }
 
       return { isSuccess: true, isDuplicate: false, message: '' }
     } catch (err) {

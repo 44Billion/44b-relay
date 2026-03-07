@@ -49,7 +49,7 @@ export const MAX_INDEXABLE_TAGS = 10
 export const MAX_INDEXABLE_TAG_VALUE_LENGTH = 1000
 export function eventToRecord (event, {
   language, expiresAt, lastAccessedAt, receivedAt, isContentSearchable = false, fts,
-  commentCounter, replyCounter, repostCounter, quoteCounter
+  commentCounter, replyCounter, repostCounter, quoteCounter, topics
 } = {}) {
   const { id, kind, pubkey, created_at, sig } = event
   const record = { id, kind, pubkey, created_at, sig }
@@ -121,6 +121,7 @@ export function eventToRecord (event, {
     ...(replyCounter && { replyCounter }),
     ...(repostCounter && { repostCounter }),
     ...(quoteCounter && { quoteCounter }),
+    ...(topics?.length && { topics }),
     lastAccessedAt: lastAccessedAt ?? now,
     receivedAt: receivedAt ?? now
   })

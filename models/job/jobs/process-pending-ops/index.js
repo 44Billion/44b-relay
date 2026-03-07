@@ -21,8 +21,11 @@ const INDEX_CONFIG = {
   storedEventOwners: { pkField: 'key' },
   ipActivities: { pkField: 'key' },
   requestedPubkeys: { pkField: 'key' },
+  hashtagStats: { pkField: 'key' },
   pendingOps: { pkField: 'key' } // Should not be target of ops usually
 }
+
+const MAX_NEIGHBORS = 48
 
 const KNOWN_INDEXES = Object.keys(INDEX_CONFIG)
 
@@ -328,6 +331,74 @@ export async function processBatch (results, systemState) {
             // IP deduplication correctly
             doc.count = (doc.count || 0) + delta
             docsToAddOrUpdate[targetIndex].set(targetKey, doc)
+          }
+        }
+      } else if (opType === 'mergeHashtagStats') {
+        targetIndex = 'hashtagStats'
+        ensureIndexInit(targetIndex)
+
+        if (systemState[targetIndex].has(op.key)) {
+          isProcessed = true
+        } else {
+          const isLangDoc = data.docType === 'lang'
+
+          if (isLangDoc) {
+            const doc = await getDoc(targetIndex, targetKey, () => ({
+              key: targetKey,
+              docType: 'lang',
+              lang: data.lang,
+              taggedEventCount: 0,
+              untaggedEventCount: 0,
+              updatedAt: Date.now()
+            }))
+
+            if (doc) {
+              doc.taggedEventCount = (doc.taggedEventCount || 0) + (data.taggedEventDelta || 0)
+              doc.untaggedEventCount = (doc.untaggedEventCount || 0) + (data.untaggedEventDelta || 0)
+              doc.updatedAt = data.seenAt || Date.now()
+              docsToAddOrUpdate[targetIndex].set(targetKey, doc)
+            }
+          } else {
+            // Tag document
+            const doc = await getDoc(targetIndex, targetKey, () => ({
+              key: targetKey,
+              docType: 'tag',
+              lang: data.lang,
+              tag: data.tag,
+              words: data.words || [],
+              acronym: data.acronym || null,
+              count: 0,
+              neighbors: [],
+              updatedAt: Date.now()
+            }))
+
+            if (doc) {
+              doc.count = (doc.count || 0) + (data.countDelta || 0)
+              if (data.words?.length) doc.words = data.words
+              if (data.acronym) doc.acronym = data.acronym
+              doc.updatedAt = data.seenAt || Date.now()
+
+              // Merge neighbor deltas
+              if (data.neighborDeltas?.length) {
+                const neighborMap = new Map()
+                // Load existing neighbors
+                if (Array.isArray(doc.neighbors)) {
+                  for (const [tag, count] of doc.neighbors) {
+                    neighborMap.set(tag, count)
+                  }
+                }
+                // Add deltas
+                for (const [tag, delta] of data.neighborDeltas) {
+                  neighborMap.set(tag, (neighborMap.get(tag) || 0) + delta)
+                }
+                // Sort desc and keep top N
+                doc.neighbors = [...neighborMap.entries()]
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, MAX_NEIGHBORS)
+              }
+
+              docsToAddOrUpdate[targetIndex].set(targetKey, doc)
+            }
           }
         }
       } else if (opType === 'deltaUsage' || opType === 'pruneCheck') {
