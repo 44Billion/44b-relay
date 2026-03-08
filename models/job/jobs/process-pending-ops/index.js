@@ -514,6 +514,18 @@ export default {
   key: 'processPendingOps',
   frequency: 5,
   shouldUseLock: true,
+  // Speed up first run after process restart so pending ops
+  // don't pile up while waiting for the default 0-60s jitter.
+  // Each process will still get a random delay in [0, 3s),
+  // and the lock mechanism (2s wait) in trigger.js ensures
+  // only one process wins.
+  initialDelay: 3,
+  // Lower heartbeat tolerance (default 120s) so a new process
+  // detects that the previous runner died more quickly.
+  // The heartbeat interval is 30s, so 45s gives a 15s buffer
+  // for network/DB lag while cutting the stale-detection wait
+  // from ~120s down to ~45s.
+  heartbeatTolerance: 45,
   // We want this to run indefinitely within the same process
   // even when there are no ops at the moment.
   // We may in the future remove it from the job list and make

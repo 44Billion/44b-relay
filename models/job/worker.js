@@ -3,7 +3,7 @@ import { getJobByKey } from './dao.js'
 import { setTimer } from '#helpers/timer.js'
 import { maybeEnsureRecordForJob, startJob } from './trigger.js'
 
-const HEARTBEAT_TOLERANCE = 120 // seconds
+const DEFAULT_HEARTBEAT_TOLERANCE = 120 // seconds
 const DEFAULT_MAX_DURATION = 12 * 60 * 60 // 12 hours
 
 // For each job:
@@ -27,11 +27,13 @@ export async function init (jobConfigs = jobs) {
 // Add some jitter to avoid all workers (from different
 // processes) scheduling at the same time.
 // Also used to reschedule after maybeTriggerJob
+// On initial call (no retriggerAfter), uses job.initialDelay
+// (defaults to 60) as the upper bound in seconds for random jitter.
 function scheduleJob (job, options = {}) {
   const { retriggerAfter } = options
   const timeout = retriggerAfter
     ? retriggerAfter * 1000
-    : Math.random() * 1000 * 60
+    : Math.random() * 1000 * (job.initialDelay ?? 60)
 
   setTimer(async () => {
     try {
@@ -78,8 +80,9 @@ async function maybeTriggerJob (job) {
   const isExpired = !isRunning && !job.manual && ((now - record.endedAt) >= job.frequency)
   const isRequested = record.requestedAt && record.requestedAt > record.endedAt
   const isRunningTooLong = isRunning && (now - record.startedAt) >= maxDuration
+  const heartbeatTolerance = job.heartbeatTolerance ?? DEFAULT_HEARTBEAT_TOLERANCE
   const isStalled = isRunning &&
-    (now - (record.heartbeatedAt || record.startedAt)) >= HEARTBEAT_TOLERANCE
+    (now - (record.heartbeatedAt || record.startedAt)) >= heartbeatTolerance
 
   let started = false
   let freshRecord = record
@@ -103,7 +106,7 @@ async function maybeTriggerJob (job) {
       return { retriggerAfter: Math.max(0, diff) + jitter }
     } else {
       const diffMaxDuration = (startedAt + maxDuration) - now
-      const diffHeartbeat = ((heartbeatedAt || startedAt) + HEARTBEAT_TOLERANCE) - now
+      const diffHeartbeat = ((heartbeatedAt || startedAt) + heartbeatTolerance) - now
       const diff = Math.min(diffMaxDuration, diffHeartbeat)
       return { retriggerAfter: Math.max(0, diff) + jitter }
     }
