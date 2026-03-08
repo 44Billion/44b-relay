@@ -187,7 +187,7 @@ export default class EventSaver {
       await queueOps(ops)
 
       // Track hashtag stats after successful save (fire-and-forget)
-      if (hashtags.length > 0 || text) {
+      if (hashtags.length > 0) {
         trackHashtagStats({ language: this.language, hashtags })
       }
 

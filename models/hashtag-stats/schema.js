@@ -2,16 +2,14 @@ export default {
   uid: 'hashtagStats',
   primaryKey: 'key',
   attributes: [
-    'key',       // '<lang>:<tag>' for tag docs, '__lang__:<lang>' for aggregate docs
-    'docType',   // 'tag' | 'lang'
+    'key',       // '<lang>:<tag>'
+    'docType',   // always 'tag' (kept for forward-compat filtering)
     'lang',      // ISO 639-1
-    'tag',       // normalized hashtag (tag docs only)
-    'words',     // split words array (tag docs only)
-    'acronym',   // derived acronym or null (tag docs only)
-    'count',     // decayable occurrence count (tag docs only)
-    'neighbors', // [[tag, count], ...] top-N co-occurring tags (tag docs only)
-    'taggedEventCount',   // (lang docs only)
-    'untaggedEventCount', // (lang docs only)
+    'tag',       // normalized hashtag
+    'words',     // split words array
+    'acronym',   // derived acronym or null
+    'count',     // decayable occurrence count
+    'neighbors', // [[tag, count], ...] top-N co-occurring tags
     'updatedAt'  // timestamp in ms
   ],
   settings: {

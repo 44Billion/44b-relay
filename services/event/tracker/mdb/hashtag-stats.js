@@ -7,12 +7,12 @@ import { queueOps } from '#services/event/maintainer/mdb/index.js'
 
 const MAX_DIRECT_TAGS = 8
 
-// Map<lang, { tags: Map<tag, { count, neighbors: Map<tag, count>, words, acronym }>, taggedEvents: number, untaggedEvents: number }>
+// Map<lang, { tags: Map<tag, { count, neighbors: Map<tag, count>, words, acronym }> }>
 const localStats = new Map()
 
 function ensureLang (lang) {
   if (!localStats.has(lang)) {
-    localStats.set(lang, { tags: new Map(), taggedEvents: 0, untaggedEvents: 0 })
+    localStats.set(lang, { tags: new Map() })
   }
   return localStats.get(lang)
 }
@@ -28,11 +28,8 @@ export function trackHashtagStats ({ language, hashtags }) {
   const langStats = ensureLang(language)
 
   if (!hashtags?.length) {
-    langStats.untaggedEvents++
     return
   }
-
-  langStats.taggedEvents++
 
   // Limit to MAX_DIRECT_TAGS unique tags per event
   const tags = hashtags.slice(0, MAX_DIRECT_TAGS)
@@ -66,21 +63,6 @@ export async function flushHashtagStatsToMDB () {
   const ops = []
 
   for (const [lang, langStats] of snapshot) {
-    // Queue language aggregate op
-    if (langStats.taggedEvents > 0 || langStats.untaggedEvents > 0) {
-      ops.push({
-        type: 'mergeHashtagStats',
-        data: {
-          key: `__lang__:${lang}`,
-          docType: 'lang',
-          lang,
-          taggedEventDelta: langStats.taggedEvents,
-          untaggedEventDelta: langStats.untaggedEvents,
-          seenAt: Date.now()
-        }
-      })
-    }
-
     // Queue per-tag ops
     for (const [tag, entry] of langStats.tags) {
       const neighborDeltas = []
