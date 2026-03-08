@@ -56,6 +56,7 @@ Nostr Event
 │     (written to event document's 'topics' field)                     │
 │  3. trackHashtagStats({ hashtags, language })                        │
 │     ↑ receives ONLY raw hashtags, NOT expanded topics                │
+│     ↑ only called for non-spam authors (popularityLevel <= 6)        │
 │     (expanded/inferred topics never inflate counts)                  │
 └──────────────────────────────────────────────────────────────────────┘
     │
@@ -103,6 +104,10 @@ When an event has `#ashketchum` and the topic detector expands it to also includ
 This separation is enforced at the call site:
 - `detectTopics()` returns the expanded topics (for the event record)
 - `trackHashtagStats()` receives only `extractHashtags(event)` output
+
+### Only non-spam authors contribute to stats
+
+Hashtag statistics are only tracked for events from authors with `popularityLevel <= 6` (non-spam). This prevents spam/bot accounts from poisoning co-occurrence data with misleading or abusive hashtag combinations. The same `popularityLevel` threshold is used for HLL engagement counters.
 
 ### Neighbor co-occurrence is directional
 

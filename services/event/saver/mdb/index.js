@@ -187,7 +187,9 @@ export default class EventSaver {
       await queueOps(ops)
 
       // Track hashtag stats after successful save (fire-and-forget)
-      if (hashtags.length > 0) {
+      // Only track non-spam authors (popularityLevel <= 6) to avoid
+      // poisoning co-occurrence stats with misleading hashtags
+      if (hashtags.length > 0 && popularityLevel <= 6) {
         trackHashtagStats({ language: this.language, hashtags })
       }
 
