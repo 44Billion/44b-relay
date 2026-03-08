@@ -11,6 +11,7 @@ import decayOldTrendingEventsConfig from './decay-old-trending-events.js'
 import trackUptimeConfig from './track-uptime.js'
 import flushHashtagStatsConfig from './flush-hashtag-stats.js'
 import decayHashtagStatsConfig from './decay-hashtag-stats.js'
+import generateLocalizedTopicAssertionEventsConfig from './generate-localized-topic-assertion-events.js'
 
 const jobs = [
   // exampleConfig,
@@ -25,7 +26,8 @@ const jobs = [
   decayOldTrendingEventsConfig,
   trackUptimeConfig,
   flushHashtagStatsConfig,
-  decayHashtagStatsConfig
+  decayHashtagStatsConfig,
+  generateLocalizedTopicAssertionEventsConfig
 ]
 
 export default jobs

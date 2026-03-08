@@ -12,7 +12,7 @@ Each document represents one hashtag observed in a specific language:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `key` | `string` | Primary key: `<lang>:<tag>`, e.g. `en:bitcoin` |
+| `key` | `string` | Primary key: `<lang>-<tag>`, e.g. `en-bitcoin` |
 | `lang` | `string` | ISO 639-1 language code (e.g. `en`, `pt`, `es`) |
 | `tag` | `string` | Normalized hashtag (lowercase, no `#` prefix) |
 | `words` | `string[]` | Tag split into words (e.g. `["ash", "ketchum"]` for `ashketchum`) |
@@ -25,7 +25,7 @@ Each document represents one hashtag observed in a specific language:
 
 ```json
 {
-  "key": "en:ashketchum",
+  "key": "en-ashketchum",
   "lang": "en",
   "tag": "ashketchum",
   "words": ["ash", "ketchum"],

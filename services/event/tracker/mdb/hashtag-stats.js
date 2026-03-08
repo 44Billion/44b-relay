@@ -73,7 +73,7 @@ export async function flushHashtagStatsToMDB () {
       ops.push({
         type: 'mergeHashtagStats',
         data: {
-          key: `${lang}:${tag}`,
+          key: `${lang}-${tag}`,
           lang,
           tag,
           words: entry.words,
