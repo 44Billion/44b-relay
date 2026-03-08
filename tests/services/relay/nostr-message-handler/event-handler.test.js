@@ -56,10 +56,25 @@ mock.module('#services/event/tracker/mdb/ip-activity.js', {
   }
 })
 
-// 7. Mock Language Detection
+// 7. Mock Language Detection / Text Extraction
 mock.module('#helpers/language.js', {
   namedExports: {
-    detectEventLanguage: mock.fn(() => undefined)
+    detectEventLanguage: mock.fn(() => undefined),
+    getEventText: mock.fn(event => event.content)
+  }
+})
+
+// 8. Mock hashtag extraction
+mock.module('#helpers/hashtag.js', {
+  namedExports: {
+    extractHashtags: mock.fn(() => [])
+  }
+})
+
+// 9. Mock topic detection
+mock.module('#services/topic/detector.js', {
+  namedExports: {
+    detectTopics: mock.fn(() => undefined)
   }
 })
 
@@ -69,6 +84,8 @@ const { default: EventHandler, sendToClientsWithAMatchingFilter } = await import
 const { default: EventSaver } = await import('#services/event/saver/mdb/index.js')
 const { getPopularityLevel } = await import('#services/event/maintainer/mdb/index.js')
 const { detectEventLanguage } = await import('#helpers/language.js')
+const { extractHashtags } = await import('#helpers/hashtag.js')
+const { detectTopics } = await import('#services/topic/detector.js')
 
 describe('EventHandler', () => {
   before(() => {
@@ -95,6 +112,8 @@ describe('EventHandler', () => {
     EventSaver.run.mock.mockImplementation(async () => ({ isSuccess: true, isDuplicate: false, message: '' }))
     // Setup Popularity to allow broadcasting ( <= 6 )
     getPopularityLevel.mock.mockImplementation(() => 1)
+    extractHashtags.mock.mockImplementation(() => [{ tag: 'pokemon', words: ['pokemon'], acronym: null }])
+    detectTopics.mock.mockImplementation(() => ['pokemon', 'anime'])
 
     const wsSender = createWs('sender')
     const wsReceiver = createWs('receiver')
@@ -125,10 +144,16 @@ describe('EventHandler', () => {
     const ackMsg = JSON.parse(wsSender.send.mock.calls[0].arguments[0])
     assert.deepEqual(ackMsg, ['OK', 'event1', true, ''])
 
-    // 2. Should call EventSaver
+    // 2. Should call EventSaver with propagated topics
     assert.equal(EventSaver.run.mock.calls.length, 1)
+    const saverArgs = EventSaver.run.mock.calls[0].arguments[0]
+    assert.deepEqual(saverArgs.topics, ['pokemon', 'anime'])
 
-    // 3. Should relay to receiver
+    // 3. Should broadcast with propagated topics
+    assert.equal(broadcastMock.mock.calls.length, 1)
+    assert.deepEqual(broadcastMock.mock.calls[0].arguments[0].eventTopics, ['pokemon', 'anime'])
+
+    // 4. Should relay to receiver
     assert.equal(wsReceiver.send.mock.calls.length, 1)
     const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
     assert.equal(relayMsg[0], 'EVENT')
@@ -997,5 +1022,51 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
 
     // sendToClientsWithAMatchingFilter should NOT call broadcast — only EventHandler.run does
     assert.equal(broadcastMock.mock.calls.length, 0)
+  })
+
+  it('should relay to clients with matching topic filter using propagated eventTopics', async () => {
+    getPopularityLevel.mock.mockImplementation(() => 1)
+
+    const wsReceiver = createWs('receiver')
+    wsReceiver.nostr.subscriptions.sub1 = {
+      filters: [{ kinds: [1], topic: ['pokemon'], isBroad: true }]
+    }
+    const wss = { clients: [wsReceiver] }
+
+    const event = {
+      kind: 1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      pubkey: 'pubkey1',
+      id: 'event_topic_match',
+      content: 'hello'
+    }
+
+    await sendToClientsWithAMatchingFilter({ wss, event, eventLanguage: undefined, eventTopics: ['pokemon', 'anime'] })
+
+    assert.equal(wsReceiver.send.mock.calls.length, 1)
+  })
+
+  it('should NOT relay to clients when topic filter does not match propagated eventTopics', async () => {
+    getPopularityLevel.mock.mockImplementation(() => 1)
+
+    const wsReceiver = createWs('receiver')
+    wsReceiver.nostr.subscriptions.sub1 = {
+      filters: [{ kinds: [1], topic: ['bitcoin'], isBroad: true }]
+    }
+    const wss = { clients: [wsReceiver] }
+
+    const event = {
+      kind: 1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      pubkey: 'pubkey1',
+      id: 'event_topic_no_match',
+      content: 'hello'
+    }
+
+    await sendToClientsWithAMatchingFilter({ wss, event, eventLanguage: undefined, eventTopics: ['pokemon', 'anime'] })
+
+    assert.equal(wsReceiver.send.mock.calls.length, 0)
   })
 })

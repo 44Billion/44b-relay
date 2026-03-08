@@ -343,7 +343,6 @@ export async function processBatch (results, systemState) {
           // Tag document
           const doc = await getDoc(targetIndex, targetKey, () => ({
             key: targetKey,
-            docType: 'tag',
             lang: data.lang,
             tag: data.tag,
             words: data.words || [],

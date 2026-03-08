@@ -35,7 +35,7 @@ async function maybeRefreshCache (lang) {
   isRefreshing = true
   try {
     const { hits } = await mdb.index('hashtagStats').search('', {
-      filter: `docType = "tag" AND lang = ${JSON.stringify(lang)}`,
+      filter: `lang = ${JSON.stringify(lang)}`,
       sort: ['count:desc'],
       limit: CACHE_SIZE_PER_LANG,
       attributesToRetrieve: ['key', 'tag', 'words', 'acronym', 'count', 'neighbors']

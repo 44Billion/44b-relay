@@ -10,7 +10,9 @@ import { isAuthenticated } from '#services/relay/authenticator.js'
 import { loadPopularityFilters, getPopularityLevel } from '#services/event/maintainer/mdb/index.js'
 import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import EventSaver from '#services/event/saver/mdb/index.js'
-import { detectEventLanguage } from '#helpers/language.js'
+import { detectEventLanguage, getEventText } from '#helpers/language.js'
+import { extractHashtags } from '#helpers/hashtag.js'
+import { detectTopics } from '#services/topic/detector.js'
 import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
 import { broadcast } from '#services/ipc/cross-process-broadcaster.js'
 
@@ -37,13 +39,19 @@ class EventHandler {
 
       // if is duplicate, must start with 'duplicate:' see this and others at https://github.com/nostr-protocol/nips/blob/master/20.md
       const eventLanguage = detectEventLanguage(event)
+      const eventHashtags = extractHashtags(event)
+      const eventTopics = detectTopics({
+        language: eventLanguage,
+        hashtags: eventHashtags,
+        text: getEventText(event)
+      })
 
       let shouldRelay // e.g.: don't relay duplicates
-      ;({ isSuccess, shouldRelay = isSuccess, message } = await this.processNostrEvent({ ws, event, ip: ws.ip, eventLanguage }))
+      ;({ isSuccess, shouldRelay = isSuccess, message } = await this.processNostrEvent({ ws, event, ip: ws.ip, eventLanguage, eventTopics, eventHashtags }))
       sendCommandResult({ ws, event, isSuccess, message })
       if (shouldRelay) {
-        broadcast({ event, eventLanguage })
-        return sendToClientsWithAMatchingFilter({ wss, event, eventLanguage })
+        broadcast({ event, eventLanguage, eventTopics })
+        return sendToClientsWithAMatchingFilter({ wss, event, eventLanguage, eventTopics })
       }
     } catch (error) {
       console.error('Error handling event:', error)
@@ -51,7 +59,7 @@ class EventHandler {
     }
   }
 
-  async processNostrEvent ({ ws, event, ip, eventLanguage }) {
+  async processNostrEvent ({ ws, event, ip, eventLanguage, eventTopics, eventHashtags }) {
     let isSuccess, shouldRelay, message, isBlocked, isDuplicate
     ;({ isBlocked, message } = this.applyCustomRelayRestrictionsToNostrEvent({ event }))
     if (isBlocked) return { isSuccess: false, shouldRelay: false, message }
@@ -61,7 +69,7 @@ class EventHandler {
     // Better to relay for those who may have subscribed to (e.g.: online status update)
     // else if (isReplaceableEvent(event)) shouldRelay = false
 
-    ;({ isSuccess, isDuplicate, message } = await this.maybePersistEvent({ ws, event, ip, language: eventLanguage }))
+    ;({ isSuccess, isDuplicate, message } = await this.maybePersistEvent({ ws, event, ip, language: eventLanguage, topics: eventTopics, hashtags: eventHashtags }))
     if (!isSuccess || isDuplicate) shouldRelay = false
     shouldRelay ??= true
 
@@ -123,12 +131,12 @@ class EventHandler {
     return { isBlocked: false, message: '' }
   }
 
-  maybePersistEvent ({ ws, event, ip, language }) {
-    return EventSaver.run({ ws, event, ip, language })
+  maybePersistEvent ({ ws, event, ip, language, topics, hashtags }) {
+    return EventSaver.run({ ws, event, ip, language, topics, hashtags })
   }
 }
 
-async function sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage }) {
+async function sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage, eventTopics }) {
   // Better to relay for those who may have subscribed to (e.g.: online status update)
   // if (isReplaceableEvent(event)) return
 
@@ -150,6 +158,7 @@ async function sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage }) 
       for (const filter of filters) {
         if (doesMatchASubscriptionFilter({ filters: [filter], event })) {
           if (filter.language && !filter.language.includes(eventLanguage)) continue
+          if (filter.topic?.length && !filter.topic.some(topic => eventTopics?.includes(topic))) continue
 
           const hasExplicitAudience = filter.isSpam || filter.isRising || filter.isPopular
           if (hasExplicitAudience) {

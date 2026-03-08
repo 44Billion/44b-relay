@@ -38,7 +38,7 @@ export async function run () {
 
   // Only decay tag docs that haven't been updated very recently (grace period: 2 hours)
   const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000)
-  const tagFilter = `docType = "tag" AND updatedAt < ${twoHoursAgo}`
+  const tagFilter = `updatedAt < ${twoHoursAgo}`
 
   try {
     console.log('Hashtag stats (tag) decay task enqueued...')

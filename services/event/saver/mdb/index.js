@@ -7,18 +7,15 @@ import { checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/
 import { eventToRecord, idToRef } from '#models/event/mapper.js'
 import { getEventByRef } from '#models/event/dao.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
-import { extractHashtags } from '#helpers/hashtag.js'
-import { getEventText } from '#helpers/language.js'
-import { detectTopics } from '#services/topic/detector.js'
 import { trackHashtagStats } from '#services/event/tracker/mdb/hashtag-stats.js'
 
 export default class EventSaver {
-  static run ({ ws, event, ip, language }) {
-    return new this({ ws, event, ip, language }).save()
+  static run ({ ws, event, ip, language, topics, hashtags }) {
+    return new this({ ws, event, ip, language, topics, hashtags }).save()
   }
 
-  constructor ({ ws, event, ip, language }) {
-    Object.assign(this, { ws, event, ip, language, receivedAt: Date.now() })
+  constructor ({ ws, event, ip, language, topics, hashtags }) {
+    Object.assign(this, { ws, event, ip, language, topics, hashtags, receivedAt: Date.now() })
   }
 
   async save () {
@@ -42,7 +39,7 @@ export default class EventSaver {
 
     try {
       let record
-      const recordOpts = { language: this.language, receivedAt: Math.floor(this.receivedAt / 1000) }
+      const recordOpts = { language: this.language, topics: this.topics, receivedAt: Math.floor(this.receivedAt / 1000) }
 
       if (event.kind !== eventKinds.DELETION) {
         const getDTagFromEvent = event => {
@@ -90,16 +87,8 @@ export default class EventSaver {
       // 1. Check Limits & Prepare Ops
       const { ownerType, _ownerKey, popularityLevel, ops: storageOps } = await checkStorageLimitAndPrune({ pubkey: author, ip, newEventSize: byteSize })
 
-      // Extract hashtags and detect topics
-      const hashtags = extractHashtags(event)
-      const text = getEventText(event)
-      const topics = detectTopics({ language: this.language, hashtags, text })
-
       // Convert to MDB Record
-      record ??= eventToRecord(event, { ...recordOpts, topics })
-      if (record.topics === undefined && topics?.length) {
-        record.topics = topics
-      }
+      record ??= eventToRecord(event, recordOpts)
 
       // 2. Handle Replacement info (subtract old event size)
       let oldEvent = null
@@ -135,7 +124,7 @@ export default class EventSaver {
         ...(oldEvent?.replyCounter && { replyCounter: oldEvent.replyCounter }),
         ...(oldEvent?.repostCounter && { repostCounter: oldEvent.repostCounter }),
         ...(oldEvent?.quoteCounter && { quoteCounter: oldEvent.quoteCounter })
-        // receivedAt is already in record
+        // language, topics and receivedAt are already in record
       }
 
       // Add 'insertOrReplaceDocument' op
@@ -189,8 +178,8 @@ export default class EventSaver {
       // Track hashtag stats after successful save (fire-and-forget)
       // Only track non-spam authors (popularityLevel <= 6) to avoid
       // poisoning co-occurrence stats with misleading hashtags
-      if (hashtags.length > 0 && popularityLevel <= 6) {
-        trackHashtagStats({ language: this.language, hashtags })
+      if ((this.hashtags ?? []).length > 0 && popularityLevel <= 6) {
+        trackHashtagStats({ language: this.language, hashtags: this.hashtags })
       }
 
       return { isSuccess: true, isDuplicate: false, message: '' }

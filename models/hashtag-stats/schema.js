@@ -3,7 +3,6 @@ export default {
   primaryKey: 'key',
   attributes: [
     'key',       // '<lang>:<tag>'
-    'docType',   // always 'tag' (kept for forward-compat filtering)
     'lang',      // ISO 639-1
     'tag',       // normalized hashtag
     'words',     // split words array
@@ -16,7 +15,6 @@ export default {
     displayedAttributes: ['*'],
     searchableAttributes: ['key'],
     filterableAttributes: [
-      'docType',
       'lang',
       'tag',
       'count'

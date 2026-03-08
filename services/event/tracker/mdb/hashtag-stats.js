@@ -74,7 +74,6 @@ export async function flushHashtagStatsToMDB () {
         type: 'mergeHashtagStats',
         data: {
           key: `${lang}:${tag}`,
-          docType: 'tag',
           lang,
           tag,
           words: entry.words,

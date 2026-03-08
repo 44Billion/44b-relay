@@ -65,8 +65,8 @@ if (shouldSpinUpServer) {
   server.on('upgrade', handleHttpServerUpgrade)
 }
 
-initBroadcaster(({ event, eventLanguage }) => {
-  sendToClientsWithAMatchingFilter({ wss, event, eventLanguage })
+initBroadcaster(({ event, eventLanguage, eventTopics }) => {
+  sendToClientsWithAMatchingFilter({ wss, event, eventLanguage, eventTopics })
 })
 
 const shouldStartWorker = process.env.NODE_ENV !== 'test'

@@ -80,7 +80,7 @@ describe('HTTP Server handleRequest', () => {
       call.arguments[0] === 'content-type' && call.arguments[1] === 'application/nostr+json'
     ))
     const body = JSON.parse(res.end.mock.calls[0].arguments[0])
-    assert.equal(body.name, '44billion.net Relay')
+    assert.equal(body.name, '44')
     assert.ok(Array.isArray(body.supported_nips))
   })
 
@@ -160,7 +160,7 @@ describe('HTTP Server handleRequest', () => {
 
     assert.equal(res.writeHead.mock.calls[0].arguments[0], 200)
     const body = JSON.parse(res.end.mock.calls[0].arguments[0])
-    assert.equal(body.name, 'Trending')
+    assert.equal(body.name, "44's Trending")
     assert.ok(body.description.includes('Trending'))
   })
 
@@ -181,7 +181,7 @@ describe('HTTP Server handleRequest', () => {
 
     assert.equal(res.writeHead.mock.calls[0].arguments[0], 200)
     const body = JSON.parse(res.end.mock.calls[0].arguments[0])
-    assert.equal(body.name, 'Trending in English')
+    assert.equal(body.name, "44's Trending in English")
     assert.ok(body.description.includes('English'))
   })
 
@@ -202,7 +202,7 @@ describe('HTTP Server handleRequest', () => {
 
     assert.equal(res.writeHead.mock.calls[0].arguments[0], 200)
     const body = JSON.parse(res.end.mock.calls[0].arguments[0])
-    assert.equal(body.name, 'Popular')
+    assert.equal(body.name, "44's Influencers")
   })
 
   it('should return dynamic NIP-11 for /.well-known/nip50/language:pt', () => {
@@ -222,7 +222,7 @@ describe('HTTP Server handleRequest', () => {
 
     assert.equal(res.writeHead.mock.calls[0].arguments[0], 200)
     const body = JSON.parse(res.end.mock.calls[0].arguments[0])
-    assert.equal(body.name, 'Portuguese')
+    assert.equal(body.name, "44's Portuguese")
   })
 
   it('should return 404 for invalid NIP-50 path extension', () => {
