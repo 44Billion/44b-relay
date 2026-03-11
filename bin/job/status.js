@@ -3,6 +3,7 @@ import readline from 'node:readline/promises'
 import mdb from '#services/db/mdb.js'
 
 const HEARTBEAT_TOLERANCE = 120
+const ERROR_CLEAR_AFTER = 3 * 24 * 60 * 60 // 3 days in seconds (matches erroedAt unit)
 
 async function run () {
   try {
@@ -10,6 +11,7 @@ async function run () {
 
     const now = Math.floor(Date.now() / 1000)
     const stalledJobs = []
+    const staleErrorJobs = []
 
     console.log('--- Job Status ---')
     for (const job of jobs) {
@@ -25,7 +27,15 @@ async function run () {
         console.log(`  isStalled: ${isStalled}`)
       }
       if (job.lastError) {
+        const erroredAtDate = job.erroedAt ? new Date(job.erroedAt * 1000).toISOString() : 'unknown'
+        console.log(`  erroredAt: ${erroredAtDate}`)
         console.log(`  lastError: ${job.lastError.slice(0, 100)}...`)
+
+        // If the error is old enough, schedule it for clearing
+        const isStaleError = job.erroedAt && (now - job.erroedAt) >= ERROR_CLEAR_AFTER
+        if (isStaleError) {
+          staleErrorJobs.push(job)
+        }
       }
 
       if (isStalled) {
@@ -59,6 +69,22 @@ async function run () {
       }
     } else {
       console.log('\nNo stalled jobs found.')
+    }
+
+    // Silently clear lastError/erroedAt for jobs whose error is older than ERROR_CLEAR_AFTER.
+    // This keeps the status view clean on future runs without prompting the user.
+    if (staleErrorJobs.length > 0) {
+      const updates = staleErrorJobs.map(job => ({
+        key: job.key,
+        lastError: null,
+        erroedAt: null
+      }))
+      try {
+        await mdb.index('jobs').updateDocuments(updates)
+        console.log(`\nCleared stale lastError for: ${staleErrorJobs.map(j => j.key).join(', ')}`)
+      } catch (err) {
+        console.error('Failed to clear stale job errors:', err)
+      }
     }
   } catch (err) {
     console.error('Error checking job status:', err)

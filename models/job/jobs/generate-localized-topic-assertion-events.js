@@ -6,6 +6,10 @@
  * events (kind 30385) with neighbor `t` tags, and queues them as
  * MeiliSearch event documents. Stale events from processed languages
  * that weren't refreshed are queued for deletion.
+ *
+ * Also resolves topic icons via multiple external providers (Wikipedia,
+ * Wikidata, DuckDuckGo, Google Favicon) with fallback + backoff, and
+ * includes the icon URL in an `icon` tag when available.
  */
 import mdb from '#services/db/mdb.js'
 import { finalizeEvent } from 'nostr-tools'
@@ -13,6 +17,8 @@ import { getRelaySelfSecretBytes, getRelaySelfPubkey } from '#helpers/relay-self
 import { eventToRecord, addressToRef } from '#models/event/mapper.js'
 import { queueOps } from '#services/event/maintainer/mdb/index.js'
 import { eventKinds } from '#constants/event.js'
+import { resolveIconsBatch } from '#services/topic/icon-resolver.js'
+import { patchIcons } from '#models/hashtag-stats/dao.js'
 
 const MAX_TOPICS_PER_LANG = 30
 const MAX_NEIGHBORS_PER_TOPIC = 20
@@ -83,6 +89,41 @@ function normalizeNeighborRanks (neighbors) {
   })
 }
 
+/**
+ * Resolves icons for tags that don't already have a cached icon URL.
+ * Persists newly resolved icons back to hashtagStats documents.
+ * Returns a Map<tag, iconUrl> of the newly resolved icons.
+ */
+async function resolveNewIcons (topTopics, lang) {
+  const needsIcon = topTopics.filter(s => !s.icon)
+  if (needsIcon.length === 0) return new Map()
+
+  const items = needsIcon.map(s => ({ tag: s.tag, lang }))
+  let iconMap
+  try {
+    iconMap = await resolveIconsBatch(items)
+  } catch (_err) {
+    return new Map()
+  }
+
+  // Persist resolved icons back in hashtagStats so we don't re-fetch next run.
+  // Use the shared DAO which performs a single updateDocumentsByFunction call.
+  if (iconMap.size > 0) {
+    const iconByKey = {}
+    for (const [tag, url] of iconMap) {
+      iconByKey[`${lang}-${tag}`] = url
+    }
+
+    try {
+      await patchIcons(iconByKey)
+    } catch (_err) {
+      console.error('Failed to persist icons:', _err)
+    }
+  }
+
+  return iconMap
+}
+
 async function processLanguage ({ lang, pubkey, secretKey, kind }) {
   // 2. Fetch top topics for this language
   const { hits: topTopics } = await mdb.index('hashtagStats').search('', {
@@ -92,6 +133,9 @@ async function processLanguage ({ lang, pubkey, secretKey, kind }) {
   })
 
   if (topTopics.length === 0) return
+
+  // 2b. Resolve icons for tags that don't already have one cached
+  const iconMap = await resolveNewIcons(topTopics, lang)
 
   const nowSeconds = Math.floor(Date.now() / 1000)
   const ops = []
@@ -112,14 +156,20 @@ async function processLanguage ({ lang, pubkey, secretKey, kind }) {
 
     const rankedNeighbors = normalizeNeighborRanks(neighbors)
 
+    // Determine icon: prefer cached icon from hashtagStats, then newly resolved
+    const iconUrl = stat.icon || iconMap.get(tag) || null
+
     const tags = [
       ['d', dTag],
       ['k', 'iso639:#'],
-      ['L', 'ISO-639-1'],
-      ['l', lang, 'ISO-639-1'],
       ['rank', String(topicRank)],
+      ['l', `iso639:${lang}`],
       ['t', tag]
     ]
+
+    if (iconUrl) {
+      tags.push(['icon', iconUrl])
+    }
 
     for (const [neighborTag, neighborRank] of rankedNeighbors) {
       tags.push(['t', neighborTag, '', String(neighborRank)])

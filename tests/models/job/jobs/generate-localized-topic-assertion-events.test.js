@@ -2,6 +2,7 @@ import { describe, it, before, beforeEach, after, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
 import hashtagStatsSchema from '#models/hashtag-stats/schema.js'
+import { patchIcons } from '#models/hashtag-stats/dao.js'
 import { eventKinds } from '#constants/event.js'
 import { getRelaySelfPubkey } from '#helpers/relay-self.js'
 import { verifyEvent } from 'nostr-tools'
@@ -18,6 +19,28 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
         queueOps: queueOpsMock,
         pruneEvents: async () => 0,
         checkStorageLimitAndPrune: async () => ({})
+      }
+    })
+
+    mock.module('#services/topic/icon-resolver.js', {
+      namedExports: {
+        resolveIconsBatch: mock.fn(async (items) => {
+          const map = new Map()
+          for (const { tag } of items) {
+            map.set(tag, `https://icon.test/${tag}.png`)
+          }
+          return map
+        }),
+        resolveIcon: mock.fn(async () => null),
+        _resetHealthCache: mock.fn(() => {}),
+        warmHealthCache: mock.fn(async () => {}),
+        isBackedOff: mock.fn(() => false),
+        recordSuccess: mock.fn(async () => {}),
+        recordFailure: mock.fn(async () => {}),
+        FAILURES_BEFORE_BACKOFF: 3,
+        BASE_BACKOFF_MS: 300000,
+        MAX_BACKOFF_MS: 86400000,
+        CONCURRENCY: 3
       }
     })
 
@@ -142,6 +165,59 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
     assert.ok(verifyEvent(signedEvent), 'Event signature should be valid')
   })
 
+  it('should include icon tag when icon is resolved for a topic', async () => {
+    await mdb.index('hashtagStats').addDocuments([
+      {
+        key: 'en-pokemon',
+        lang: 'en',
+        tag: 'pokemon',
+        count: 50,
+        neighbors: [],
+        updatedAt: Date.now()
+        // no 'icon' field — should be resolved by the mock
+      }
+    ])
+
+    await generateJob.run()
+
+    assert.equal(queueOpsMock.mock.calls.length, 1)
+    const ops = queueOpsMock.mock.calls[0].arguments[0]
+    const insertOps = ops.filter(op => op.type === 'insertOrReplaceDocument')
+    assert.equal(insertOps.length, 1)
+
+    const doc = insertOps[0].data.document
+    const tags = reconstructTags(doc)
+    const iconTag = tags.find(t => t[0] === 'icon')
+    assert.ok(iconTag, 'should have an icon tag')
+    assert.equal(iconTag[1], 'https://icon.test/pokemon.png')
+  })
+
+  it('should use cached icon from hashtagStats when available', async () => {
+    await mdb.index('hashtagStats').addDocuments([
+      {
+        key: 'en-bitcoin',
+        lang: 'en',
+        tag: 'bitcoin',
+        count: 100,
+        icon: 'https://cached.test/bitcoin.png',
+        neighbors: [],
+        updatedAt: Date.now()
+      }
+    ])
+
+    await generateJob.run()
+
+    assert.equal(queueOpsMock.mock.calls.length, 1)
+    const ops = queueOpsMock.mock.calls[0].arguments[0]
+    const insertOps = ops.filter(op => op.type === 'insertOrReplaceDocument')
+    const doc = insertOps[0].data.document
+    const tags = reconstructTags(doc)
+    const iconTag = tags.find(t => t[0] === 'icon')
+    assert.ok(iconTag, 'should have an icon tag')
+    // Cached icon is preferred over newly resolved
+    assert.equal(iconTag[1], 'https://cached.test/bitcoin.png')
+  })
+
   it('should queue delete ops for stale events not refreshed in current run', async () => {
     const selfPubkey = getRelaySelfPubkey()
 
@@ -211,6 +287,118 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
     const languages = insertOps.map(op => op.data.document.language)
     assert.ok(languages.includes('en'))
     assert.ok(languages.includes('pt'))
+  })
+})
+
+describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () => {
+  before(async () => {
+    // Ensure the hashtagStats index exists with correct settings
+    try {
+      await mdb.createIndex('hashtagStats', { primaryKey: hashtagStatsSchema.primaryKey })
+    } catch (_e) { /* already exists */ }
+    await mdb.index('hashtagStats').updateSettings(hashtagStatsSchema.settings)
+  })
+
+  beforeEach(async () => {
+    await mdb.index('hashtagStats').deleteAllDocuments()
+  })
+
+  it('should patch multiple icons in a single call via patchIcons DAO', async () => {
+    // Seed two documents
+    await mdb.index('hashtagStats').addDocuments([
+      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], updatedAt: Date.now() },
+      { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], updatedAt: Date.now() }
+    ])
+
+    // Use the DAO function
+    await patchIcons({
+      'en-bitcoin': 'https://example.com/bitcoin.png',
+      'en-crypto': 'https://example.com/crypto.png'
+    })
+
+    // Verify icons were set
+    const btc = await mdb.index('hashtagStats').getDocument('en-bitcoin')
+    assert.equal(btc.icon, 'https://example.com/bitcoin.png')
+
+    const crypto = await mdb.index('hashtagStats').getDocument('en-crypto')
+    assert.equal(crypto.icon, 'https://example.com/crypto.png')
+  })
+
+  it('should NOT insert phantom docs for keys that do not exist', async () => {
+    // Seed only one document
+    await mdb.index('hashtagStats').addDocuments([
+      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], updatedAt: Date.now() }
+    ])
+
+    // Use the DAO function with a map that includes a non-existent key
+    await patchIcons({
+      'en-bitcoin': 'https://example.com/bitcoin.png',
+      'en-nonexistent': 'https://example.com/nonexistent.png'
+    })
+
+    // Existing doc should be updated
+    const btc = await mdb.index('hashtagStats').getDocument('en-bitcoin')
+    assert.equal(btc.icon, 'https://example.com/bitcoin.png')
+
+    // Non-existent key should NOT have been created
+    try {
+      await mdb.index('hashtagStats').getDocument('en-nonexistent')
+      assert.fail('Should not find a phantom document for en-nonexistent')
+    } catch (err) {
+      // Expected: document_not_found
+      assert.ok(
+        err.code === 'document_not_found' || err.cause?.code === 'document_not_found',
+        'Should get document_not_found error'
+      )
+    }
+  })
+
+  it('should only patch docs matched by the filter', async () => {
+    // Seed three documents
+    await mdb.index('hashtagStats').addDocuments([
+      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], updatedAt: Date.now() },
+      { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], updatedAt: Date.now() },
+      { key: 'en-nft', lang: 'en', tag: 'nft', count: 60, neighbors: [], updatedAt: Date.now() }
+    ])
+
+    // Use the DAO function to patch only bitcoin
+    await patchIcons({ 'en-bitcoin': 'https://example.com/bitcoin.png' })
+
+    // bitcoin should have icon
+    const btc = await mdb.index('hashtagStats').getDocument('en-bitcoin')
+    assert.equal(btc.icon, 'https://example.com/bitcoin.png')
+
+    // crypto and nft should NOT have icon
+    const crypto = await mdb.index('hashtagStats').getDocument('en-crypto')
+    assert.equal(crypto.icon, undefined)
+
+    const nft = await mdb.index('hashtagStats').getDocument('en-nft')
+    assert.equal(nft.icon, undefined)
+  })
+
+  it('should preserve existing fields when patching icon', async () => {
+    const now = Date.now()
+    await mdb.index('hashtagStats').addDocuments([
+      {
+        key: 'en-bitcoin',
+        lang: 'en',
+        tag: 'bitcoin',
+        count: 100,
+        neighbors: [['crypto', 50]],
+        updatedAt: now
+      }
+    ])
+
+    // Use the DAO function
+    await patchIcons({ 'en-bitcoin': 'https://example.com/bitcoin.png' })
+
+    const doc = await mdb.index('hashtagStats').getDocument('en-bitcoin')
+    assert.equal(doc.icon, 'https://example.com/bitcoin.png')
+    assert.equal(doc.lang, 'en')
+    assert.equal(doc.tag, 'bitcoin')
+    assert.equal(doc.count, 100)
+    assert.deepEqual(doc.neighbors, [['crypto', 50]])
+    assert.equal(doc.updatedAt, now)
   })
 })
 
