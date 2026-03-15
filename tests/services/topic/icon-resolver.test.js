@@ -13,6 +13,16 @@ describe('Icon Resolver', () => {
       await mdb.index('iconProviderHealth').updateSettings(iconProviderHealthSchema.settings)
     } catch (_e) { /* already exists */ }
 
+    // Mock the image processor to avoid real image processing
+    mock.module('#services/topic/image-processor.js', {
+      namedExports: {
+        processImage: mock.fn(async (url) => {
+          // Return a fake processed data URL based on the input URL
+          return `data:image/webp;base64,processed_${url}`
+        })
+      }
+    })
+
     // Mock the providers module to avoid real network I/O
     mock.module('#services/topic/icon-providers.js', {
       namedExports: {

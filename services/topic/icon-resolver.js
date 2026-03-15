@@ -11,6 +11,7 @@
  */
 import mdb from '#services/db/mdb.js'
 import { providers } from '#services/topic/icon-providers.js'
+import { processImage } from '#services/topic/image-processor.js'
 
 // --- Backoff constants ---
 const BASE_BACKOFF_MS = 5 * 60 * 1000           // 5 minutes
@@ -187,9 +188,12 @@ export async function resolveIconsBatch (items) {
       try {
         const result = await resolveIcon(tag, lang)
         if (result?.url) {
-          results.set(tag, result.url)
+          // Process the image: resize to 512x512, convert to webp, return base64 data URL
+          const processedIcon = await processImage(result.url)
+          results.set(tag, processedIcon)
         }
-      } catch (_err) {
+      } catch (err) {
+        console.warn(`Failed to resolve/process icon for tag "${tag}":`, err)
         // Swallow — individual tag failure shouldn't crash the batch
       }
     }
