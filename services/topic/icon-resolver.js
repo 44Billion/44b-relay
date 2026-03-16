@@ -143,16 +143,17 @@ function isBackedOff (providerName) {
  *
  * @param {string} tag - normalized hashtag
  * @param {string} lang - ISO 639-1 language code
+ * @param {object} [stat] - optional full hashtagStats document for context-aware providers
  * @returns {Promise<{ url: string } | null>}
  */
-export async function resolveIcon (tag, lang) {
+export async function resolveIcon (tag, lang, stat) {
   await warmHealthCache()
 
   for (const provider of providers) {
     if (isBackedOff(provider.name)) continue
 
     try {
-      const result = await provider.fetchIcon(tag, lang)
+      const result = await provider.fetchIcon(tag, lang, stat)
       if (result?.url) {
         await recordSuccess(provider.name)
         return result
@@ -172,8 +173,10 @@ export async function resolveIcon (tag, lang) {
 /**
  * Resolves icons for a batch of tags with bounded concurrency.
  *
- * @param {{ tag: string, lang: string }[]} items
- * @returns {Promise<Map<string, string>>} tag → icon URL
+ * @param {{ tag: string, lang: string, stat?: object }[]} items
+ *   `stat` is the optional full hashtagStats document; forwarded to providers
+ *   that can use words/neighbors for richer lookups or prompt construction.
+ * @returns {Promise<Map<string, string>>} tag → icon data URL
  */
 export async function resolveIconsBatch (items) {
   await warmHealthCache()
@@ -184,13 +187,16 @@ export async function resolveIconsBatch (items) {
   async function worker () {
     while (idx < items.length) {
       const i = idx++
-      const { tag, lang } = items[i]
+      const { tag, lang, stat } = items[i]
       try {
-        const result = await resolveIcon(tag, lang)
+        const result = await resolveIcon(tag, lang, stat)
         if (result?.url) {
-          // Process the image: resize to 512x512, convert to webp, return base64 data URL
-          const processedIcon = await processImage(result.url)
-          results.set(tag, processedIcon)
+          // Some providers (neighborIcon, pollinations) already return a data URL —
+          // skip processImage since the image is already resized and encoded.
+          const iconDataUrl = result.url.startsWith('data:')
+            ? result.url
+            : await processImage(result.url)
+          results.set(tag, iconDataUrl)
         }
       } catch (err) {
         console.warn(`Failed to resolve/process icon for tag "${tag}":`, err)

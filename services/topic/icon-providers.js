@@ -3,7 +3,10 @@
  *
  * Each provider exposes:
  *   - name: unique identifier
- *   - fetchIcon(tag, lang): returns { url: string } or null
+ *   - fetchIcon(tag, lang, stat?): returns { url: string } or null
+ *     `stat` is the full hashtagStats document (optional), giving providers
+ *     access to words and neighbors for richer lookups or prompt construction.
+ *     Providers that don't need it simply ignore the parameter.
  *
  * All network calls use AbortController with a per-provider timeout
  * so a slow API never blocks the job pipeline.
@@ -11,8 +14,11 @@
  * Wikipedia language prefixes:
  * @see https://meta.wikimedia.org/wiki/List_of_Wikipedias
  */
+import mdb from '#services/db/mdb.js'
+import { resizeImage, removeWhiteBackground } from '#services/topic/image-processor.js'
 
 const PROVIDER_TIMEOUT_MS = 4000
+const POLLINATIONS_TIMEOUT_MS = 30_000
 
 // --- helpers ---------------------------------------------------------------
 
@@ -193,6 +199,94 @@ const googleFavicon = {
 }
 
 /**
+ * 5. Neighbor icon fallback
+ *
+ * Looks up co-occurring neighbor tags (from the stat doc or fetched from
+ * hashtagStats) and returns the first one that already has a cached icon.
+ * Zero external requests — pure MeiliSearch lookups.
+ */
+const neighborIcon = {
+  name: 'neighborIcon',
+
+  async fetchIcon (tag, lang, stat) {
+    let neighborTags = (stat?.neighbors || []).slice(0, 5).map(([t]) => t)
+
+    if (neighborTags.length === 0) {
+      try {
+        const doc = await mdb.index('hashtagStats').getDocument(`${lang}-${tag}`)
+        neighborTags = (doc.neighbors || []).slice(0, 5).map(([t]) => t)
+      } catch {
+        return null
+      }
+    }
+
+    if (neighborTags.length === 0) return null
+
+    const docs = await Promise.all(
+      neighborTags.map(t =>
+        mdb.index('hashtagStats').getDocument(`${lang}-${t}`).catch(() => null)
+      )
+    )
+
+    for (const doc of docs) {
+      if (doc?.icon) return { url: doc.icon }
+    }
+    return null
+  }
+}
+
+// --- Pollinations.ai helpers -----------------------------------------------
+
+function buildPollinationsPrompt (tag, stat) {
+  const words = stat?.words?.length ? stat.words : [tag]
+  const neighborTerms = (stat?.neighbors || []).slice(0, 3).map(([t]) => t)
+  const terms = [...new Set([...words, ...neighborTerms])].join(', ')
+  return `minimal flat icon representing: ${terms}, simple clean design, solid white background, vector style`
+}
+
+function tagToSeed (tag) {
+  return Math.abs(tag.split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0))
+}
+
+/**
+ * 6. Pollinations.ai AI image generation (free, no API key)
+ *
+ * Last-resort fallback for topics with no icon anywhere else.
+ * Prompt is enriched with the topic's split words and top neighbor tags
+ * for better semantic relevance. Uses a deterministic seed per tag so
+ * repeated runs produce the same image.
+ *
+ * The image is fetched and resized here (returning a data URL) so the
+ * resolver does not need to re-fetch it through processImage.
+ *
+ * @see https://pollinations.ai
+ */
+const pollinations = {
+  name: 'pollinations',
+
+  async fetchIcon (tag, _lang, stat) {
+    const prompt = buildPollinationsPrompt(tag, stat)
+    const seed = tagToSeed(tag)
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=256&height=256&nologo=true&model=flux-schnell&seed=${seed}`
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), POLLINATIONS_TIMEOUT_MS)
+
+    try {
+      const res = await fetch(imageUrl, { signal: controller.signal })
+      if (!res.ok) return null
+
+      const buf = Buffer.from(await res.arrayBuffer())
+      const resized = await resizeImage({ input: buf, resizeOptions: { width: 512, height: 512 } })
+      const transparent = await removeWhiteBackground(resized)
+      return { url: `data:image/webp;base64,${transparent.toString('base64')}` }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+}
+
+/**
  * Ordered list of all providers.  The resolver tries them in this order,
  * skipping any that are currently backed off.
  */
@@ -200,7 +294,9 @@ export const providers = [
   wikipedia,
   wikidata,
   duckduckgo,
-  googleFavicon
+  googleFavicon,
+  neighborIcon,
+  pollinations
 ]
 
-export { PROVIDER_TIMEOUT_MS }
+export { PROVIDER_TIMEOUT_MS, POLLINATIONS_TIMEOUT_MS }

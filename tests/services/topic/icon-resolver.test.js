@@ -248,6 +248,47 @@ describe('Icon Resolver', () => {
       assert.ok(results.has('empty')) // provider B returns result for 'empty'
     })
 
+    it('should skip processImage and use data URL directly when provider returns data: URL', async () => {
+      resolverModule._resetHealthCache()
+
+      // Override provider A to return a data: URL (simulating neighborIcon / pollinations)
+      const { providers: mocked } = await import('#services/topic/icon-providers.js')
+      const originalFetch = mocked[0].fetchIcon
+      mocked[0].fetchIcon = async () => ({ url: 'data:image/webp;base64,alreadyprocessed' })
+
+      try {
+        const results = await resolverModule.resolveIconsBatch([{ tag: 'bitcoin', lang: 'en' }])
+        assert.ok(results.has('bitcoin'))
+        // processImage mock returns `data:image/webp;base64,processed_<url>` — if it was called,
+        // the result would be 'data:image/webp;base64,processed_data:image/webp;base64,...'
+        // The data URL should be used as-is
+        assert.equal(results.get('bitcoin'), 'data:image/webp;base64,alreadyprocessed')
+      } finally {
+        mocked[0].fetchIcon = originalFetch
+      }
+    })
+
+    it('should forward stat to providers', async () => {
+      resolverModule._resetHealthCache()
+
+      const capturedArgs = []
+      const { providers: mocked } = await import('#services/topic/icon-providers.js')
+      const originalFetch = mocked[0].fetchIcon
+      mocked[0].fetchIcon = async (tag, lang, stat) => {
+        capturedArgs.push({ tag, lang, stat })
+        return { url: `https://a.test/${tag}.png` }
+      }
+
+      try {
+        const stat = { words: ['bit', 'coin'], neighbors: [] }
+        await resolverModule.resolveIconsBatch([{ tag: 'bitcoin', lang: 'en', stat }])
+        assert.equal(capturedArgs.length, 1)
+        assert.deepEqual(capturedArgs[0].stat, stat)
+      } finally {
+        mocked[0].fetchIcon = originalFetch
+      }
+    })
+
     it('should handle individual tag failures gracefully', async () => {
       resolverModule._resetHealthCache()
 

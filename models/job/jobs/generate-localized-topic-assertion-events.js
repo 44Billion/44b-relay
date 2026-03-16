@@ -100,7 +100,7 @@ async function resolveNewIcons (topTopics, lang) {
   const needsIcon = topTopics.filter(s => !s.icon || !s.iconCachedAt || (now - s.iconCachedAt) > ICON_STALE_MS)
   if (needsIcon.length === 0) return new Map()
 
-  const items = needsIcon.map(s => ({ tag: s.tag, lang }))
+  const items = needsIcon.map(s => ({ tag: s.tag, lang, stat: s }))
   let iconMap
   try {
     iconMap = await resolveIconsBatch(items)

@@ -127,4 +127,69 @@ function _encode (input, resizeOptions, quality, smartSubsample, limit) {
   })
 }
 
+/**
+ * Removes a near-white background from an image using BFS flood-fill from the
+ * image edges. Only background pixels reachable from the border are made
+ * transparent, so white pixels that are interior to the subject are preserved.
+ *
+ * Designed for AI-generated icons that use solid or near-white backgrounds.
+ *
+ * @param {Buffer} input - any sharp-readable image (WebP, PNG, JPEG, …)
+ * @param {{ threshold?: number }} [opts]
+ *   threshold: 0–255, pixels with all RGB channels ≥ this value are
+ *   considered background candidates (default 230).
+ * @returns {Promise<Buffer>} WebP buffer with alpha channel
+ */
+export async function removeWhiteBackground (input, { threshold = 230 } = {}) {
+  const { data, info } = await sharp(input)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+
+  const { width, height } = info
+  // data is a Buffer of interleaved RGBA bytes; 4 bytes per pixel
+  const visited = new Uint8Array(width * height)
+  const queue = []
+  let head = 0
+
+  const isBackground = (i) => {
+    const off = i * 4
+    return data[off] >= threshold && data[off + 1] >= threshold && data[off + 2] >= threshold
+  }
+
+  const enqueue = (i) => {
+    if (!visited[i] && isBackground(i)) {
+      visited[i] = 1
+      queue.push(i)
+    }
+  }
+
+  // Seed BFS from all four edges
+  for (let x = 0; x < width; x++) {
+    enqueue(x)                            // top row
+    enqueue((height - 1) * width + x)    // bottom row
+  }
+  for (let y = 1; y < height - 1; y++) {
+    enqueue(y * width)                   // left column
+    enqueue(y * width + width - 1)       // right column
+  }
+
+  // Flood-fill: zero alpha on every background pixel reachable from the border
+  while (head < queue.length) {
+    const i = queue[head++]
+    data[i * 4 + 3] = 0 // transparent
+
+    const x = i % width
+    const y = Math.floor(i / width)
+    if (x > 0) enqueue(i - 1)
+    if (x < width - 1) enqueue(i + 1)
+    if (y > 0) enqueue(i - width)
+    if (y < height - 1) enqueue(i + width)
+  }
+
+  return sharp(data, { raw: { width, height, channels: 4 } })
+    .webp({ quality: 85 })
+    .toBuffer()
+}
+
 export { BYTE_SIZE_LIMIT, TARGET_SIZE, MAX_SOURCE_BYTES, FETCH_TIMEOUT_MS }
