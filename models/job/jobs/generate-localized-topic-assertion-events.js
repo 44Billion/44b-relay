@@ -23,6 +23,7 @@ import { patchIcons } from '#models/hashtag-stats/dao.js'
 const MAX_TOPICS_PER_LANG = 30
 const MAX_NEIGHBORS_PER_TOPIC = 20
 const MIN_TOPIC_COUNT = 3
+const ICON_STALE_MS = 7 * 24 * 60 * 60 * 1000 // Re-fetch icons older than 7 days
 
 export async function run () {
   console.log('Running generate-localized-topic-assertion-events...')
@@ -95,7 +96,8 @@ function normalizeNeighborRanks (neighbors) {
  * Returns a Map<tag, iconUrl> of the newly resolved icons.
  */
 async function resolveNewIcons (topTopics, lang) {
-  const needsIcon = topTopics.filter(s => !s.icon)
+  const now = Date.now()
+  const needsIcon = topTopics.filter(s => !s.icon || !s.iconCachedAt || (now - s.iconCachedAt) > ICON_STALE_MS)
   if (needsIcon.length === 0) return new Map()
 
   const items = needsIcon.map(s => ({ tag: s.tag, lang }))

@@ -10,9 +10,10 @@ export default {
     'count',     // decayable occurrence count
     'neighbors', // [[tag, count], ...] top-N co-occurring tags
     'icon',           // resolved icon URL or null
+    'iconCachedAt',   // timestamp (ms) when the icon was last resolved/cached
     'embedding',      // Float32 array (384 dims) from multilingual-e5-small
     'embeddingHash',  // hash of the topic text used for embedding — detects content changes
-    'updatedAt'       // timestamp in ms
+    'statsUpdatedAt'  // timestamp (ms) when count/neighbors were last updated
   ],
   settings: {
     displayedAttributes: ['*'],

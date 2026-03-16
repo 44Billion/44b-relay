@@ -8,7 +8,7 @@ export async function run () {
   // prune weak neighbors, delete docs with count <= 0
   const tagFn = `
       let now = context.now;
-      let age_ms = now - doc.updatedAt;
+      let age_ms = now - doc.statsUpdatedAt;
       let age_hours = age_ms / 3600000.0;
 
       let decay = 0.97 - (age_hours * 0.0001);
@@ -31,14 +31,14 @@ export async function run () {
               }
               doc.neighbors = new_neighbors;
           }
-          doc.updatedAt = now;
+          doc.statsUpdatedAt = now;
       }
       doc
   `
 
   // Only decay tag docs that haven't been updated very recently (grace period: 2 hours)
   const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000)
-  const tagFilter = `updatedAt < ${twoHoursAgo}`
+  const tagFilter = `statsUpdatedAt < ${twoHoursAgo}`
 
   try {
     console.log('Hashtag stats (tag) decay task enqueued...')

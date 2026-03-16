@@ -80,7 +80,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
 
   it('should skip topics with count below MIN_TOPIC_COUNT', async () => {
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-lowcount', lang: 'en', tag: 'lowcount', count: 2, neighbors: [], updatedAt: Date.now() }
+      { key: 'en-lowcount', lang: 'en', tag: 'lowcount', count: 2, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     await generateJob.run()
@@ -97,7 +97,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
         tag: 'bitcoin',
         count: 100,
         neighbors: [['crypto', 50], ['blockchain', 30]],
-        updatedAt: Date.now()
+        statsUpdatedAt: Date.now()
       },
       {
         key: 'en-crypto',
@@ -105,7 +105,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
         tag: 'crypto',
         count: 80,
         neighbors: [['bitcoin', 40]],
-        updatedAt: Date.now()
+        statsUpdatedAt: Date.now()
       }
     ])
 
@@ -173,7 +173,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
         tag: 'pokemon',
         count: 50,
         neighbors: [],
-        updatedAt: Date.now()
+        statsUpdatedAt: Date.now()
         // no 'icon' field — should be resolved by the mock
       }
     ])
@@ -201,7 +201,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
         count: 100,
         icon: 'https://cached.test/bitcoin.png',
         neighbors: [],
-        updatedAt: Date.now()
+        statsUpdatedAt: Date.now()
       }
     ])
 
@@ -248,7 +248,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
         tag: 'newtopic',
         count: 50,
         neighbors: [],
-        updatedAt: Date.now()
+        statsUpdatedAt: Date.now()
       }
     ])
 
@@ -271,8 +271,8 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
 
   it('should process multiple languages independently', async () => {
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-test', lang: 'en', tag: 'test', count: 10, neighbors: [], updatedAt: Date.now() },
-      { key: 'pt-teste', lang: 'pt', tag: 'teste', count: 15, neighbors: [], updatedAt: Date.now() }
+      { key: 'en-test', lang: 'en', tag: 'test', count: 10, neighbors: [], statsUpdatedAt: Date.now() },
+      { key: 'pt-teste', lang: 'pt', tag: 'teste', count: 15, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     await generateJob.run()
@@ -306,8 +306,8 @@ describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () 
   it('should patch multiple icons in a single call via patchIcons DAO', async () => {
     // Seed two documents
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], updatedAt: Date.now() },
-      { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], updatedAt: Date.now() }
+      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], statsUpdatedAt: Date.now() },
+      { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     // Use the DAO function
@@ -327,7 +327,7 @@ describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () 
   it('should NOT insert phantom docs for keys that do not exist', async () => {
     // Seed only one document
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], updatedAt: Date.now() }
+      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     // Use the DAO function with a map that includes a non-existent key
@@ -356,9 +356,9 @@ describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () 
   it('should only patch docs matched by the filter', async () => {
     // Seed three documents
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], updatedAt: Date.now() },
-      { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], updatedAt: Date.now() },
-      { key: 'en-nft', lang: 'en', tag: 'nft', count: 60, neighbors: [], updatedAt: Date.now() }
+      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], statsUpdatedAt: Date.now() },
+      { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now() },
+      { key: 'en-nft', lang: 'en', tag: 'nft', count: 60, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     // Use the DAO function to patch only bitcoin
@@ -385,7 +385,7 @@ describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () 
         tag: 'bitcoin',
         count: 100,
         neighbors: [['crypto', 50]],
-        updatedAt: now
+        statsUpdatedAt: now
       }
     ])
 
@@ -398,7 +398,7 @@ describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () 
     assert.equal(doc.tag, 'bitcoin')
     assert.equal(doc.count, 100)
     assert.deepEqual(doc.neighbors, [['crypto', 50]])
-    assert.equal(doc.updatedAt, now)
+    assert.equal(doc.statsUpdatedAt, now)
   })
 })
 

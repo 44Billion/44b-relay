@@ -349,14 +349,14 @@ export async function processBatch (results, systemState) {
             acronym: data.acronym || null,
             count: 0,
             neighbors: [],
-            updatedAt: Date.now()
+            statsUpdatedAt: Date.now()
           }))
 
           if (doc) {
             doc.count = (doc.count || 0) + (data.countDelta || 0)
             if (data.words?.length) doc.words = data.words
             if (data.acronym) doc.acronym = data.acronym
-            doc.updatedAt = data.seenAt || Date.now()
+            doc.statsUpdatedAt = data.seenAt || Date.now()
 
             // Merge neighbor deltas
             if (data.neighborDeltas?.length) {
