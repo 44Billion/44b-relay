@@ -7,6 +7,7 @@
 import mdb from '#services/db/mdb.js'
 import { sanitizeText } from '#helpers/language.js'
 import { areMorphologicalSynonyms } from '#helpers/hashtag.js'
+import { embedText, cosineSimilarity } from '#services/topic/embedder.js'
 
 // --- Tunable constants ---
 const CACHE_SIZE_PER_LANG = 500
@@ -16,6 +17,8 @@ const MIN_NEIGHBOR_COUNT = 2
 const MIN_TAG_COUNT_FOR_INFERENCE = 3
 const STRONG_TOKEN_MIN_LENGTH = 5
 const MAX_TOPICS = 12
+const SEMANTIC_SIMILARITY_THRESHOLD = 0.45
+const MAX_SEMANTIC_TOPICS = 3
 
 // --- Cache ---
 // Map<lang, { byTag, byWord, byAcronym, docs[], refreshedAt }>
@@ -38,7 +41,7 @@ async function maybeRefreshCache (lang) {
       filter: `lang = ${JSON.stringify(lang)}`,
       sort: ['count:desc'],
       limit: CACHE_SIZE_PER_LANG,
-      attributesToRetrieve: ['key', 'tag', 'words', 'acronym', 'count', 'neighbors']
+      attributesToRetrieve: ['key', 'tag', 'words', 'acronym', 'count', 'neighbors', 'embedding']
     })
 
     const byTag = new Map()
@@ -61,7 +64,14 @@ async function maybeRefreshCache (lang) {
       }
     }
 
-    cache.set(lang, { byTag, byWord, byAcronym, docs: hits, refreshedAt: Date.now() })
+    const embeddings = new Map()
+    for (const doc of hits) {
+      if (doc.embedding?.length) {
+        embeddings.set(doc.tag, new Float32Array(doc.embedding))
+      }
+    }
+
+    cache.set(lang, { byTag, byWord, byAcronym, embeddings, docs: hits, refreshedAt: Date.now() })
   } catch (err) {
     // Silently fail — cache remains stale or empty
     if (err.code !== 'index_not_found' && err.cause?.code !== 'index_not_found') {
@@ -98,7 +108,7 @@ function expandNeighbors (topics, langCache) {
  * @param {{ language: string|undefined, hashtags: { tag: string, words: string[], acronym: string|null }[], text: string|undefined }} params
  * @returns {string[]} normalized topic tags
  */
-export function detectTopics ({ language, hashtags = [], text }) {
+export async function detectTopics ({ language, hashtags = [], text }) {
   const topics = new Set()
 
   // Phase 1: Direct hashtags
@@ -243,6 +253,31 @@ export function detectTopics ({ language, hashtags = [], text }) {
 
     // Expand neighbors for any topics added in Phases 3-4 (e.g. text-inferred topics)
     expandNeighbors(topics, langCache)
+
+    // Phase 5: Semantic text inference (embedding-based)
+    // Only runs when: no hashtags, Phase 4 found nothing, text exists, cache has embeddings
+    if (hashtags.length === 0 && topics.size === 0 && text && langCache.embeddings?.size > 0) {
+      const textEmbedding = await embedText(text)
+
+      if (textEmbedding) {
+        const scored = []
+        for (const [tag, topicEmbedding] of langCache.embeddings) {
+          const sim = cosineSimilarity(textEmbedding, topicEmbedding)
+          if (sim >= SEMANTIC_SIMILARITY_THRESHOLD) {
+            scored.push({ tag, sim })
+          }
+        }
+
+        scored.sort((a, b) => b.sim - a.sim)
+        for (const { tag } of scored.slice(0, MAX_SEMANTIC_TOPICS)) {
+          topics.add(tag)
+        }
+
+        if (topics.size > 0) {
+          expandNeighbors(topics, langCache)
+        }
+      }
+    }
   }
 
   // Trigger async cache refresh for next time (non-blocking)

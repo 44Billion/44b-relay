@@ -12,6 +12,7 @@ import trackUptimeConfig from './track-uptime.js'
 import flushHashtagStatsConfig from './flush-hashtag-stats.js'
 import decayHashtagStatsConfig from './decay-hashtag-stats.js'
 import generateLocalizedTopicAssertionEventsConfig from './generate-localized-topic-assertion-events.js'
+import computeTopicEmbeddingsConfig from './compute-topic-embeddings.js'
 
 const jobs = [
   // exampleConfig,
@@ -27,7 +28,8 @@ const jobs = [
   trackUptimeConfig,
   flushHashtagStatsConfig,
   decayHashtagStatsConfig,
-  generateLocalizedTopicAssertionEventsConfig
+  generateLocalizedTopicAssertionEventsConfig,
+  computeTopicEmbeddingsConfig
 ]
 
 export default jobs

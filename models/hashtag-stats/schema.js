@@ -9,8 +9,10 @@ export default {
     'acronym',   // derived acronym or null
     'count',     // decayable occurrence count
     'neighbors', // [[tag, count], ...] top-N co-occurring tags
-    'icon',      // resolved icon URL or null
-    'updatedAt'  // timestamp in ms
+    'icon',           // resolved icon URL or null
+    'embedding',      // Float32 array (384 dims) from multilingual-e5-small
+    'embeddingHash',  // hash of the topic text used for embedding — detects content changes
+    'updatedAt'       // timestamp in ms
   ],
   settings: {
     displayedAttributes: ['*'],

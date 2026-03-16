@@ -50,3 +50,6 @@ plans
 
 # integration tests
 tests/integration/relay-tester/target/
+
+# MediaPipe model files (downloaded via npm run download:mediapipe-model)
+lib/mediapipe/models/

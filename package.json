@@ -10,7 +10,9 @@
     "test": "NODE_ENV=test node --test --test-concurrency=1 --test-global-setup=tests/global-setup.js --experimental-test-module-mocks 'tests/**/*.test.js'",
     "test:only": "NODE_ENV=test node --test --test-only --test-concurrency=1 --test-global-setup=tests/global-setup.js --experimental-test-module-mocks 'tests/**/*.test.js'",
     "test:integration": "bash tests/integration/run-suite.sh",
-    "build:wordninja": "node lib/wordninja/build-dictionaries.js"
+    "build:wordninja": "node lib/wordninja/build-dictionaries.js",
+    "// download:mediapipe-model": "Kept for reference because `npm install @mediapipe/tasks-text` lib is currently web-only. Used @huggingface/transformers for now.",
+    "download:mediapipe-model": "node lib/mediapipe/download-model.js"
   },
   "engines": {
     "node": "24.8.0"
@@ -24,6 +26,7 @@
     "#services/*": "./services/*"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.4.0",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
     "deta": "^1.1.0",

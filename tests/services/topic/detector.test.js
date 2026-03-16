@@ -1,9 +1,9 @@
-import { describe, it, beforeEach } from 'node:test'
+import { describe, it, beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { detectTopics, _cache } from '#services/topic/detector.js'
 
 // Helper to populate the cache directly for testing
-function populateCache (lang, docs) {
+function populateCache (lang, docs, { embeddings = new Map() } = {}) {
   const byTag = new Map()
   const byWord = new Map()
   const byAcronym = new Map()
@@ -24,7 +24,7 @@ function populateCache (lang, docs) {
     }
   }
 
-  _cache.set(lang, { byTag, byWord, byAcronym, docs, refreshedAt: Date.now() })
+  _cache.set(lang, { byTag, byWord, byAcronym, embeddings, docs, refreshedAt: Date.now() })
 }
 
 describe('detectTopics', () => {
@@ -33,8 +33,8 @@ describe('detectTopics', () => {
   })
 
   describe('Phase 1: Direct hashtags', () => {
-    it('should return direct hashtags as topics', () => {
-      const result = detectTopics({
+    it('should return direct hashtags as topics', async () => {
+      const result = await detectTopics({
         language: 'en',
         hashtags: [
           { tag: 'pokemon', words: ['pokemon'], acronym: null },
@@ -47,8 +47,8 @@ describe('detectTopics', () => {
       assert.ok(result.includes('anime'))
     })
 
-    it('should return direct hashtags even without cache', () => {
-      const result = detectTopics({
+    it('should return direct hashtags even without cache', async () => {
+      const result = await detectTopics({
         language: 'en',
         hashtags: [{ tag: 'bitcoin', words: ['bitcoin'], acronym: null }],
         text: 'BTC to the moon'
@@ -58,7 +58,7 @@ describe('detectTopics', () => {
   })
 
   describe('Phase 2: Directional neighbor expansion', () => {
-    it('should expand topics with frequent neighbors', () => {
+    it('should expand topics with frequent neighbors', async () => {
       populateCache('en', [
         {
           tag: 'ashketchum',
@@ -90,7 +90,7 @@ describe('detectTopics', () => {
         }
       ])
 
-      const result = detectTopics({
+      const result = await detectTopics({
         language: 'en',
         hashtags: [{ tag: 'ashketchum', words: ['ash', 'ketchum'], acronym: 'ak' }],
         text: 'Ash is the best trainer'
@@ -106,7 +106,7 @@ describe('detectTopics', () => {
       assert.ok(result.includes('pikachu'))
     })
 
-    it('should NOT add neighbors below directional ratio threshold', () => {
+    it('should NOT add neighbors below directional ratio threshold', async () => {
       populateCache('en', [
         {
           tag: 'pokemon',
@@ -124,7 +124,7 @@ describe('detectTopics', () => {
         }
       ])
 
-      const result = detectTopics({
+      const result = await detectTopics({
         language: 'en',
         hashtags: [{ tag: 'pokemon', words: ['pokemon'], acronym: null }],
         text: 'Pokemon is great'
@@ -137,7 +137,7 @@ describe('detectTopics', () => {
   })
 
   describe('Phase 3: Synonym expansion', () => {
-    it('should expand with morphological synonyms', () => {
+    it('should expand with morphological synonyms', async () => {
       populateCache('en', [
         {
           tag: 'sport',
@@ -162,7 +162,7 @@ describe('detectTopics', () => {
         }
       ])
 
-      const result = detectTopics({
+      const result = await detectTopics({
         language: 'en',
         hashtags: [{ tag: 'sport', words: ['sport'], acronym: null }],
         text: 'Sport is life'
@@ -173,7 +173,7 @@ describe('detectTopics', () => {
       assert.ok(result.includes('sports'), 'morphological synonym "sports" should be added')
     })
 
-    it('should expand with acronym synonyms', () => {
+    it('should expand with acronym synonyms', async () => {
       populateCache('en', [
         {
           tag: 'ahashtagexample',
@@ -191,7 +191,7 @@ describe('detectTopics', () => {
         }
       ])
 
-      const result = detectTopics({
+      const result = await detectTopics({
         language: 'en',
         hashtags: [{ tag: 'ahashtagexample', words: ['a', 'hashtag', 'example'], acronym: 'ahe' }],
         text: 'Test'
@@ -202,7 +202,7 @@ describe('detectTopics', () => {
       assert.ok(result.includes('ahe'))
     })
 
-    it('should expand with context-based synonyms (shared prefix + top neighbors)', () => {
+    it('should expand with context-based synonyms (shared prefix + top neighbors)', async () => {
       populateCache('en', [
         {
           tag: 'ashketchum',
@@ -241,7 +241,7 @@ describe('detectTopics', () => {
         }
       ])
 
-      const result = detectTopics({
+      const result = await detectTopics({
         language: 'en',
         hashtags: [{ tag: 'ashketchum', words: ['ash', 'ketchum'], acronym: 'ak' }],
         text: 'Ash goes on an adventure'
@@ -254,7 +254,7 @@ describe('detectTopics', () => {
   })
 
   describe('Phase 4: Text inference (no hashtags)', () => {
-    it('should infer topics from text when words match a rare known tag', () => {
+    it('should infer topics from text when words match a rare known tag', async () => {
       populateCache('en', [
         {
           tag: 'pokemon',
@@ -279,7 +279,7 @@ describe('detectTopics', () => {
         }
       ])
 
-      const result = detectTopics({
+      const result = await detectTopics({
         language: 'en',
         hashtags: [],
         text: 'I love pokemon so much it is the greatest anime ever'
@@ -290,7 +290,7 @@ describe('detectTopics', () => {
       assert.ok(result.includes('anime'))
     })
 
-    it('should infer topics when two related candidates appear in text', () => {
+    it('should infer topics when two related candidates appear in text', async () => {
       populateCache('en', [
         {
           tag: 'bitcoin',
@@ -315,7 +315,7 @@ describe('detectTopics', () => {
         }
       ])
 
-      const result = detectTopics({
+      const result = await detectTopics({
         language: 'en',
         hashtags: [],
         text: 'The bitcoin and crypto markets are volatile today'
@@ -328,7 +328,7 @@ describe('detectTopics', () => {
       assert.ok(result.includes('blockchain'))
     })
 
-    it('should NOT infer topics from text below count threshold', () => {
+    it('should NOT infer topics from text below count threshold', async () => {
       populateCache('en', [
         {
           tag: 'rareword',
@@ -339,7 +339,7 @@ describe('detectTopics', () => {
         }
       ])
 
-      const result = detectTopics({
+      const result = await detectTopics({
         language: 'en',
         hashtags: [],
         text: 'This is about rareword something'
@@ -348,8 +348,8 @@ describe('detectTopics', () => {
       assert.equal(result, undefined)
     })
 
-    it('should return undefined when no topics can be detected', () => {
-      const result = detectTopics({
+    it('should return undefined when no topics can be detected', async () => {
+      const result = await detectTopics({
         language: 'en',
         hashtags: [],
         text: 'Just a random sentence with no recognizable topics'
@@ -358,8 +358,128 @@ describe('detectTopics', () => {
     })
   })
 
+  describe('Phase 5: Semantic text inference', () => {
+    afterEach(() => { mock.restoreAll() })
+
+    it('should find topics via embedding similarity when no hashtags and Phase 4 found nothing', async () => {
+      // Create a mock embedding for 'bitcoin' pointing in direction [1, 0, 0, ...]
+      const bitcoinEmbedding = new Float32Array(384).fill(0)
+      bitcoinEmbedding[0] = 1
+
+      const embeddingsMap = new Map()
+      embeddingsMap.set('bitcoin', bitcoinEmbedding)
+
+      populateCache('en', [
+        { tag: 'bitcoin', words: ['bitcoin'], acronym: null, count: 5000, neighbors: [] }
+      ], { embeddings: embeddingsMap })
+
+      // Mock the embedder to return a vector close to bitcoin
+      const mockEmbedding = new Float32Array(384).fill(0)
+      mockEmbedding[0] = 0.99 // very close to bitcoin's [1, 0, 0, ...]
+      mockEmbedding[1] = Math.sqrt(1 - 0.99 * 0.99) // make it unit-length
+
+      mock.module('#services/topic/embedder.js', {
+        namedExports: {
+          embedText: async () => mockEmbedding,
+          cosineSimilarity: (a, b) => {
+            let dot = 0; for (let i = 0; i < a.length; i++) dot += a[i] * b[i]; return dot
+          },
+          EMBEDDING_DIMS: 384
+        }
+      })
+
+      const result = await detectTopics({
+        language: 'en',
+        hashtags: [],
+        text: 'I just bought some cryptocurrency assets'
+      })
+
+      assert.ok(result, 'expected topics to be found via Phase 5')
+      assert.ok(result.includes('bitcoin'), `expected bitcoin in ${result}`)
+    })
+
+    it('should not run Phase 5 when hashtags are present', async () => {
+      const embeddingsMap = new Map()
+      embeddingsMap.set('bitcoin', new Float32Array(384).fill(0.1))
+
+      populateCache('en', [
+        { tag: 'bitcoin', words: ['bitcoin'], acronym: null, count: 5000, neighbors: [] }
+      ], { embeddings: embeddingsMap })
+
+      let embedCallCount = 0
+      mock.module('#services/topic/embedder.js', {
+        namedExports: {
+          embedText: async () => { embedCallCount++; return new Float32Array(384) },
+          cosineSimilarity: () => 0.9,
+          EMBEDDING_DIMS: 384
+        }
+      })
+
+      // hashtags present → Phase 5 should not fire
+      await detectTopics({
+        language: 'en',
+        hashtags: [{ tag: 'bitcoin', words: ['bitcoin'], acronym: null }],
+        text: 'some text'
+      })
+
+      assert.equal(embedCallCount, 0, 'embedText should not be called when hashtags are present')
+    })
+
+    it('should not run Phase 5 when Phase 4 already found topics', async () => {
+      const embeddingsMap = new Map()
+      embeddingsMap.set('bitcoin', new Float32Array(384).fill(0.1))
+
+      populateCache('en', [
+        { tag: 'bitcoin', words: ['bitcoin'], acronym: null, count: 5000, neighbors: [] }
+      ], { embeddings: embeddingsMap })
+
+      let embedCallCount = 0
+      mock.module('#services/topic/embedder.js', {
+        namedExports: {
+          embedText: async () => { embedCallCount++; return new Float32Array(384) },
+          cosineSimilarity: () => 0.9,
+          EMBEDDING_DIMS: 384
+        }
+      })
+
+      // Phase 4 will match 'bitcoin' from the text
+      await detectTopics({
+        language: 'en',
+        hashtags: [],
+        text: 'I love bitcoin so much'
+      })
+
+      assert.equal(embedCallCount, 0, 'embedText should not be called when Phase 4 already found topics')
+    })
+
+    it('should gracefully degrade when embedder returns null', async () => {
+      const embeddingsMap = new Map()
+      embeddingsMap.set('bitcoin', new Float32Array(384).fill(0.1))
+
+      populateCache('en', [
+        { tag: 'bitcoin', words: ['bitcoin'], acronym: null, count: 5000, neighbors: [] }
+      ], { embeddings: embeddingsMap })
+
+      mock.module('#services/topic/embedder.js', {
+        namedExports: {
+          embedText: async () => null,
+          cosineSimilarity: () => 0,
+          EMBEDDING_DIMS: 384
+        }
+      })
+
+      const result = await detectTopics({
+        language: 'en',
+        hashtags: [],
+        text: 'some random text that would not match Phase 4'
+      })
+
+      assert.equal(result, undefined, 'should return undefined gracefully when embedder fails')
+    })
+  })
+
   describe('Language scoping', () => {
-    it('should use language-specific cache', () => {
+    it('should use language-specific cache', async () => {
       populateCache('pt', [
         {
           tag: 'futebol',
@@ -378,7 +498,7 @@ describe('detectTopics', () => {
       ])
 
       // English cache is empty
-      const enResult = detectTopics({
+      const enResult = await detectTopics({
         language: 'en',
         hashtags: [{ tag: 'futebol', words: ['futebol'], acronym: null }],
         text: 'futebol'
@@ -386,7 +506,7 @@ describe('detectTopics', () => {
       assert.deepEqual(enResult, ['futebol'])
 
       // Portuguese cache has the data
-      const ptResult = detectTopics({
+      const ptResult = await detectTopics({
         language: 'pt',
         hashtags: [{ tag: 'futebol', words: ['futebol'], acronym: null }],
         text: 'futebol'
@@ -398,8 +518,8 @@ describe('detectTopics', () => {
   })
 
   describe('Edge cases', () => {
-    it('should handle no language gracefully', () => {
-      const result = detectTopics({
+    it('should handle no language gracefully', async () => {
+      const result = await detectTopics({
         language: undefined,
         hashtags: [{ tag: 'test', words: ['test'], acronym: null }],
         text: 'test'
@@ -407,8 +527,8 @@ describe('detectTopics', () => {
       assert.deepEqual(result, ['test'])
     })
 
-    it('should handle empty hashtags and empty text', () => {
-      const result = detectTopics({
+    it('should handle empty hashtags and empty text', async () => {
+      const result = await detectTopics({
         language: 'en',
         hashtags: [],
         text: ''
@@ -416,8 +536,8 @@ describe('detectTopics', () => {
       assert.equal(result, undefined)
     })
 
-    it('should handle undefined text', () => {
-      const result = detectTopics({
+    it('should handle undefined text', async () => {
+      const result = await detectTopics({
         language: 'en',
         hashtags: [],
         text: undefined
@@ -425,13 +545,13 @@ describe('detectTopics', () => {
       assert.equal(result, undefined)
     })
 
-    it('should cap topics at MAX_TOPICS (12)', () => {
+    it('should cap topics at MAX_TOPICS (12)', async () => {
       const hashtags = Array.from({ length: 20 }, (_, i) => ({
         tag: `tag${i}abcdef`,
         words: [`tag${i}abcdef`],
         acronym: null
       }))
-      const result = detectTopics({ language: 'en', hashtags, text: 'test' })
+      const result = await detectTopics({ language: 'en', hashtags, text: 'test' })
       assert.ok(result)
       assert.ok(result.length <= 12)
     })
