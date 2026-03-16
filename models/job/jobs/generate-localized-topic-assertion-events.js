@@ -137,6 +137,24 @@ async function processLanguage ({ lang, pubkey, secretKey, kind }) {
   // 2b. Resolve icons for tags that don't already have one cached
   const iconMap = await resolveNewIcons(topTopics, lang)
 
+  // 2c. Build a tag→words map. Seed it from topTopics, then batch-fetch
+  //     any neighbor tags whose stats weren't included in the top-N window.
+  const wordsMap = new Map(topTopics.map(s => [s.tag, s.words]))
+  const missingNeighborTags = new Set()
+  for (const stat of topTopics) {
+    for (const [neighborTag] of stat.neighbors || []) {
+      if (!wordsMap.has(neighborTag)) missingNeighborTags.add(neighborTag)
+    }
+  }
+  if (missingNeighborTags.size > 0) {
+    const tagFilter = [...missingNeighborTags].map(t => mdb.toMeiliValue(t)).join(', ')
+    const { hits: neighborStats } = await mdb.index('hashtagStats').search('', {
+      filter: `lang = ${mdb.toMeiliValue(lang)} AND tag IN [${tagFilter}]`,
+      limit: missingNeighborTags.size
+    })
+    for (const hit of neighborStats) wordsMap.set(hit.tag, hit.words)
+  }
+
   const nowSeconds = Math.floor(Date.now() / 1000)
   const ops = []
   const refreshedRefs = new Set()
@@ -164,7 +182,7 @@ async function processLanguage ({ lang, pubkey, secretKey, kind }) {
       ['k', 'iso639:#'],
       ['rank', String(topicRank)],
       ['l', `iso639:${lang}`],
-      ['t', tag]
+      ['t', tag, stat.words?.join(' ') ?? '']
     ]
 
     if (iconUrl) {
@@ -172,7 +190,7 @@ async function processLanguage ({ lang, pubkey, secretKey, kind }) {
     }
 
     for (const [neighborTag, neighborRank] of rankedNeighbors) {
-      tags.push(['t', neighborTag, '', String(neighborRank)])
+      tags.push(['t', neighborTag, wordsMap.get(neighborTag)?.join(' ') ?? '', String(neighborRank)])
     }
 
     // Use descending created_at by position so higher-count topics sort first

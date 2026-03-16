@@ -78,8 +78,16 @@ describe('splitTagIntoWords', () => {
     assert.deepEqual(splitTagIntoWords('HTMLParser'), ['html', 'parser'])
   })
 
-  it('should return single word for no-boundary input', () => {
+  it('should return single word for no-boundary input that is already a known word', () => {
     assert.deepEqual(splitTagIntoWords('pokemon'), ['pokemon'])
+  })
+
+  it('should use wordninja to split joined words with no explicit boundaries', () => {
+    assert.deepEqual(splitTagIntoWords('derekanderson'), ['derek', 'anderson'])
+  })
+
+  it('should use language hint for wordninja splitting', () => {
+    assert.deepEqual(splitTagIntoWords('wiegehtesdir', { language: 'de' }), ['wie', 'geht', 'es', 'dir'])
   })
 
   it('should return empty array for falsy input', () => {

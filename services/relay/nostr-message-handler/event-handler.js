@@ -39,7 +39,7 @@ class EventHandler {
 
       // if is duplicate, must start with 'duplicate:' see this and others at https://github.com/nostr-protocol/nips/blob/master/20.md
       const eventLanguage = detectEventLanguage(event)
-      const eventHashtags = extractHashtags(event)
+      const eventHashtags = extractHashtags(event, { language: eventLanguage })
       const eventTopics = detectTopics({
         language: eventLanguage,
         hashtags: eventHashtags,

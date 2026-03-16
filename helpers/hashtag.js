@@ -3,9 +3,21 @@
  * for Nostr event topic detection.
  */
 import { newStemmer } from 'snowball-stemmers'
+import { LanguageModel, SUPPORTED_LANGUAGES } from '#lib/wordninja/index.js'
 
 const MAX_TAG_LENGTH = 80
 const MIN_TAG_LENGTH = 2
+
+// Lazily loaded wordninja LanguageModel instances, one per language code.
+const wordninjaModels = new Map()
+
+function getWordninjaModel (language) {
+  const lang = SUPPORTED_LANGUAGES.includes(language) ? language : 'en'
+  if (!wordninjaModels.has(lang)) {
+    wordninjaModels.set(lang, new LanguageModel({ language: lang }))
+  }
+  return wordninjaModels.get(lang)
+}
 
 // ISO 639-1 → Snowball language name; lazily cached stemmer instances
 const ISO_TO_SNOWBALL = {
@@ -21,9 +33,11 @@ const stemmers = new Map()
  * Returns an array of { tag, typed, words, acronym } objects, deduplicated.
  *
  * @param {object} event - Nostr event with `tags` array
+ * @param {object} [options]
+ * @param {string} [options.language] - ISO 639-1 language code used as hint for wordninja splitting
  * @returns {{ tag: string, typed: string|null, words: string[], acronym: string|null }[]}
  */
-export function extractHashtags (event) {
+export function extractHashtags (event, { language } = {}) {
   if (!event?.tags?.length) return []
 
   const seen = new Set()
@@ -39,7 +53,7 @@ export function extractHashtags (event) {
 
     // Prefer typed form (third element) for word splitting if available
     const typed = t[2] && typeof t[2] === 'string' ? t[2].trim() : null
-    const words = splitTagIntoWords(typed || t[1])
+    const words = splitTagIntoWords(typed || t[1], { language })
     const acronym = deriveAcronym(words)
 
     results.push({ tag: normalized, typed, words, acronym })
@@ -77,12 +91,16 @@ const CAMEL_SPLIT_REGEX = /([a-z])([A-Z])|([A-Z]+)([A-Z][a-z])/g
 
 /**
  * Splits a hashtag (preferably the typed form) into its constituent words.
- * Supports camelCase, PascalCase, dashes, underscores, and spaces.
+ * Supports camelCase, PascalCase, dashes, underscores, spaces, and — as a
+ * last resort — probabilistic word splitting via wordninja for joined text
+ * such as 'derekanderson' or 'wiegehtesdir'.
  *
  * @param {string} input - raw or typed hashtag value
+ * @param {object} [options]
+ * @param {string} [options.language] - ISO 639-1 hint passed to wordninja
  * @returns {string[]} lowercase words
  */
-export function splitTagIntoWords (input) {
+export function splitTagIntoWords (input, { language } = {}) {
   if (!input || typeof input !== 'string') return []
 
   // Replace dashes and underscores with spaces
@@ -99,7 +117,13 @@ export function splitTagIntoWords (input) {
     .map(w => w.toLowerCase().trim())
     .filter(w => w.length > 0)
 
-  return words.length > 0 ? words : [input.toLowerCase()]
+  // If explicit structural boundaries were found, we're done.
+  if (words.length > 1) return words
+
+  // No boundaries – try wordninja to detect word boundaries in joined text.
+  const base = words[0] ?? input.toLowerCase()
+  const ninjaWords = getWordninjaModel(language).split(base).filter(w => /\S/.test(w))
+  return ninjaWords.length > 1 ? ninjaWords : (words.length > 0 ? words : [input.toLowerCase()])
 }
 
 /**
