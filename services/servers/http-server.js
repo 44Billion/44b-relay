@@ -53,6 +53,47 @@ const BASE_RELAY_INFO = {
   contact: 'https://github.com/arthurfranca',
   // just server-side nips
   supported_nips: ['1', '9', '11', '40', '42', '45', '50'],
+  nips: {
+    45: {
+      extensions: [
+        {
+          extension: 'hll'
+        }
+      ]
+    },
+    50: {
+      extensions: [
+        {
+          extension: 'include:spam',
+          description: 'Include likely spam (content from unrelevant pubkeys) without filtering it out'
+        },
+        {
+          extension: 'is:popular',
+          description: 'Filter to influencers\' content'
+        },
+        {
+          extension: 'is:rising',
+          description: 'Filter to not-yet-influencers\' content'
+        },
+        {
+          extension: 'is:spam',
+          description: 'Filter to likely spam (content from unrelevant pubkeys)'
+        },
+        {
+          extension: 'lang:<code>',
+          description: 'Filter to content in a specific language (e.g. "lang:en lang:pt")'
+        },
+        {
+          extension: 'sort:top',
+          description: 'Sort by engagement (trending)'
+        },
+        {
+          extension: 'topic:<tag>',
+          description: 'Filter to content related to a specific topic/hashtag (e.g. "topic:thenostr topic:brotherinlaw")'
+        }
+      ]
+    }
+  },
   software: 'Bananânia Relay Deluxe',
   version: '0.0.1'
 }
