@@ -7,7 +7,6 @@
 import mdb from '#services/db/mdb.js'
 import { sanitizeText } from '#helpers/language.js'
 import { areMorphologicalSynonyms } from '#helpers/hashtag.js'
-import { embedText, cosineSimilarity } from '#services/topic/embedder.js'
 
 // --- Tunable constants ---
 const CACHE_SIZE_PER_LANG = 500
@@ -257,6 +256,8 @@ export async function detectTopics ({ language, hashtags = [], text }) {
     // Phase 5: Semantic text inference (embedding-based)
     // Only runs when: no hashtags, Phase 4 found nothing, text exists, cache has embeddings
     if (hashtags.length === 0 && topics.size === 0 && text && langCache.embeddings?.size > 0) {
+      // Must be a dynamic import for mocking in tests
+      const { embedText, cosineSimilarity } = await import('#services/topic/embedder.js')
       const textEmbedding = await embedText(text)
 
       if (textEmbedding) {
