@@ -15,10 +15,9 @@
  * @see https://meta.wikimedia.org/wiki/List_of_Wikipedias
  */
 import mdb from '#services/db/mdb.js'
-import { resizeImage, removeWhiteBackground } from '#services/topic/image-processor.js'
+import { generatePollinationsImage } from '#services/topic/pollinations-client.js'
 
 const PROVIDER_TIMEOUT_MS = 4000
-const POLLINATIONS_TIMEOUT_MS = 30_000
 
 // --- helpers ---------------------------------------------------------------
 
@@ -249,17 +248,16 @@ function tagToSeed (tag) {
 }
 
 /**
- * 6. Pollinations.ai AI image generation (free, no API key)
+ * 6. Pollinations.ai AI image generation
  *
  * Last-resort fallback for topics with no icon anywhere else.
- * Prompt is enriched with the topic's split words and top neighbor tags
- * for better semantic relevance. Uses a deterministic seed per tag so
- * repeated runs produce the same image.
+ * Delegates to pollinations-client which handles model selection,
+ * pollen balance checking, and sequential model fallback.
  *
- * The image is fetched and resized here (returning a data URL) so the
- * resolver does not need to re-fetch it through processImage.
+ * Returns {} (no url) when pollen is insufficient — the resolver treats
+ * this the same as "no result" without counting it as a failure.
  *
- * @see https://pollinations.ai
+ * @see https://gen.pollinations.ai
  */
 const pollinations = {
   name: 'pollinations',
@@ -267,22 +265,9 @@ const pollinations = {
   async fetchIcon (tag, _lang, stat) {
     const prompt = buildPollinationsPrompt(tag, stat)
     const seed = tagToSeed(tag)
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=256&height=256&nologo=true&model=flux-schnell&seed=${seed}`
-
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), POLLINATIONS_TIMEOUT_MS)
-
-    try {
-      const res = await fetch(imageUrl, { signal: controller.signal })
-      if (!res.ok) return null
-
-      const buf = Buffer.from(await res.arrayBuffer())
-      const resized = await resizeImage({ input: buf, resizeOptions: { width: 512, height: 512 } })
-      const transparent = await removeWhiteBackground(resized)
-      return { url: `data:image/webp;base64,${transparent.toString('base64')}` }
-    } finally {
-      clearTimeout(timer)
-    }
+    const dataUrl = await generatePollinationsImage(prompt, seed)
+    if (!dataUrl) return {}
+    return { url: dataUrl }
   }
 }
 
@@ -299,4 +284,4 @@ export const providers = [
   pollinations
 ]
 
-export { PROVIDER_TIMEOUT_MS, POLLINATIONS_TIMEOUT_MS }
+export { PROVIDER_TIMEOUT_MS }

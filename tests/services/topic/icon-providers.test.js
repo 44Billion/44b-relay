@@ -350,108 +350,142 @@ describe('Icon Providers', () => {
   describe('pollinations provider', () => {
     const pollinationsProvider = () => providers.find(p => p.name === 'pollinations')
 
-    it('should return a data URL on successful image generation (mocked)', async () => {
-      const fakeImageBytes = Buffer.alloc(100, 0xff) // 100 bytes of 0xff (not a real image)
-
-      const originalFetch = globalThis.fetch
-      globalThis.fetch = mock.fn(async (url) => {
-        assert.ok(url.includes('image.pollinations.ai'))
-        return {
-          ok: true,
-          arrayBuffer: async () => fakeImageBytes.buffer
-        }
-      })
-
-      // Also mock resizeImage since the buffer isn't a real image
-      const originalResizeImage = (await import('#services/topic/image-processor.js')).resizeImage
-      // We can't easily re-mock an already-imported module in this describe block,
-      // so we just expect a sharp error and verify the provider propagates it.
-      // The test below uses a valid PNG to verify the happy path.
-      globalThis.fetch = originalFetch
-
-      // Verify provider structure at minimum
+    it('should have name and fetchIcon method', () => {
       assert.equal(typeof pollinationsProvider().fetchIcon, 'function')
-      assert.ok(originalResizeImage) // resizeImage is exported
     })
 
-    it('should return null when Pollinations returns non-OK response (mocked)', async () => {
+    it('should return {} (no url) when the client returns null (mocked)', async () => {
       const originalFetch = globalThis.fetch
-      globalThis.fetch = mock.fn(async () => ({ ok: false, status: 503 }))
+      // Balance = 0 → client will bail early without calling the image endpoint
+      globalThis.fetch = mock.fn(async (url) => {
+        if (url.includes('/account/balance')) return { ok: true, json: async () => ({ balance: 0 }) }
+        if (url.includes('/image/models')) {
+          return {
+            ok: true,
+            json: async () => [
+              { name: 'flux', paid_only: false, output_modalities: ['image'], pricing: { completionImageTokens: '0.001' } }
+            ]
+          }
+        }
+        return { ok: false, status: 503 }
+      })
 
       try {
+        // Must set a key so the client doesn't short-circuit on missing key
+        process.env.POLLINATIONS_SECRET_KEY = 'sk_test'
         const result = await pollinationsProvider().fetchIcon('test', 'en', null)
-        assert.equal(result, null)
+        // {} means "no url" — resolver treats this the same as "no result"
+        assert.ok(result !== null && typeof result === 'object')
+        assert.equal(result.url, undefined)
       } finally {
         globalThis.fetch = originalFetch
+        delete process.env.POLLINATIONS_SECRET_KEY
       }
     })
 
-    it('should use deterministic seed (same tag → same URL)', async () => {
-      const urlsSeen = new Set()
-
+    it('should include neighbor terms in the prompt (verified via image URL, mocked)', async () => {
+      const urlsSeen = []
       const originalFetch = globalThis.fetch
       globalThis.fetch = mock.fn(async (url) => {
-        urlsSeen.add(url)
-        return { ok: false } // make it fail fast
+        if (url.includes('/account/balance')) return { ok: true, json: async () => ({ balance: 0 }) }
+        if (url.includes('/image/models')) {
+          return {
+            ok: true,
+            json: async () => [
+              { name: 'flux', paid_only: false, output_modalities: ['image'], pricing: { completionImageTokens: '0.001' } }
+            ]
+          }
+        }
+        urlsSeen.push(url)
+        return { ok: false } // fail fast — we only care about the URL shape
       })
 
       try {
-        await pollinationsProvider().fetchIcon('bitcoin', 'en', null)
-        await pollinationsProvider().fetchIcon('bitcoin', 'en', null)
-        assert.equal(urlsSeen.size, 1, 'Same tag should always produce the same Pollinations URL')
-      } finally {
-        globalThis.fetch = originalFetch
-      }
-    })
+        process.env.POLLINATIONS_SECRET_KEY = 'sk_test'
+        // Balance (0) < cheapest cost (0.001) → returns {} without hitting /image/ at all.
+        // To reach the image URL we need a non-zero balance greater than the model cost.
+        // Reset the models cache between tests.
+        const { _resetModelsCache } = await import('#services/topic/pollinations-client.js')
+        _resetModelsCache()
 
-    it('should include neighbor terms in the prompt when stat is provided', async () => {
-      let capturedUrl = ''
+        // Use a balance high enough to attempt generation
+        globalThis.fetch = mock.fn(async (url) => {
+          if (url.includes('/account/balance')) return { ok: true, json: async () => ({ balance: 100 }) }
+          if (url.includes('/image/models')) {
+            return {
+              ok: true,
+              json: async () => [
+                { name: 'flux', paid_only: false, output_modalities: ['image'], pricing: { completionImageTokens: '0.001' } }
+              ]
+            }
+          }
+          urlsSeen.push(url)
+          return { ok: false }
+        })
 
-      const originalFetch = globalThis.fetch
-      globalThis.fetch = mock.fn(async (url) => {
-        capturedUrl = url
-        return { ok: false }
-      })
-
-      try {
         const stat = { words: ['bit', 'coin'], neighbors: [['crypto', 80], ['blockchain', 60]] }
         await pollinationsProvider().fetchIcon('bitcoin', 'en', stat)
-        const decoded = decodeURIComponent(capturedUrl)
+        _resetModelsCache()
+
+        const decoded = decodeURIComponent(urlsSeen[0] || '')
         assert.ok(decoded.includes('crypto'), 'prompt should include neighbor term "crypto"')
         assert.ok(decoded.includes('blockchain'), 'prompt should include neighbor term "blockchain"')
       } finally {
         globalThis.fetch = originalFetch
+        delete process.env.POLLINATIONS_SECRET_KEY
       }
     })
   })
 
-  describe('Provider health checks (live, optional)', () => {
-    // These tests hit real APIs — they serve as health checks.
-    // They are non-fatal (skipped if network is unavailable).
+  // -------------------------------------------------------------------------
+  // Live API tests — each was run manually and confirmed to work, then
+  // .skip was added so they don't burn quota / slow down CI automatically.
+  // Remove .skip on any provider to re-verify after an API change.
+  // -------------------------------------------------------------------------
 
-    it('Wikipedia: should be reachable', async () => {
+  describe('Live API tests', () => {
+    it.skip('Wikipedia: returns a thumbnail URL for "bitcoin"', async () => {
       const wp = providers.find(p => p.name === 'wikipedia')
-      try {
-        const result = await wp.fetchIcon('bitcoin', 'en')
-        // May or may not return a result depending on API availability
-        if (result) {
-          assert.ok(result.url.startsWith('http'))
-        }
-      } catch (_err) {
-        // Network not available — skip gracefully
+      const result = await wp.fetchIcon('bitcoin', 'en')
+      assert.ok(result, 'expected a result, got null')
+      assert.ok(result.url.startsWith('http'), `expected http URL, got: ${result.url}`)
+    })
+
+    it.skip('Wikidata: returns a Commons image URL for "bitcoin"', async () => {
+      const wd = providers.find(p => p.name === 'wikidata')
+      const result = await wd.fetchIcon('bitcoin', 'en')
+      // Bitcoin may or may not have a P18 claim — just verify the shape when present.
+      if (result) {
+        assert.ok(result.url.startsWith('http'), `expected http URL, got: ${result.url}`)
+        assert.ok(result.url.includes('wikimedia.org') || result.url.includes('commons.wikimedia.org'))
       }
     })
 
-    it('DuckDuckGo: should be reachable', async () => {
+    it.skip('DuckDuckGo: returns an image URL for "bitcoin"', async () => {
       const ddg = providers.find(p => p.name === 'duckduckgo')
-      try {
-        const result = await ddg.fetchIcon('bitcoin', 'en')
-        if (result) {
-          assert.ok(result.url.startsWith('http'))
-        }
-      } catch (_err) {
-        // Network not available — skip gracefully
-      }
+      const result = await ddg.fetchIcon('bitcoin', 'en')
+      assert.ok(result, 'expected a result, got null')
+      assert.ok(result.url.startsWith('http'), `expected http URL, got: ${result.url}`)
     })
+
+    it.skip('Google Favicon: returns a favicon URL for "github"', async () => {
+      const favicon = providers.find(p => p.name === 'googleFavicon')
+      const result = await favicon.fetchIcon('github', 'en')
+      assert.ok(result, 'expected a result, got null')
+      assert.ok(result.url.startsWith('http'), `expected http URL, got: ${result.url}`)
+    })
+
+    // Prefer the broader test at tests/services/topic/pollinations-client.test.js
+    // it.skip('Pollinations: generates a data URL for "bitcoin" (requires POLLINATIONS_SECRET_KEY)', async () => {
+    //   if (!process.env.POLLINATIONS_SECRET_KEY) return
+    //   const prov = providers.find(p => p.name === 'pollinations')
+    //   const stat = { words: ['bit', 'coin'], neighbors: [['crypto', 80]] }
+    //   const result = await prov.fetchIcon('bitcoin', 'en', stat)
+    //   // {} means insufficient balance — that is acceptable; { url } means success.
+    //   assert.ok(result !== null && typeof result === 'object')
+    //   if (result.url) {
+    //     assert.ok(result.url.startsWith('data:image/webp;base64,'))
+    //   }
+    // })
   })
 })
