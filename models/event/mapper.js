@@ -85,7 +85,7 @@ export function eventToRecord (event, {
     tagIndex++
   }
 
-  if (kind === 5 || kind === 7) {
+  if ([5, 6, 7, 16].includes(kind)) {
     const maxExpiration = now + 60 * 60 * 24 * 3
     if (!expiresAt || expiresAt > maxExpiration) expiresAt = maxExpiration
   }

@@ -117,7 +117,7 @@ describe('Event Mapper', () => {
       assert.equal(record.expiresAt, 1000000)
     })
 
-    it('should limit expiration for kind 5 (deletion) and kind 7 (reaction)', () => {
+    it('should limit expiration for kind 5 (deletion), kind 7 (reaction) and kind 6/16 (reposts)', () => {
       const hugeExp = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60) // 1 year
       const event = {
         ...baseEvent,
