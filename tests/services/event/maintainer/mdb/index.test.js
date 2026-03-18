@@ -210,6 +210,86 @@ describe('Event Maintainer (MDB)', () => {
       assert.equal(remaining.hits.length, 0)
     })
 
+    it('should prefer deleting chunk events (kind 34600) first for pubkey owner', async () => {
+      const pubkey = '0000000000000000000000000000000000000000000000000000000000000013'
+
+      // Seed: 1 regular event + 2 chunk events
+      const events = [
+        { id: 'txt1', ref: 'txt1', pubkey, ownerType: 'pubkey', kind: 1, byteSize: 100, created_at: 10, content: 'text' },
+        { id: 'chunk1', ref: 'chunk1', pubkey, ownerType: 'pubkey', kind: 34600, byteSize: 51000, created_at: 20, indexableTags: ['c aaaa:0', 'd chunk1'], nonIndexableTags: [] },
+        { id: 'chunk2', ref: 'chunk2', pubkey, ownerType: 'pubkey', kind: 34600, byteSize: 51000, created_at: 30, indexableTags: ['c bbbb:0', 'd chunk2'], nonIndexableTags: [] }
+      ]
+      await mdb.index('events').addDocuments(events)
+
+      // Request to remove 60000 bytes — chunk1 (51000) should be enough
+      const cleared = await maintainer.pruneEvents({
+        ownerKey: pubkey,
+        ownerType: 'pubkey',
+        bytesToRemove: 60000
+      })
+
+      assert.ok(cleared >= 60000)
+
+      // The text event should survive since chunks covered the bytesToRemove
+      const { results } = await mdb.index('events').getDocuments({ limit: 100 })
+      const remaining = results.filter(e => e.pubkey === pubkey)
+      assert.ok(remaining.find(e => e.id === 'txt1'), 'Text event should survive when chunks cover the needed space')
+    })
+
+    it('should skip shared chunks (multiple c tags) during chunk-first pruning', async () => {
+      const pubkey = '0000000000000000000000000000000000000000000000000000000000000014'
+
+      const events = [
+        // Shared chunk (2 c tags) — should be skipped
+        { id: 'shared1', ref: 'shared1', pubkey, ownerType: 'pubkey', kind: 34600, byteSize: 51000, created_at: 10, indexableTags: ['c aaaa:0', 'c bbbb:3', 'd shared1'], nonIndexableTags: [] },
+        // Non-shared chunk — should be deleted first
+        { id: 'single1', ref: 'single1', pubkey, ownerType: 'pubkey', kind: 34600, byteSize: 51000, created_at: 20, indexableTags: ['c cccc:0', 'd single1'], nonIndexableTags: [] },
+        // Regular event
+        { id: 'txt2', ref: 'txt2', pubkey, ownerType: 'pubkey', kind: 1, byteSize: 100, created_at: 5, content: 'text' }
+      ]
+      await mdb.index('events').addDocuments(events)
+
+      const cleared = await maintainer.pruneEvents({
+        ownerKey: pubkey,
+        ownerType: 'pubkey',
+        bytesToRemove: 51000
+      })
+
+      assert.ok(cleared >= 51000)
+
+      const { results } = await mdb.index('events').getDocuments({ limit: 100 })
+      const remaining = results.filter(e => e.pubkey === pubkey)
+
+      // single1 deleted (non-shared chunk), shared1 and txt2 should remain
+      assert.ok(!remaining.find(e => e.id === 'single1'), 'Non-shared chunk should be deleted')
+      assert.ok(remaining.find(e => e.id === 'shared1'), 'Shared chunk should be skipped')
+      assert.ok(remaining.find(e => e.id === 'txt2'), 'Text event should survive')
+    })
+
+    it('should fall through to general pruning when chunks are not enough', async () => {
+      const pubkey = '0000000000000000000000000000000000000000000000000000000000000015'
+
+      const events = [
+        { id: 'chunk3', ref: 'chunk3', pubkey, ownerType: 'pubkey', kind: 34600, byteSize: 100, created_at: 10, indexableTags: ['c dddd:0', 'd chunk3'], nonIndexableTags: [] },
+        { id: 'txt3', ref: 'txt3', pubkey, ownerType: 'pubkey', kind: 1, byteSize: 200, created_at: 20, content: 'text' }
+      ]
+      await mdb.index('events').addDocuments(events)
+
+      // Request more than the chunk provides
+      const cleared = await maintainer.pruneEvents({
+        ownerKey: pubkey,
+        ownerType: 'pubkey',
+        bytesToRemove: 250
+      })
+
+      assert.ok(cleared >= 250)
+
+      // Both should be deleted since chunk (100) wasn't enough for 250
+      const { results } = await mdb.index('events').getDocuments({ limit: 100 })
+      const remaining = results.filter(e => e.pubkey === pubkey)
+      assert.equal(remaining.length, 0, 'All events should be deleted when chunks alone are not enough')
+    })
+
     it('should handle IP owner pruning (delete non-popular first)', async () => {
       // This is complex to test fully without mocking popularity filters,
       // but we can test the deletion mechanism.

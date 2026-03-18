@@ -13,6 +13,7 @@ import flushHashtagStatsConfig from './flush-hashtag-stats.js'
 import decayHashtagStatsConfig from './decay-hashtag-stats.js'
 import generateLocalizedTopicAssertionEventsConfig from './generate-localized-topic-assertion-events.js'
 import computeTopicEmbeddingsConfig from './compute-topic-embeddings.js'
+import deleteStaleChunksConfig from './delete-stale-chunks.js'
 
 const jobs = [
   // exampleConfig,
@@ -29,7 +30,8 @@ const jobs = [
   flushHashtagStatsConfig,
   decayHashtagStatsConfig,
   generateLocalizedTopicAssertionEventsConfig,
-  computeTopicEmbeddingsConfig
+  computeTopicEmbeddingsConfig,
+  deleteStaleChunksConfig
 ]
 
 export default jobs

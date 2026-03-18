@@ -3,11 +3,14 @@ import mdb from '#services/db/mdb.js'
 import crypto from 'node:crypto'
 import { primaryKeyToIp, ipToPrimaryKey, isValidPrimaryKey } from '#helpers/mdb.js'
 import { base16ToBytes } from '#helpers/base16.js'
+import { getRelaySelfPubkey } from '#helpers/relay-self.js'
+import { eventKinds } from '#constants/event.js'
 
 const ONE_MB = 1024 * 1024
 const EVENT_BATCH_SIZE = 20
 
 export const VIP_PUBKEYS = new Set([
+  getRelaySelfPubkey(),
   'fc7085c383ba71745704bdc1c6efcf7fab0197501de598c5e6c537ac0b32a4cb', // arthurfranca - npub1l3cgtsurhfchg4cyhhqudm70074sr96srhje330xc5m6czej5n9s9q6vs2
   '5a8bc85694d8fbb4f30208649c1c52509636d1e6fdb1f0f4c84a3f10f9383ec9' // 44b mirror - npub1t29us455mramfuczppjfc8zj2ztrd50xlkclpaxgfgl3p7fc8mysjuvsrw
 ])
@@ -105,6 +108,50 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
   else if (VIP_PUBKEYS.has(ownerKey)) return 0
 
   let cleared = 0
+
+  // First pass: prefer deleting chunk events (kind 34600) since they are
+  // much heavier (~51KB each) and clear space faster than other event kinds.
+  // Skip chunks shared across files (multiple c tags) to avoid breaking other files.
+  {
+    let chunkOffset = 0
+    const ownerFilter = ownerType === 'pubkey'
+      ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey"`
+      : `ip = ${mdb.toMeiliValue(primaryKeyToIp(ownerKey))} AND ownerType = "ip"`
+
+    while (cleared < bytesToRemove) {
+      const searchRes = await mdb.index('events').search('', {
+        filter: `${ownerFilter} AND kind = ${eventKinds.BINARY_DATA_CHUNK}`,
+        sort: ['created_at:asc'],
+        limit: EVENT_BATCH_SIZE,
+        offset: chunkOffset
+      })
+
+      if (searchRes.hits.length === 0) break
+      chunkOffset += searchRes.hits.length
+
+      const keysToDelete = []
+      let bytesInBatch = 0
+
+      for (const hit of searchRes.hits) {
+        // Count c tags across indexed and non-indexed to detect shared chunks
+        const cTagCount =
+          (hit.indexableTags || []).filter(t => t.startsWith('c ')).length +
+          (hit.nonIndexableTags || []).filter(t => t[0] === 'c').length
+        if (cTagCount > 1) continue // shared across files, skip
+
+        keysToDelete.push(hit.ref)
+        bytesInBatch += (hit.byteSize || 0)
+      }
+
+      if (keysToDelete.length > 0) {
+        await mdb.index('events').deleteDocuments(keysToDelete)
+        cleared += bytesInBatch
+      }
+    }
+  }
+
+  if (cleared >= bytesToRemove) return cleared
+
   let offset = 0
 
   while (cleared < bytesToRemove) {
