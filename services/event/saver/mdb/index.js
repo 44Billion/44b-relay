@@ -4,7 +4,7 @@ import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { base16ToBytes, bytesToBase16 } from '#helpers/base16.js'
 import mdb from '#services/db/mdb.js'
 import { checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
-import { eventToRecord, idToRef } from '#models/event/mapper.js'
+import { eventToRecord, idToRef, addressToRef } from '#models/event/mapper.js'
 import { getEventByRef } from '#models/event/dao.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
 import { trackHashtagStats } from '#services/event/tracker/mdb/hashtag-stats.js'
@@ -134,16 +134,39 @@ export default class EventSaver {
       })
 
       if (popularityLevel <= 6) {
-        const pushHllOp = (rootEventId, field) => {
-          if (!rootEventId) return
+        const pushHllOpById = (eventId, field) => {
+          if (!eventId) return
           try {
-            const offset = parseInt(rootEventId[32], 16) + 8
+            const offset = parseInt(eventId[32], 16) + 8
             const hll = new HLL(offset)
             hll.add(base16ToBytes(author))
             ops.push({
               type: 'mergeNip45Hll',
               data: {
-                key: idToRef(rootEventId),
+                key: idToRef(eventId),
+                hll: bytesToBase16(hll.getRegisters()),
+                field,
+                index: 'events',
+                offset
+              }
+            })
+          } catch (e) {
+            console.error(`Failed to process HLL for ${field}:`, e)
+          }
+        }
+
+        const pushHllOpByAddress = (address, field) => {
+          if (!address) return
+          try {
+            // Derive offset from the pubkey in the address (kind:pubkey:dTag)
+            const pubkey = address.split(':')[1]
+            const offset = parseInt(pubkey[32], 16) + 8
+            const hll = new HLL(offset)
+            hll.add(base16ToBytes(author))
+            ops.push({
+              type: 'mergeNip45Hll',
+              data: {
+                key: addressToRef({ address }),
                 hll: bytesToBase16(hll.getRegisters()),
                 field,
                 index: 'events',
@@ -156,20 +179,43 @@ export default class EventSaver {
         }
 
         if (event.kind === eventKinds.COMMENT) {
+          // Root event engagement (uppercase tags per NIP-22)
           const rootEventId = event.tags.find(t => t[0] === 'E')?.[1]
-          pushHllOp(rootEventId, 'commentCounter')
+          const rootEventAddress = event.tags.find(t => t[0] === 'A')?.[1]
+          if (rootEventId) pushHllOpById(rootEventId, 'commentCounter')
+          else pushHllOpByAddress(rootEventAddress, 'commentCounter')
+
+          // Also push for the parent comment (lowercase 'e' per NIP-22).
+          // Comments are never addressable, so only 'e' (not 'a') is relevant here.
+          // Whether the parent is an eligible target (i.e. a top-level comment)
+          // is checked in process-pending-ops when merging the HLL.
+          const parentEventId = event.tags.find(t => t[0] === 'e')?.[1]
+          if (parentEventId && parentEventId !== rootEventId) {
+            pushHllOpById(parentEventId, 'commentCounter')
+          }
         } else if (event.kind === eventKinds.TEXT_NOTE) {
+          const eTags = event.tags.filter(t => t[0] === 'e')
+          // First e tag is always the root event
+          pushHllOpById(eTags[0]?.[1], 'replyCounter')
+          // Second e tag (if present) is the direct parent;
+          // whether it's an eligible target is checked in process-pending-ops
+          if (eTags[1]) {
+            pushHllOpById(eTags[1][1], 'replyCounter')
+          }
+        } else if (event.kind === eventKinds.REPOST) {
           const rootEventId = event.tags.find(t => t[0] === 'e')?.[1]
-          pushHllOp(rootEventId, 'replyCounter')
-        } else if (event.kind === eventKinds.REPOST || event.kind === eventKinds.GENERIC_REPOST) {
+          pushHllOpById(rootEventId, 'repostCounter')
+        } else if (event.kind === eventKinds.GENERIC_REPOST) {
           const rootEventId = event.tags.find(t => t[0] === 'e')?.[1]
-          pushHllOp(rootEventId, 'repostCounter')
+          const rootEventAddress = event.tags.find(t => t[0] === 'a')?.[1]
+          if (rootEventId) pushHllOpById(rootEventId, 'repostCounter')
+          else pushHllOpByAddress(rootEventAddress, 'repostCounter')
         }
 
         // Quote counter
         const quoteEventId = event.tags.find(t => t[0] === 'q')?.[1]
         if (quoteEventId && (event.kind === eventKinds.TEXT_NOTE || event.kind === eventKinds.COMMENT)) {
-          pushHllOp(quoteEventId, 'quoteCounter')
+          pushHllOpById(quoteEventId, 'quoteCounter')
         }
       }
 

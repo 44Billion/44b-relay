@@ -251,11 +251,28 @@ export async function processBatch (results, systemState) {
           )
 
           if (doc && data.hll && data.offset !== undefined) {
-            const isRootTarget = // targetIndex !== 'events' ||
-              [
+            const isEligibleTarget = () => {
+              const kind = doc.kind
+              const tags = doc.indexableTags || []
+              // For kind 1 (TEXT_NOTE): only root posts (0 e tags) or first-level replies (1 e tag)
+              if (kind === eventKinds.TEXT_NOTE) {
+                const eTagCount = tags.filter(t => t.startsWith('e ')).length
+                return eTagCount <= 1
+              }
+              // For kind 1111 (COMMENT): only top-level comments
+              // (parent tag points to the same event as the root tag)
+              if (kind === eventKinds.COMMENT) {
+                const rootId = tags.find(t => t.startsWith('E '))
+                const parentId = tags.find(t => t.startsWith('e '))
+                if (rootId && parentId) return rootId.slice(2) === parentId.slice(2)
+                const rootAddr = tags.find(t => t.startsWith('A '))
+                const parentAddr = tags.find(t => t.startsWith('a '))
+                if (rootAddr && parentAddr) return rootAddr.slice(2) === parentAddr.slice(2)
+                return false
+              }
+              return [
                 // pubkey counters are attached to metadata (profile)
                 eventKinds.METADATA,
-                eventKinds.TEXT_NOTE,
                 eventKinds.LONG_FORM_CONTENT,
                 eventKinds.PICTURE,
                 eventKinds.VOICE_MESSAGE,
@@ -268,7 +285,9 @@ export async function processBatch (results, systemState) {
                 // eventKinds.DATE_BASED_CALENDAR_EVENT,
                 // eventKinds.TIME_BASED_CALENDAR_EVENT,
                 eventKinds.CALENDAR
-              ].includes(doc.kind)
+              ].includes(kind)
+            }
+            const isRootTarget = isEligibleTarget()
 
             if (isRootTarget) {
               const currentVal = doc[field]

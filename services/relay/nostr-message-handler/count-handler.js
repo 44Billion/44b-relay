@@ -62,19 +62,24 @@ async function maybeGetHll (filters) {
   if (kinds.length === 1) {
     switch (kinds[0]) {
       // { kinds: [1111], '#E': ['<rootEventId>'] }
+      // { kinds: [1111], '#A': ['<rootEventAddress>'] }
+      // { kinds: [1111], '#e': ['<parentCommentEventId>'] }
       case eventKinds.COMMENT: {
         let mapperFn
-        let rootEventIdOrAddress
+        let targetIdOrAddress
         if (filter['#E']?.length === 1) {
           mapperFn = idToRef
-          rootEventIdOrAddress = filter['#E'][0]
+          targetIdOrAddress = filter['#E'][0]
         } else if (filter['#A']?.length === 1) {
           mapperFn = addressToRef
-          rootEventIdOrAddress = filter['#A'][0]
+          targetIdOrAddress = filter['#A'][0]
+        } else if (filter['#e']?.length === 1) {
+          mapperFn = idToRef
+          targetIdOrAddress = filter['#e'][0]
         } else return
 
         const { result: event } = await getEventByRef(
-          mapperFn(rootEventIdOrAddress), { fields: ['commentCounter'], withMeta: true }
+          mapperFn(targetIdOrAddress), { fields: ['commentCounter'], withMeta: true }
         )
         return event?.meta?.commentCounter
       }
