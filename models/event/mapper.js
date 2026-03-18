@@ -15,6 +15,12 @@ export function idToRef (id) {
   return bytesToBase64(base16ToBytes(id))
 }
 
+// These events have one-letter (indexable) tags because
+// they are widely used even though it would be more correct
+// to e.g. make `p` tag be `pp` for the tag to not be indexed
+// because they are usually meant to be consumed by the author only,
+// so we won't support searching for them by some indexable tag
+// to save space.
 const eventKindsToIgnoreIndexableTags = {
   [eventKinds.FOLLOWS]: true,
   [eventKinds.MUTE_LIST]: true,
@@ -35,7 +41,11 @@ const eventKindsToIgnoreIndexableTags = {
   [eventKinds.VIDEO_CURATION_SET]: true,
   [eventKinds.PICTURE_CURATION_SET]: true,
   [eventKinds.KIND_MUTE_SET]: true,
-  [eventKinds.INTEREST_SET]: true,
+  // Interest set is an exception because
+  // it's expected to be discoverable by others
+  // to help them enrich their own set with
+  // others' set images and descriptions
+  [eventKinds.INTEREST_SET]: false,
   [eventKinds.RELEASE_ARTIFACT_SET]: true,
   [eventKinds.APP_CURATION_SET]: true,
   [eventKinds.CALENDAR]: true,

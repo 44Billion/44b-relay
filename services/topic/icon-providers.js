@@ -16,6 +16,7 @@
  */
 import mdb from '#services/db/mdb.js'
 import { generatePollinationsImage } from '#services/topic/pollinations-client.js'
+import { eventKinds } from '#constants/event.js'
 
 const PROVIDER_TIMEOUT_MS = 4000
 
@@ -272,6 +273,56 @@ const pollinations = {
 }
 
 /**
+ * 7. Interest-set image fallback
+ *
+ * Searches the MeiliSearch events index for kind-30015 (interest set) events
+ * whose `t` tags include the current topic and that carry an `image` tag.
+ * Only non-spam events (popularityLevel ≤ 6) are considered.
+ *
+ * Because kind 30015 is in eventKindsToIgnoreIndexableTags, its `t` and
+ * `image` tags are stored in nonIndexableTags (not filterable), so we fetch
+ * a bounded batch and scan in memory.
+ *
+ * Zero external requests — pure MeiliSearch lookups.
+ */
+const interestSet = {
+  name: 'interestSet',
+
+  async fetchIcon (tag, lang) {
+    // kind 30015 has eventKindsToIgnoreIndexableTags = false, so single-letter
+    // tags (t, L, l, …) are fully indexed and filterable.
+    // "L #image" is indexed as the presence indicator for the `image` tag.
+    const filter = [
+      `kind = ${eventKinds.INTEREST_SET}`,
+      'popularityLevel <= 6',
+      `indexableTags = ${mdb.toMeiliValue(`l iso639:${lang}`)}`,
+      `indexableTags = ${mdb.toMeiliValue(`t ${tag}`)}`,
+      `indexableTags = ${mdb.toMeiliValue('L #image')}`
+    ].join(' AND ')
+
+    const { hits } = await mdb.index('events').search('', {
+      filter,
+      limit: 10
+    })
+
+    if (hits.length === 0) return null
+
+    // Sort by popularityLevel ascending (lower = more trustworthy / popular)
+    hits.sort((a, b) => (a.popularityLevel ?? 7) - (b.popularityLevel ?? 7))
+
+    for (const hit of hits) {
+      const imageUrl = (hit.nonIndexableTags || []).find(t => t[0] === 'image')?.[1]
+      if (!imageUrl || typeof imageUrl !== 'string') continue
+      if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://') && !imageUrl.startsWith('data:')) continue
+
+      return { url: imageUrl }
+    }
+
+    return null
+  }
+}
+
+/**
  * Ordered list of all providers.  The resolver tries them in this order,
  * skipping any that are currently backed off.
  */
@@ -281,7 +332,8 @@ export const providers = [
   duckduckgo,
   googleFavicon,
   neighborIcon,
-  pollinations
+  pollinations,
+  interestSet
 ]
 
 export { PROVIDER_TIMEOUT_MS }
