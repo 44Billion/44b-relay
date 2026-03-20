@@ -23,7 +23,8 @@ export default {
       'lang',
       'tag',
       'count',
-      'icon'
+      'icon',
+      'statsUpdatedAt'
     ],
     sortableAttributes: [
       'count'
