@@ -14,6 +14,8 @@ import decayHashtagStatsConfig from './decay-hashtag-stats.js'
 import generateLocalizedTopicAssertionEventsConfig from './generate-localized-topic-assertion-events.js'
 import computeTopicEmbeddingsConfig from './compute-topic-embeddings.js'
 import deleteStaleChunksConfig from './delete-stale-chunks.js'
+import flushRequestedEventsConfig from './flush-requested-events.js'
+import deleteUnrequestedRelayEventsConfig from './delete-unrequested-relay-events.js'
 
 const jobs = [
   // exampleConfig,
@@ -31,7 +33,9 @@ const jobs = [
   decayHashtagStatsConfig,
   generateLocalizedTopicAssertionEventsConfig,
   computeTopicEmbeddingsConfig,
-  deleteStaleChunksConfig
+  deleteStaleChunksConfig,
+  flushRequestedEventsConfig,
+  deleteUnrequestedRelayEventsConfig
 ]
 
 export default jobs

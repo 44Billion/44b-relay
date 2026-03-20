@@ -51,6 +51,7 @@ const BASE_RELAY_INFO = {
   pubkey: 'fc7085c383ba71745704bdc1c6efcf7fab0197501de598c5e6c537ac0b32a4cb', // arthurfranca - npub1l3cgtsurhfchg4cyhhqudm70074sr96srhje330xc5m6czej5n9s9q6vs2
   self: RELAY_SELF_PUBKEY,
   contact: 'https://github.com/arthurfranca',
+  attributes: ['Public', 'Inbox', 'Outbox', 'Indexer', 'RelayListIndexer', 'AppListingIndexer'],
   // just server-side nips
   supported_nips: ['1', '9', '11', '40', '42', '45', '50'],
   nips: {

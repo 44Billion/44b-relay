@@ -102,7 +102,7 @@ describe('Requested Pubkeys Tracker', () => {
   describe('uninterestedIn', () => {
     it('should define uninterested kinds', () => {
       assert.equal(uninterestedIn.kinds[eventKinds.METADATA], true)
-      assert.equal(uninterestedIn.kinds[eventKinds.RELAY_LIST_METADATA], true)
+      assert.equal(uninterestedIn.kinds[eventKinds.READ_WRITE_RELAYS], true)
     })
   })
 })

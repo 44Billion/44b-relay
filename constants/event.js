@@ -112,8 +112,16 @@ const eventTags = {
   TITLE: 'title' // https://github.com/nostr-protocol/nips/blob/master/23.md
 }
 
+const RELAY_OWNED_KINDS = new Set([
+  eventKinds.READ_WRITE_RELAYS, // 10002
+  eventKinds.MAIN_APP_STALL, // 37348
+  eventKinds.NEXT_APP_STALL, // 37349
+  eventKinds.DRAFT_APP_STALL // 37350
+])
+
 export {
   eventKinds,
   // eventKindTo1To1Table,
-  eventTags
+  eventTags,
+  RELAY_OWNED_KINDS
 }

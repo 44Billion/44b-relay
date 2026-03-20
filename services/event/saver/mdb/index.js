@@ -1,5 +1,5 @@
 import { getAuthorPubkey } from '#helpers/event.js'
-import { eventKinds, eventTags } from '#constants/event.js'
+import { eventKinds, eventTags, RELAY_OWNED_KINDS } from '#constants/event.js'
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { base16ToBytes, bytesToBase16 } from '#helpers/base16.js'
 import mdb from '#services/db/mdb.js'
@@ -85,7 +85,7 @@ export default class EventSaver {
       }
 
       // 1. Check Limits & Prepare Ops
-      const { ownerType, _ownerKey, popularityLevel, ops: storageOps } = await checkStorageLimitAndPrune({ pubkey: author, ip, newEventSize: byteSize })
+      const { ownerType, _ownerKey, popularityLevel, ops: storageOps } = await checkStorageLimitAndPrune({ pubkey: author, ip, newEventSize: byteSize, kind: event.kind })
 
       // Convert to MDB Record
       record ??= eventToRecord(event, recordOpts)
@@ -101,8 +101,8 @@ export default class EventSaver {
 
       const ops = [...storageOps]
 
-      if (oldEvent) {
-        // Subtract old usage
+      if (oldEvent && !RELAY_OWNED_KINDS.has(oldEvent.kind)) {
+        // Subtract old usage (skip for relay-owned kinds which have no usage tracking)
         const oldOwnerType = oldEvent.ownerType || 'pubkey'
         const oldOwnerKey = oldOwnerType === 'pubkey' ? oldEvent.pubkey : ipToPrimaryKey(oldEvent.ip)
         if (oldOwnerKey) {

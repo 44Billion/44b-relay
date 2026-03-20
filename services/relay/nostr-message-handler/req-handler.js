@@ -1,5 +1,8 @@
 import { getFilterInterests, uninterestedIn, trackRequestedPubkeys } from '#services/event/tracker/mdb/requested-pubkeys.js'
 import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
+import { trackRequestedEvents } from '#services/event/tracker/mdb/requested-events.js'
+import { RELAY_OWNED_KINDS } from '#constants/event.js'
+import { addressToRef } from '#models/event/mapper.js'
 import { sendEvent, sendEose, sendClosed } from '#helpers/message.js'
 // import { isAuthenticated, requestAuthentication } from '#services/relay/authenticator.js'
 import { parseSubscriptionFilters, isBroadFilter, isAllowedEvenIfBroadFilter, applyPathExtensionsToFilter } from '#helpers/subscription.js'
@@ -99,6 +102,7 @@ async function sendFilteredEvents ({ ws, subscriptionId, filters }) {
   const generator = EventFetcher.run(filters)
   let sentEventCount = 0
   const interestedIn = getFilterInterests({ filters })
+  const relayOwnedRefs = []
   // tb olhe os comments do fetcher e no saver (do deta) como apagar eventos desnecessarios?
   // acho que kda 24 de distancia, soma 1 dia. se tiver 3 dias, ok, senao, nops
   for await (const event of generator) {
@@ -107,10 +111,16 @@ async function sendFilteredEvents ({ ws, subscriptionId, filters }) {
       interestedIn.ids[event.id]
     ) interestedIn.pubkeys.add(event.pubkey)
 
+    if (RELAY_OWNED_KINDS.has(event.kind)) {
+      const dTag = event.tags.find(t => t[0] === 'd')?.[1] ?? ''
+      relayOwnedRefs.push(addressToRef({ kind: event.kind, pubkey: event.pubkey, dTag }))
+    }
+
     await sendEvent({ ws, subscriptionId, event })
     sentEventCount++
   }
   trackRequestedPubkeys({ pubkeys: [...interestedIn.pubkeys], ip: ws.ip })
+  trackRequestedEvents({ refs: relayOwnedRefs, ip: ws.ip })
   trackIpActivity({ ip: ws.ip })
   return { sentEventCount }
 }

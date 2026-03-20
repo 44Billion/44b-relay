@@ -36,7 +36,7 @@ let flushesSinceLastCheck = 0
 export const uninterestedIn = {
   kinds: {
     [eventKinds.METADATA]: true, // 0
-    [eventKinds.RELAY_LIST_METADATA]: true // 10002
+    [eventKinds.READ_WRITE_RELAYS]: true // 10002
   }
 }
 export function getFilterInterests ({ filters }) {

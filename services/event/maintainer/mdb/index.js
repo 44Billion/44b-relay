@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { primaryKeyToIp, ipToPrimaryKey, isValidPrimaryKey } from '#helpers/mdb.js'
 import { base16ToBytes } from '#helpers/base16.js'
 import { getRelaySelfPubkey } from '#helpers/relay-self.js'
-import { eventKinds } from '#constants/event.js'
+import { eventKinds, RELAY_OWNED_KINDS } from '#constants/event.js'
 
 const ONE_MB = 1024 * 1024
 const EVENT_BATCH_SIZE = 20
@@ -265,7 +265,11 @@ const queueOps = (() => {
     : queueOps
 })()
 
-export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, popularityLevel }) {
+export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, popularityLevel, kind }) {
+  if (RELAY_OWNED_KINDS.has(kind)) {
+    return { ownerType: 'pubkey', ownerKey: getRelaySelfPubkey(), popularityLevel: 999, ops: [] }
+  }
+
   if (popularityLevel === undefined) {
     await loadPopularityFilters()
     popularityLevel = getPopularityLevel(pubkey)
