@@ -141,11 +141,15 @@ function buildRelayInfoDocument (pathExtensions) {
     }
   }
 
-  const { sortTop, isSpam, isRising, isPopular, includeSpam, language } = pathExtensions
+  const { sortTop, isSpam, isRising, isPopular, includeSpam, language, topic } = pathExtensions
 
   // Build language label
   const langLabel = language?.length
     ? language.map(l => LANGUAGE_NAMES[l] || l.toUpperCase()).join(' & ')
+    : null
+  // Build topic label
+  const topicLabel = topic?.length
+    ? topic.map(t => `#${t}`).join(' ')
     : null
 
   // Determine the primary icon (sort:top > is:popular > is:rising > is:spam)
@@ -158,7 +162,15 @@ function buildRelayInfoDocument (pathExtensions) {
   // Build name and description based on extensions
   let name, description
 
-  if (isPopular) {
+  if (topicLabel) {
+    if (langLabel) {
+      name = `${topicLabel} in ${langLabel}`
+      description = `Specific topic${topic.length > 1 ? 's' : ''} in ${langLabel} on ${RELAY_URL}`
+    } else {
+      name = topicLabel
+      description = `Specific topic${topic.length > 1 ? 's' : ''} on ${RELAY_URL}`
+    }
+  } else if (isPopular) {
     if (langLabel) {
       name = `Influencers in ${langLabel}`
       description = `Notes from popular authors in ${langLabel} on ${RELAY_URL}`
