@@ -4,6 +4,7 @@
  * Flushed periodically to MeiliSearch via mergeHashtagStats pending ops.
  */
 import { queueOps } from '#services/event/maintainer/mdb/index.js'
+import { toHashtagStatsKey } from '#helpers/mdb.js'
 
 const MAX_DIRECT_TAGS = 8
 
@@ -73,7 +74,7 @@ export async function flushHashtagStatsToMDB () {
       ops.push({
         type: 'mergeHashtagStats',
         data: {
-          key: `${lang}-${tag}`,
+          key: toHashtagStatsKey(lang, tag),
           lang,
           tag,
           words: entry.words,

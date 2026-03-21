@@ -2,7 +2,7 @@ export default {
   uid: 'hashtagStats',
   primaryKey: 'key',
   attributes: [
-    'key',       // '<lang>-<tag>'
+    'key',       // '<lang>-<base64url(tag)>'
     'lang',      // ISO 639-1
     'tag',       // normalized hashtag
     'words',     // split words array

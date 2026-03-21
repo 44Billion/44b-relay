@@ -15,6 +15,7 @@
  * @see https://meta.wikimedia.org/wiki/List_of_Wikipedias
  */
 import mdb from '#services/db/mdb.js'
+import { toHashtagStatsKey } from '#helpers/mdb.js'
 import { generatePollinationsImage } from '#services/topic/pollinations-client.js'
 import { eventKinds } from '#constants/event.js'
 
@@ -213,7 +214,7 @@ const neighborIcon = {
 
     if (neighborTags.length === 0) {
       try {
-        const doc = await mdb.index('hashtagStats').getDocument(`${lang}-${tag}`)
+        const doc = await mdb.index('hashtagStats').getDocument(toHashtagStatsKey(lang, tag))
         neighborTags = (doc.neighbors || []).slice(0, 5).map(([t]) => t)
       } catch {
         return null
@@ -224,7 +225,7 @@ const neighborIcon = {
 
     const docs = await Promise.all(
       neighborTags.map(t =>
-        mdb.index('hashtagStats').getDocument(`${lang}-${t}`).catch(() => null)
+        mdb.index('hashtagStats').getDocument(toHashtagStatsKey(lang, t)).catch(() => null)
       )
     )
 

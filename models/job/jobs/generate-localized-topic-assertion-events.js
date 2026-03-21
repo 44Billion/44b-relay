@@ -19,6 +19,7 @@ import { queueOps } from '#services/event/maintainer/mdb/index.js'
 import { eventKinds } from '#constants/event.js'
 import { resolveIconsBatch } from '#services/topic/icon-resolver.js'
 import { patchIcons } from '#models/hashtag-stats/dao.js'
+import { toHashtagStatsKey } from '#helpers/mdb.js'
 
 const MAX_TOPICS_PER_LANG = 30
 const MAX_NEIGHBORS_PER_TOPIC = 20
@@ -113,7 +114,7 @@ async function resolveNewIcons (topTopics, lang) {
   if (iconMap.size > 0) {
     const iconByKey = {}
     for (const [tag, url] of iconMap) {
-      iconByKey[`${lang}-${tag}`] = url
+      iconByKey[toHashtagStatsKey(lang, tag)] = url
     }
 
     try {

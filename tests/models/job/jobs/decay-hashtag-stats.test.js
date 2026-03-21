@@ -1,6 +1,7 @@
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
+import { toHashtagStatsKey } from '#helpers/mdb.js'
 import * as decayJob from '#models/job/jobs/decay-hashtag-stats.js'
 
 describe('Job: Decay Hashtag Stats', () => {
@@ -19,7 +20,7 @@ describe('Job: Decay Hashtag Stats', () => {
     const now = Date.now()
     const docs = [
       {
-        key: 'en-fresh',
+        key: toHashtagStatsKey('en', 'fresh'),
         lang: 'en',
         tag: 'fresh',
         count: 1000,
@@ -32,7 +33,7 @@ describe('Job: Decay Hashtag Stats', () => {
     await decayJob.run()
 
     const { results } = await mdb.index('hashtagStats').getDocuments({ limit: 10 })
-    const fresh = results.find(d => d.key === 'en-fresh')
+    const fresh = results.find(d => d.key === toHashtagStatsKey('en', 'fresh'))
 
     assert.equal(fresh.count, 1000)
     assert.deepEqual(fresh.neighbors, [['crypto', 100]])
@@ -42,7 +43,7 @@ describe('Job: Decay Hashtag Stats', () => {
     const now = Date.now()
     const docs = [
       {
-        key: 'en-recent',
+        key: toHashtagStatsKey('en', 'recent'),
         lang: 'en',
         tag: 'recent',
         count: 1000,
@@ -50,7 +51,7 @@ describe('Job: Decay Hashtag Stats', () => {
         statsUpdatedAt: now - (3 * 60 * 60 * 1000) // 3 hours ago
       },
       {
-        key: 'en-old',
+        key: toHashtagStatsKey('en', 'old'),
         lang: 'en',
         tag: 'old',
         count: 1000,
@@ -63,8 +64,8 @@ describe('Job: Decay Hashtag Stats', () => {
     await decayJob.run()
 
     const { results } = await mdb.index('hashtagStats').getDocuments({ limit: 10 })
-    const recent = results.find(d => d.key === 'en-recent')
-    const old = results.find(d => d.key === 'en-old')
+    const recent = results.find(d => d.key === toHashtagStatsKey('en', 'recent'))
+    const old = results.find(d => d.key === toHashtagStatsKey('en', 'old'))
 
     // Recent: 3 hours old
     // decay = 0.97 - (3 * 0.0001) = 0.9697
@@ -88,7 +89,7 @@ describe('Job: Decay Hashtag Stats', () => {
     const now = Date.now()
     const docs = [
       {
-        key: 'en-weak-neighbors',
+        key: toHashtagStatsKey('en', 'weak-neighbors'),
         lang: 'en',
         tag: 'weak-neighbors',
         count: 1000,
@@ -101,7 +102,7 @@ describe('Job: Decay Hashtag Stats', () => {
     await decayJob.run()
 
     const { results } = await mdb.index('hashtagStats').getDocuments({ limit: 10 })
-    const doc = results.find(d => d.key === 'en-weak-neighbors')
+    const doc = results.find(d => d.key === toHashtagStatsKey('en', 'weak-neighbors'))
 
     // 'weak' neighbor with count 1, after decay floor() should be 0 and get pruned
     const weakNeighbor = doc.neighbors.find(n => n[0] === 'weak')
@@ -117,7 +118,7 @@ describe('Job: Decay Hashtag Stats', () => {
     const now = Date.now()
     const docs = [
       {
-        key: 'en-dust',
+        key: toHashtagStatsKey('en', 'dust'),
         lang: 'en',
         tag: 'dust',
         count: 1,
@@ -130,7 +131,7 @@ describe('Job: Decay Hashtag Stats', () => {
     await decayJob.run()
 
     const { results } = await mdb.index('hashtagStats').getDocuments({ limit: 10 })
-    const dust = results.find(d => d.key === 'en-dust')
+    const dust = results.find(d => d.key === toHashtagStatsKey('en', 'dust'))
 
     // count = floor(1 * 0.9697) = 0 -> document deleted
     assert.equal(dust, undefined)
@@ -141,7 +142,7 @@ describe('Job: Decay Hashtag Stats', () => {
     const threeHoursAgo = now - (3 * 60 * 60 * 1000)
     const docs = [
       {
-        key: 'en-survivor',
+        key: toHashtagStatsKey('en', 'survivor'),
         lang: 'en',
         tag: 'survivor',
         count: 1000,
@@ -154,7 +155,7 @@ describe('Job: Decay Hashtag Stats', () => {
     await decayJob.run()
 
     const { results } = await mdb.index('hashtagStats').getDocuments({ limit: 10 })
-    const survivor = results.find(d => d.key === 'en-survivor')
+    const survivor = results.find(d => d.key === toHashtagStatsKey('en', 'survivor'))
 
     assert.ok(survivor.statsUpdatedAt > threeHoursAgo)
   })
@@ -163,7 +164,7 @@ describe('Job: Decay Hashtag Stats', () => {
     const now = Date.now()
     const docs = [
       {
-        key: 'en-ancient',
+        key: toHashtagStatsKey('en', 'ancient'),
         lang: 'en',
         tag: 'ancient',
         count: 10000,
@@ -177,12 +178,36 @@ describe('Job: Decay Hashtag Stats', () => {
     await decayJob.run()
 
     const { results } = await mdb.index('hashtagStats').getDocuments({ limit: 10 })
-    const ancient = results.find(d => d.key === 'en-ancient')
+    const ancient = results.find(d => d.key === toHashtagStatsKey('en', 'ancient'))
 
     // 100 days = 2400 hours
     // decay = 0.97 - (2400 * 0.0001) = 0.73
     // count = floor(10000 * 0.73) ≈ 7299-7300 (float precision)
     assert.ok(ancient.count >= 7299 && ancient.count <= 7300)
+  })
+
+  it('should handle Unicode tags with base64url-encoded keys', async () => {
+    const now = Date.now()
+    const docs = [
+      {
+        key: toHashtagStatsKey('pt', 'café'),
+        lang: 'pt',
+        tag: 'café',
+        count: 1000,
+        neighbors: [],
+        statsUpdatedAt: now - (3 * 60 * 60 * 1000)
+      }
+    ]
+
+    await mdb.index('hashtagStats').addDocuments(docs)
+    await decayJob.run()
+
+    const { results } = await mdb.index('hashtagStats').getDocuments({ limit: 10 })
+    const doc = results.find(d => d.key === toHashtagStatsKey('pt', 'café'))
+
+    assert.ok(doc, 'Unicode tag document should exist after decay')
+    assert.ok(doc.count < 1000)
+    assert.ok(doc.count > 950)
   })
 
   it('should skip gracefully if index does not exist', async () => {

@@ -1,6 +1,7 @@
 import { describe, it, before, beforeEach, after, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
+import { toHashtagStatsKey } from '#helpers/mdb.js'
 import hashtagStatsSchema from '#models/hashtag-stats/schema.js'
 
 describe('Icon Providers', () => {
@@ -294,7 +295,7 @@ describe('Icon Providers', () => {
 
     it('should return icon URL from nearest neighbor when stat provides neighbors', async () => {
       await mdb.index('hashtagStats').addDocuments([
-        { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now(), icon: 'data:image/webp;base64,fakeicon' }
+        { key: toHashtagStatsKey('en', 'crypto'), lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now(), icon: 'data:image/webp;base64,fakeicon' }
       ])
 
       const stat = { neighbors: [['crypto', 50], ['blockchain', 20]] }
@@ -306,7 +307,7 @@ describe('Icon Providers', () => {
 
     it('should return null when no neighbor has a cached icon', async () => {
       await mdb.index('hashtagStats').addDocuments([
-        { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now() }
+        { key: toHashtagStatsKey('en', 'crypto'), lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now() }
       ])
 
       const stat = { neighbors: [['crypto', 50]] }
@@ -322,7 +323,7 @@ describe('Icon Providers', () => {
     it('should fetch topic doc from hashtagStats when stat has no neighbors', async () => {
       await mdb.index('hashtagStats').addDocuments([
         {
-          key: 'en-ethereum',
+          key: toHashtagStatsKey('en', 'ethereum'),
           lang: 'en',
           tag: 'ethereum',
           count: 90,
@@ -330,7 +331,7 @@ describe('Icon Providers', () => {
           statsUpdatedAt: Date.now()
         },
         {
-          key: 'en-crypto',
+          key: toHashtagStatsKey('en', 'crypto'),
           lang: 'en',
           tag: 'crypto',
           count: 80,

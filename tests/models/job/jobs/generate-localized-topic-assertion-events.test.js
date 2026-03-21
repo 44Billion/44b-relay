@@ -1,6 +1,7 @@
 import { describe, it, before, beforeEach, after, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
+import { toHashtagStatsKey } from '#helpers/mdb.js'
 import hashtagStatsSchema from '#models/hashtag-stats/schema.js'
 import { patchIcons } from '#models/hashtag-stats/dao.js'
 import { eventKinds } from '#constants/event.js'
@@ -80,7 +81,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
 
   it('should skip topics with count below MIN_TOPIC_COUNT', async () => {
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-lowcount', lang: 'en', tag: 'lowcount', count: 2, neighbors: [], statsUpdatedAt: Date.now() }
+      { key: toHashtagStatsKey('en', 'lowcount'), lang: 'en', tag: 'lowcount', count: 2, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     await generateJob.run()
@@ -92,7 +93,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
 
     await mdb.index('hashtagStats').addDocuments([
       {
-        key: 'en-bitcoin',
+        key: toHashtagStatsKey('en', 'bitcoin'),
         lang: 'en',
         tag: 'bitcoin',
         count: 100,
@@ -100,7 +101,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
         statsUpdatedAt: Date.now()
       },
       {
-        key: 'en-crypto',
+        key: toHashtagStatsKey('en', 'crypto'),
         lang: 'en',
         tag: 'crypto',
         count: 80,
@@ -168,7 +169,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
   it('should include icon tag when icon is resolved for a topic', async () => {
     await mdb.index('hashtagStats').addDocuments([
       {
-        key: 'en-pokemon',
+        key: toHashtagStatsKey('en', 'pokemon'),
         lang: 'en',
         tag: 'pokemon',
         count: 50,
@@ -195,7 +196,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
   it('should use cached icon from hashtagStats when available', async () => {
     await mdb.index('hashtagStats').addDocuments([
       {
-        key: 'en-bitcoin',
+        key: toHashtagStatsKey('en', 'bitcoin'),
         lang: 'en',
         tag: 'bitcoin',
         count: 100,
@@ -243,7 +244,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
     // Seed fresh hashtagStats (different topic)
     await mdb.index('hashtagStats').addDocuments([
       {
-        key: 'en-newtopic',
+        key: toHashtagStatsKey('en', 'newtopic'),
         lang: 'en',
         tag: 'newtopic',
         count: 50,
@@ -271,8 +272,8 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
 
   it('should process multiple languages independently', async () => {
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-test', lang: 'en', tag: 'test', count: 10, neighbors: [], statsUpdatedAt: Date.now() },
-      { key: 'pt-teste', lang: 'pt', tag: 'teste', count: 15, neighbors: [], statsUpdatedAt: Date.now() }
+      { key: toHashtagStatsKey('en', 'test'), lang: 'en', tag: 'test', count: 10, neighbors: [], statsUpdatedAt: Date.now() },
+      { key: toHashtagStatsKey('pt', 'teste'), lang: 'pt', tag: 'teste', count: 15, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     await generateJob.run()
@@ -306,44 +307,44 @@ describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () 
   it('should patch multiple icons in a single call via patchIcons DAO', async () => {
     // Seed two documents
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], statsUpdatedAt: Date.now() },
-      { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now() }
+      { key: toHashtagStatsKey('en', 'bitcoin'), lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], statsUpdatedAt: Date.now() },
+      { key: toHashtagStatsKey('en', 'crypto'), lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     // Use the DAO function
     await patchIcons({
-      'en-bitcoin': 'https://example.com/bitcoin.png',
-      'en-crypto': 'https://example.com/crypto.png'
+      [toHashtagStatsKey('en', 'bitcoin')]: 'https://example.com/bitcoin.png',
+      [toHashtagStatsKey('en', 'crypto')]: 'https://example.com/crypto.png'
     })
 
     // Verify icons were set
-    const btc = await mdb.index('hashtagStats').getDocument('en-bitcoin')
+    const btc = await mdb.index('hashtagStats').getDocument(toHashtagStatsKey('en', 'bitcoin'))
     assert.equal(btc.icon, 'https://example.com/bitcoin.png')
 
-    const crypto = await mdb.index('hashtagStats').getDocument('en-crypto')
+    const crypto = await mdb.index('hashtagStats').getDocument(toHashtagStatsKey('en', 'crypto'))
     assert.equal(crypto.icon, 'https://example.com/crypto.png')
   })
 
   it('should NOT insert phantom docs for keys that do not exist', async () => {
     // Seed only one document
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], statsUpdatedAt: Date.now() }
+      { key: toHashtagStatsKey('en', 'bitcoin'), lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     // Use the DAO function with a map that includes a non-existent key
     await patchIcons({
-      'en-bitcoin': 'https://example.com/bitcoin.png',
-      'en-nonexistent': 'https://example.com/nonexistent.png'
+      [toHashtagStatsKey('en', 'bitcoin')]: 'https://example.com/bitcoin.png',
+      [toHashtagStatsKey('en', 'nonexistent')]: 'https://example.com/nonexistent.png'
     })
 
     // Existing doc should be updated
-    const btc = await mdb.index('hashtagStats').getDocument('en-bitcoin')
+    const btc = await mdb.index('hashtagStats').getDocument(toHashtagStatsKey('en', 'bitcoin'))
     assert.equal(btc.icon, 'https://example.com/bitcoin.png')
 
     // Non-existent key should NOT have been created
     try {
-      await mdb.index('hashtagStats').getDocument('en-nonexistent')
-      assert.fail('Should not find a phantom document for en-nonexistent')
+      await mdb.index('hashtagStats').getDocument(toHashtagStatsKey('en', 'nonexistent'))
+      assert.fail('Should not find a phantom document for nonexistent key')
     } catch (err) {
       // Expected: document_not_found
       assert.ok(
@@ -356,23 +357,23 @@ describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () 
   it('should only patch docs matched by the filter', async () => {
     // Seed three documents
     await mdb.index('hashtagStats').addDocuments([
-      { key: 'en-bitcoin', lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], statsUpdatedAt: Date.now() },
-      { key: 'en-crypto', lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now() },
-      { key: 'en-nft', lang: 'en', tag: 'nft', count: 60, neighbors: [], statsUpdatedAt: Date.now() }
+      { key: toHashtagStatsKey('en', 'bitcoin'), lang: 'en', tag: 'bitcoin', count: 100, neighbors: [], statsUpdatedAt: Date.now() },
+      { key: toHashtagStatsKey('en', 'crypto'), lang: 'en', tag: 'crypto', count: 80, neighbors: [], statsUpdatedAt: Date.now() },
+      { key: toHashtagStatsKey('en', 'nft'), lang: 'en', tag: 'nft', count: 60, neighbors: [], statsUpdatedAt: Date.now() }
     ])
 
     // Use the DAO function to patch only bitcoin
-    await patchIcons({ 'en-bitcoin': 'https://example.com/bitcoin.png' })
+    await patchIcons({ [toHashtagStatsKey('en', 'bitcoin')]: 'https://example.com/bitcoin.png' })
 
     // bitcoin should have icon
-    const btc = await mdb.index('hashtagStats').getDocument('en-bitcoin')
+    const btc = await mdb.index('hashtagStats').getDocument(toHashtagStatsKey('en', 'bitcoin'))
     assert.equal(btc.icon, 'https://example.com/bitcoin.png')
 
     // crypto and nft should NOT have icon
-    const crypto = await mdb.index('hashtagStats').getDocument('en-crypto')
+    const crypto = await mdb.index('hashtagStats').getDocument(toHashtagStatsKey('en', 'crypto'))
     assert.equal(crypto.icon, undefined)
 
-    const nft = await mdb.index('hashtagStats').getDocument('en-nft')
+    const nft = await mdb.index('hashtagStats').getDocument(toHashtagStatsKey('en', 'nft'))
     assert.equal(nft.icon, undefined)
   })
 
@@ -380,7 +381,7 @@ describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () 
     const now = Date.now()
     await mdb.index('hashtagStats').addDocuments([
       {
-        key: 'en-bitcoin',
+        key: toHashtagStatsKey('en', 'bitcoin'),
         lang: 'en',
         tag: 'bitcoin',
         count: 100,
@@ -390,9 +391,9 @@ describe('hashtagStats icon batch persistence (real MeiliSearch, no mocks)', () 
     ])
 
     // Use the DAO function
-    await patchIcons({ 'en-bitcoin': 'https://example.com/bitcoin.png' })
+    await patchIcons({ [toHashtagStatsKey('en', 'bitcoin')]: 'https://example.com/bitcoin.png' })
 
-    const doc = await mdb.index('hashtagStats').getDocument('en-bitcoin')
+    const doc = await mdb.index('hashtagStats').getDocument(toHashtagStatsKey('en', 'bitcoin'))
     assert.equal(doc.icon, 'https://example.com/bitcoin.png')
     assert.equal(doc.lang, 'en')
     assert.equal(doc.tag, 'bitcoin')
