@@ -6,7 +6,7 @@ const LIMIT_MULTIPLIER = process.env.IS_INTEGRATION_TEST === 'true' ? 1000 : 1
 
 function rateLimitNostrMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  const { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: 12 * LIMIT_MULTIPLIER, windowSeconds: 2 })
+  const { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: 20 * LIMIT_MULTIPLIER, windowSeconds: 2 })
 
   return { isRateLimited, nextWindow }
 }
@@ -34,10 +34,10 @@ function rateLimitNostrReqMessageByWsConnection (ws, subscriptionId) {
 }
 
 // considering MAX_OPEN_CONNECTIONS_PER_PUBKEY = 15 and MAX_OPEN_CONNECTIONS = 30 per ip
-// if client does 15 conn per pubkey (spam) -> 2 pubkeys per ip -> 10 subs per pubkey -> 20 subs total per ip
-// (above 10 per conn would be 150 per pubkey so 300 total)
-const MAX_SUBSCRIPTIONS_PER_PUBKEY = MAX_SUBSCRIPTIONS_PER_WS_CONNECTION
-const MAX_FILTERS_PER_PUBKEY = MAX_SUBSCRIPTIONS_PER_WS_CONNECTION
+// per-connection limit is 10 subs, so a pubkey needs only 5 connections to reach 50 subs
+// worst case per ip: 30 conns × 10 subs/conn = 300 subs, but capped at 50/pubkey
+const MAX_SUBSCRIPTIONS_PER_PUBKEY = 50 * LIMIT_MULTIPLIER
+const MAX_FILTERS_PER_PUBKEY = 50 * LIMIT_MULTIPLIER
 // this may be slow because of wss.clients loop
 function rateLimitNostrReqMessageByPubkey (wss, ws, subscriptionId, filters) {
   if (!isType(subscriptionId, 'string')) return { isRateLimited: false } // it will be invalid ahead at ReqHandler
@@ -77,18 +77,56 @@ function rateLimitNostrEventMessageByPubkey (ws, event) {
   let isRateLimited = false
   let nextWindow
   switch (event.kind) {
+    // 7/min
     case eventKinds.METADATA:
       ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 7 * LIMIT_MULTIPLIER, windowMinutes: 1 }))
       break
+    // 10/2min, burst 1/3s
     case eventKinds.TEXT_NOTE:
-      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::a`, reqsPerWindow: 7 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
-      if (!isRateLimited) ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::b`, reqsPerWindow: 1 * LIMIT_MULTIPLIER, windowSeconds: 5 }))
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::a`, reqsPerWindow: 10 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
+      if (!isRateLimited) ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::b`, reqsPerWindow: 1 * LIMIT_MULTIPLIER, windowSeconds: 3 }))
       break
+    // 5/10min
     case eventKinds.RECOMMEND_RELAY:
       ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 5 * LIMIT_MULTIPLIER, windowMinutes: 10 }))
       break
+    // 25/2min
     case eventKinds.FOLLOWS:
       ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 25 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
+      break
+    // 20/min
+    case eventKinds.DELETION:
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 20 * LIMIT_MULTIPLIER, windowMinutes: 1 }))
+      break
+    // 10/min, burst 1/3s (shared bucket for both kinds)
+    case eventKinds.REPOST:
+    case eventKinds.GENERIC_REPOST:
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::repost::${pubkey}::a`, reqsPerWindow: 10 * LIMIT_MULTIPLIER, windowMinutes: 1 }))
+      if (!isRateLimited) ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::repost::${pubkey}::b`, reqsPerWindow: 1 * LIMIT_MULTIPLIER, windowSeconds: 3 }))
+      break
+    // 15/min, burst 1/2s
+    case eventKinds.REACTION:
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::a`, reqsPerWindow: 15 * LIMIT_MULTIPLIER, windowMinutes: 1 }))
+      if (!isRateLimited) ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::b`, reqsPerWindow: 1 * LIMIT_MULTIPLIER, windowSeconds: 2 }))
+      break
+    // 10/2min, burst 1/3s
+    case eventKinds.COMMENT:
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::a`, reqsPerWindow: 10 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
+      if (!isRateLimited) ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::b`, reqsPerWindow: 1 * LIMIT_MULTIPLIER, windowSeconds: 3 }))
+      break
+    // 5/10min
+    case eventKinds.LONG_FORM_CONTENT:
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 5 * LIMIT_MULTIPLIER, windowMinutes: 10 }))
+      break
+    // 30/min, burst 2/s
+    case eventKinds.ENCRYPTED_DIRECT_MESSAGE:
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::a`, reqsPerWindow: 30 * LIMIT_MULTIPLIER, windowMinutes: 1 }))
+      if (!isRateLimited) ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::b`, reqsPerWindow: 2 * LIMIT_MULTIPLIER, windowSeconds: 1 }))
+      break
+    // 15/min, burst 2/s
+    default:
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::default::${pubkey}::a`, reqsPerWindow: 15 * LIMIT_MULTIPLIER, windowMinutes: 1 }))
+      if (!isRateLimited) ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::default::${pubkey}::b`, reqsPerWindow: 2 * LIMIT_MULTIPLIER, windowSeconds: 1 }))
       break
   }
 

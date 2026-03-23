@@ -17,14 +17,14 @@ describe('Nostr Message Limiter', () => {
       const pubkey = 'pubkey1'
       const ws = { ip: '1.2.3.4', nostr: { pubkey } }
 
-      // Limit is 12 per 2 seconds
-      for (let i = 0; i < 12; i++) {
+      // Limit is 20 per 2 seconds
+      for (let i = 0; i < 20; i++) {
         const { isRateLimited } = limiter.rateLimitNostrMessageByPubkey(ws)
         assert.equal(isRateLimited, false, `Request ${i + 1} should not be limited`)
       }
 
       const { isRateLimited, nextWindow } = limiter.rateLimitNostrMessageByPubkey(ws)
-      assert.equal(isRateLimited, true, 'Request 13 should be limited')
+      assert.equal(isRateLimited, true, 'Request 21 should be limited')
       assert.ok(nextWindow instanceof Date, 'nextWindow should be a Date')
       assert.ok(nextWindow.getTime() > Date.now(), 'nextWindow should be in the future')
     })
@@ -33,14 +33,14 @@ describe('Nostr Message Limiter', () => {
       const ip = '1.2.3.5'
       const ws = { ip, nostr: {} }
 
-      // Limit is 12 per 2 seconds
-      for (let i = 0; i < 12; i++) {
+      // Limit is 20 per 2 seconds
+      for (let i = 0; i < 20; i++) {
         const { isRateLimited } = limiter.rateLimitNostrMessageByPubkey(ws)
         assert.equal(isRateLimited, false, `Request ${i + 1} should not be limited`)
       }
 
       const { isRateLimited, nextWindow } = limiter.rateLimitNostrMessageByPubkey(ws)
-      assert.equal(isRateLimited, true, 'Request 13 should be limited')
+      assert.equal(isRateLimited, true, 'Request 21 should be limited')
       assert.ok(nextWindow instanceof Date, 'nextWindow should be a Date')
     })
   })
@@ -101,11 +101,10 @@ describe('Nostr Message Limiter', () => {
   describe('rateLimitNostrReqMessageByPubkey', () => {
     it('should limit subscriptions globally per pubkey', () => {
       const pubkey = 'pubkey_global_limit'
-      // Populate 10 subs.
-      // MAX_SUBSCRIPTIONS_PER_PUBKEY = 10 (same as per connection)
+      // MAX_SUBSCRIPTIONS_PER_PUBKEY = 50
       const clients = new Set()
       const wsFull = { nostr: { pubkey, subscriptions: {} } }
-      for (let i = 0; i < 10; i++) wsFull.nostr.subscriptions[`full_${i}`] = { filters: [{}] }
+      for (let i = 0; i < 50; i++) wsFull.nostr.subscriptions[`full_${i}`] = { filters: [{}] }
       clients.add(wsFull)
       const wss = { clients }
 
@@ -114,9 +113,21 @@ describe('Nostr Message Limiter', () => {
 
       // Test Replace
       res = limiter.rateLimitNostrReqMessageByPubkey(wss, wsFull, 'full_0', [{}])
-      // 10 filters total. Replacing 1 filter with 1 filter -> Total 10.
-      // Limit is 10. if >= 10, isRateLimited = true.
+      // 50 filters total. Replacing 1 filter with 1 filter -> Total 50.
+      // Limit is 50. if >= 50, isRateLimited = true.
       assert.equal(res.isRateLimited, true)
+    })
+
+    it('should allow subscriptions under the limit', () => {
+      const pubkey = 'pubkey_under_limit'
+      const clients = new Set()
+      const ws = { nostr: { pubkey, subscriptions: {} } }
+      for (let i = 0; i < 10; i++) ws.nostr.subscriptions[`sub_${i}`] = { filters: [{}] }
+      clients.add(ws)
+      const wss = { clients }
+
+      const res = limiter.rateLimitNostrReqMessageByPubkey(wss, ws, 'newSub', [{}])
+      assert.equal(res.isRateLimited, false)
     })
   })
 
@@ -141,7 +152,7 @@ describe('Nostr Message Limiter', () => {
       const ws = { nostr: { pubkey } }
       const event = { kind: eventKinds.TEXT_NOTE }
 
-      // Limit b: 1 per 5 seconds (burst)
+      // Limit b: 1 per 3 seconds (burst)
 
       // 1st request - ok
       let res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
@@ -152,10 +163,112 @@ describe('Nostr Message Limiter', () => {
       assert.equal(res.isRateLimited, true)
       assert.ok(res.nextWindow instanceof Date, 'nextWindow should be a Date when rate limited')
 
-      // Advance 5.1s
-      mock.timers.tick(5100)
+      // Advance 3.1s
+      mock.timers.tick(3100)
 
       // 3rd request - ok
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, false)
+    })
+
+    it('should limit reaction events', () => {
+      const pubkey = 'reaction_pub'
+      const ws = { nostr: { pubkey } }
+      const event = { kind: eventKinds.REACTION }
+
+      // Burst: 1 per 2 seconds
+      let res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, false)
+
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, true)
+
+      mock.timers.tick(2100)
+
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, false)
+    })
+
+    it('should limit repost events', () => {
+      const pubkey = 'repost_pub'
+      const ws = { nostr: { pubkey } }
+      const event = { kind: eventKinds.REPOST }
+
+      // Burst: 1 per 3 seconds
+      let res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, false)
+
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, true)
+
+      mock.timers.tick(3100)
+
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, false)
+    })
+
+    it('should share repost limit between REPOST and GENERIC_REPOST', () => {
+      const pubkey = 'repost_shared_pub'
+      const ws = { nostr: { pubkey } }
+
+      // kind:6 consumes the burst slot
+      let res = limiter.rateLimitNostrEventMessageByPubkey(ws, { kind: eventKinds.REPOST })
+      assert.equal(res.isRateLimited, false)
+
+      // kind:16 immediately after should hit the shared burst limit
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, { kind: eventKinds.GENERIC_REPOST })
+      assert.equal(res.isRateLimited, true)
+    })
+
+    it('should limit comment events', () => {
+      const pubkey = 'comment_pub'
+      const ws = { nostr: { pubkey } }
+      const event = { kind: eventKinds.COMMENT }
+
+      // Burst: 1 per 3 seconds
+      let res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, false)
+
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, true)
+
+      mock.timers.tick(3100)
+
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, false)
+    })
+
+    it('should limit deletion events', () => {
+      const pubkey = 'deletion_pub'
+      const ws = { nostr: { pubkey } }
+      const event = { kind: eventKinds.DELETION }
+
+      // 20 per 1 min
+      for (let i = 0; i < 20; i++) {
+        const res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+        assert.equal(res.isRateLimited, false)
+      }
+      const res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, true)
+    })
+
+    it('should limit unknown kinds via default catch-all', () => {
+      const pubkey = 'unknown_pub'
+      const ws = { nostr: { pubkey } }
+      const event = { kind: 99999 }
+
+      // Burst: 2 per 1 second
+      let res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, false)
+
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, false)
+
+      res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
+      assert.equal(res.isRateLimited, true)
+
+      mock.timers.tick(1100)
+
       res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
       assert.equal(res.isRateLimited, false)
     })
