@@ -16,7 +16,8 @@ const MIN_NEIGHBOR_COUNT = 2
 const MIN_TAG_COUNT_FOR_INFERENCE = 3
 const STRONG_TOKEN_MIN_LENGTH = 5
 const MAX_TOPICS = 12
-const SEMANTIC_SIMILARITY_THRESHOLD = 0.45
+const MIN_SOURCE_COUNT_FOR_EXPANSION = 10
+const SEMANTIC_SIMILARITY_THRESHOLD = 0.60
 const MAX_SEMANTIC_TOPICS = 3
 
 // --- Cache ---
@@ -85,11 +86,12 @@ async function maybeRefreshCache (lang) {
  * Expands topics by adding neighbors above the directional ratio threshold.
  * Iterates over a snapshot of current topics to avoid infinite expansion.
  */
-function expandNeighbors (topics, langCache) {
-  const snapshot = [...topics]
+function expandNeighbors (topics, langCache, tagsToExpand) {
+  const snapshot = tagsToExpand || [...topics]
   for (const tag of snapshot) {
     const doc = langCache.byTag.get(tag)
     if (!doc?.neighbors?.length || !doc.count) continue
+    if (doc.count < MIN_SOURCE_COUNT_FOR_EXPANSION) continue
 
     for (const [neighborTag, neighborCount] of doc.neighbors) {
       if (topics.has(neighborTag)) continue
@@ -122,6 +124,7 @@ export async function detectTopics ({ language, hashtags = [], text }) {
     expandNeighbors(topics, langCache)
 
     // Phase 3: Synonym expansion (cache-only)
+    const topicsBeforePhase3 = new Set(topics)
     const currentTopics = [...topics]
     for (const tag of currentTopics) {
       const doc = langCache.byTag.get(tag)
@@ -250,8 +253,11 @@ export async function detectTopics ({ language, hashtags = [], text }) {
       }
     }
 
-    // Expand neighbors for any topics added in Phases 3-4 (e.g. text-inferred topics)
-    expandNeighbors(topics, langCache)
+    // Expand neighbors only for topics newly added in Phases 3-4 (not transitively)
+    const newlyAdded = [...topics].filter(t => !topicsBeforePhase3.has(t))
+    if (newlyAdded.length > 0) {
+      expandNeighbors(topics, langCache, newlyAdded)
+    }
 
     // Phase 5: Semantic text inference (embedding-based)
     // Only runs when: no hashtags, Phase 4 found nothing, text exists, cache has embeddings
