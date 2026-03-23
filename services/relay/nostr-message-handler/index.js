@@ -1,4 +1,4 @@
-import { sendNotice, sendCommandResult } from '#helpers/message.js'
+import { sendNotice, sendCommandResult, sendClosed } from '#helpers/message.js'
 import { nostrClientMessages } from '#constants/message.js'
 import AuthHandler from './auth-handler.js'
 import EventHandler from './event-handler.js'
@@ -15,6 +15,7 @@ import {
 // import { isAuthenticated } from '#services/relay/authenticator.js'
 import { imageDataUrlRegExp } from '#constants/url.js'
 import { eventKinds } from '#constants/event.js'
+import { isTorExitNode } from '#helpers/tor.js'
 
 class NostrMessageHandler {
   constructor ({ wss, ws, nostrMessage }) {
@@ -177,42 +178,71 @@ function isntLastChunk (tags = []) {
 
 function rateLimitNostrMessage ({ wss, ws, nostrMessage }) {
   const nostrClientMessage = nostrMessage[0]
-  const event = nostrClientMessage === nostrClientMessages.EVENT ? nostrMessage[1] : {}
 
-  let { isRateLimited } = rateLimitNostrMessageByPubkey(ws)
+  // Global rate limit check
+  let { isRateLimited, nextWindow } = rateLimitNostrMessageByPubkey(ws)
   if (isRateLimited) {
-    sendCommandResult({ ws, event, isSuccess: false, message: 'rate-limited: slow down there chief' })
+    sendRateLimitResponse({ ws, nostrMessage, reason: 'too many messages', nextWindow })
     return { isRateLimited }
   }
 
-  let message
+  // Per-message-type rate limit check
   switch (nostrClientMessage) {
     case nostrClientMessages.AUTH:
-      ({ isRateLimited } = rateLimitNostrAuthMessageByPubkey(ws))
-      if (isRateLimited) message = 'slow down there chief'
+      ({ isRateLimited, nextWindow } = rateLimitNostrAuthMessageByPubkey(ws))
+      if (isRateLimited) {
+        sendRateLimitResponse({ ws, nostrMessage, reason: 'too many auth attempts', nextWindow })
+        return { isRateLimited }
+      }
       break
     case nostrClientMessages.REQ: {
       const [, subscriptionId, ...filters] = nostrMessage
       ;({ isRateLimited } = rateLimitNostrReqMessageByWsConnection(ws, subscriptionId))
-      if (isRateLimited) message = 'slow down there chief'
-      else {
-        ;({ isRateLimited } = rateLimitNostrReqMessageByPubkey(wss, ws, subscriptionId, filters))
-        if (isRateLimited) message = 'slow down there chief'
+      if (isRateLimited) {
+        sendRateLimitResponse({ ws, nostrMessage, reason: 'too many subscriptions on this connection' })
+        return { isRateLimited }
+      }
+      ;({ isRateLimited } = rateLimitNostrReqMessageByPubkey(wss, ws, subscriptionId, filters))
+      if (isRateLimited) {
+        sendRateLimitResponse({ ws, nostrMessage, reason: 'too many subscriptions or filters for this pubkey' })
+        return { isRateLimited }
       }
       break
     }
     case nostrClientMessages.EVENT: {
       const event = nostrMessage[1] ?? {}
-      ;({ isRateLimited } = rateLimitNostrEventMessageByPubkey(ws, event))
-      if (isRateLimited) message = 'slow down there chief'
+      ;({ isRateLimited, nextWindow } = rateLimitNostrEventMessageByPubkey(ws, event))
+      if (isRateLimited) {
+        sendRateLimitResponse({ ws, nostrMessage, reason: `too many kind:${event.kind} events`, nextWindow })
+        return { isRateLimited }
+      }
       break
     }
   }
 
-  if (!message) return { isRateLimited: false }
+  return { isRateLimited: false }
+}
 
-  sendCommandResult({ ws, event, isSuccess: false, message: `rate-limited: ${message}` })
-  return { isRateLimited: true }
+function sendRateLimitResponse ({ ws, nostrMessage, reason, nextWindow }) {
+  const torNote = isTorExitNode(ws.ip) ? ' (your IP is a shared Tor exit node, which may cause faster rate limiting)' : ''
+  const fullMessage = `rate-limited: ${reason}${torNote}`
+  // retry_after is the number of seconds to wait
+  const extra = nextWindow ? { retry_after: Math.ceil((nextWindow.getTime() - Date.now()) / 1000) } : undefined
+  const nostrClientMessage = nostrMessage[0]
+
+  switch (nostrClientMessage) {
+    case nostrClientMessages.REQ:
+    case nostrClientMessages.COUNT: {
+      const subscriptionId = nostrMessage[1]
+      return sendClosed({ ws, subscriptionId, message: fullMessage, extra })
+    }
+    default: {
+      const event = (nostrClientMessage === nostrClientMessages.EVENT || nostrClientMessage === nostrClientMessages.AUTH)
+        ? (nostrMessage[1] ?? {})
+        : {}
+      return sendCommandResult({ ws, event, isSuccess: false, message: fullMessage, extra })
+    }
+  }
 }
 // https://github.com/nostr-protocol/nips/issues/177
 // PoW for unauthenticated

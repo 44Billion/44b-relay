@@ -6,18 +6,18 @@ const LIMIT_MULTIPLIER = process.env.IS_INTEGRATION_TEST === 'true' ? 1000 : 1
 
 function rateLimitNostrMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  const { isRateLimited } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: 12 * LIMIT_MULTIPLIER, windowSeconds: 2 })
+  const { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: 12 * LIMIT_MULTIPLIER, windowSeconds: 2 })
 
-  return { isRateLimited }
+  return { isRateLimited, nextWindow }
 }
 
 function rateLimitNostrAuthMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  let { isRateLimited } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::a', reqsPerWindow: 20 * LIMIT_MULTIPLIER, windowMinutes: 1 })
-  if (isRateLimited) return { isRateLimited }
-  ;({ isRateLimited } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::b', reqsPerWindow: 2 * LIMIT_MULTIPLIER, windowSeconds: 1 }))
+  let { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::a', reqsPerWindow: 20 * LIMIT_MULTIPLIER, windowMinutes: 1 })
+  if (isRateLimited) return { isRateLimited, nextWindow }
+  ;({ isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::b', reqsPerWindow: 2 * LIMIT_MULTIPLIER, windowSeconds: 1 }))
 
-  return { isRateLimited }
+  return { isRateLimited, nextWindow }
 }
 
 // considering MAX_OPEN_CONNECTIONS = 30 per ip
@@ -75,23 +75,24 @@ function rateLimitNostrEventMessageByPubkey (ws, event) {
   if (!pubkey || !event || !isType(event, 'object')) return { isRateLimited: false }
 
   let isRateLimited = false
+  let nextWindow
   switch (event.kind) {
     case eventKinds.METADATA:
-      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 7 * LIMIT_MULTIPLIER, windowMinutes: 1 }))
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 7 * LIMIT_MULTIPLIER, windowMinutes: 1 }))
       break
     case eventKinds.TEXT_NOTE:
-      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::a`, reqsPerWindow: 7 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
-      if (!isRateLimited) ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::b`, reqsPerWindow: 1 * LIMIT_MULTIPLIER, windowSeconds: 5 }))
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::a`, reqsPerWindow: 7 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
+      if (!isRateLimited) ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}::b`, reqsPerWindow: 1 * LIMIT_MULTIPLIER, windowSeconds: 5 }))
       break
     case eventKinds.RECOMMEND_RELAY:
-      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 5 * LIMIT_MULTIPLIER, windowMinutes: 10 }))
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 5 * LIMIT_MULTIPLIER, windowMinutes: 10 }))
       break
     case eventKinds.FOLLOWS:
-      ({ isRateLimited } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 25 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
+      ({ isRateLimited, nextWindow } = rateLimitByKey({ key: `event::${event.kind}::${pubkey}`, reqsPerWindow: 25 * LIMIT_MULTIPLIER, windowMinutes: 2 }))
       break
   }
 
-  return { isRateLimited }
+  return { isRateLimited, nextWindow }
 }
 
 export {

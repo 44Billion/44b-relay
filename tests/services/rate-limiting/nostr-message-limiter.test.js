@@ -23,8 +23,10 @@ describe('Nostr Message Limiter', () => {
         assert.equal(isRateLimited, false, `Request ${i + 1} should not be limited`)
       }
 
-      const { isRateLimited } = limiter.rateLimitNostrMessageByPubkey(ws)
+      const { isRateLimited, nextWindow } = limiter.rateLimitNostrMessageByPubkey(ws)
       assert.equal(isRateLimited, true, 'Request 13 should be limited')
+      assert.ok(nextWindow instanceof Date, 'nextWindow should be a Date')
+      assert.ok(nextWindow.getTime() > Date.now(), 'nextWindow should be in the future')
     })
 
     it('should limit based on ip if pubkey is missing', () => {
@@ -37,13 +39,14 @@ describe('Nostr Message Limiter', () => {
         assert.equal(isRateLimited, false, `Request ${i + 1} should not be limited`)
       }
 
-      const { isRateLimited } = limiter.rateLimitNostrMessageByPubkey(ws)
+      const { isRateLimited, nextWindow } = limiter.rateLimitNostrMessageByPubkey(ws)
       assert.equal(isRateLimited, true, 'Request 13 should be limited')
+      assert.ok(nextWindow instanceof Date, 'nextWindow should be a Date')
     })
   })
 
   describe('rateLimitNostrAuthMessageByPubkey', () => {
-    it('should limit auth messages', () => {
+    it('should limit auth messages and return nextWindow', () => {
       const pubkey = 'auth_pubkey'
       const ws = { ip: '1.1.1.1', nostr: { pubkey } }
 
@@ -61,6 +64,7 @@ describe('Nostr Message Limiter', () => {
       // Request 3 (should hit burst limit)
       res = limiter.rateLimitNostrAuthMessageByPubkey(ws)
       assert.equal(res.isRateLimited, true)
+      assert.ok(res.nextWindow instanceof Date, 'nextWindow should be a Date when rate limited')
 
       // Advance time by 1.1 second
       mock.timers.tick(1100)
@@ -117,7 +121,7 @@ describe('Nostr Message Limiter', () => {
   })
 
   describe('rateLimitNostrEventMessageByPubkey', () => {
-    it('should limit metadata events', () => {
+    it('should limit metadata events and return nextWindow', () => {
       const pubkey = 'meta_pub'
       const ws = { nostr: { pubkey } }
       const event = { kind: eventKinds.METADATA }
@@ -129,9 +133,10 @@ describe('Nostr Message Limiter', () => {
       }
       const res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
       assert.equal(res.isRateLimited, true)
+      assert.ok(res.nextWindow instanceof Date, 'nextWindow should be a Date when rate limited')
     })
 
-    it('should limit text note events', () => {
+    it('should limit text note events and return nextWindow', () => {
       const pubkey = 'note_pub'
       const ws = { nostr: { pubkey } }
       const event = { kind: eventKinds.TEXT_NOTE }
@@ -145,6 +150,7 @@ describe('Nostr Message Limiter', () => {
       // 2nd request immediately - fail burst
       res = limiter.rateLimitNostrEventMessageByPubkey(ws, event)
       assert.equal(res.isRateLimited, true)
+      assert.ok(res.nextWindow instanceof Date, 'nextWindow should be a Date when rate limited')
 
       // Advance 5.1s
       mock.timers.tick(5100)
