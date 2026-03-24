@@ -324,8 +324,8 @@ describe('detectTopics', () => {
       assert.ok(result)
       assert.ok(result.includes('bitcoin'))
       assert.ok(result.includes('crypto'))
-      // blockchain is a neighbor of both bitcoin (2000/5000=40%) and crypto (1500/4000=37.5%) → expanded
-      assert.ok(result.includes('blockchain'))
+      // blockchain is a neighbor of both but below the 80% second-hop threshold → NOT expanded
+      assert.ok(!result.includes('blockchain'))
     })
 
     it('should NOT infer topics from text below count threshold', async () => {

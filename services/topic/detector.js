@@ -12,6 +12,7 @@ import { areMorphologicalSynonyms } from '#helpers/hashtag.js'
 const CACHE_SIZE_PER_LANG = 500
 const CACHE_REFRESH_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 const DIRECTIONAL_RATIO = 0.3
+const SECOND_HOP_RATIO = 0.8
 const MIN_NEIGHBOR_COUNT = 2
 const MIN_TAG_COUNT_FOR_INFERENCE = 3
 const STRONG_TOKEN_MIN_LENGTH = 5
@@ -87,8 +88,8 @@ async function maybeRefreshCache (lang) {
  * Expands topics by adding neighbors above the directional ratio threshold.
  * Iterates over a snapshot of current topics to avoid infinite expansion.
  */
-function expandNeighbors (topics, langCache, tagsToExpand) {
-  const snapshot = tagsToExpand || [...topics]
+function expandNeighbors (topics, langCache, { ratio = DIRECTIONAL_RATIO } = {}) {
+  const snapshot = [...topics]
   for (const tag of snapshot) {
     const doc = langCache.byTag.get(tag)
     if (!doc?.neighbors?.length || !doc.count) continue
@@ -97,7 +98,7 @@ function expandNeighbors (topics, langCache, tagsToExpand) {
     for (const [neighborTag, neighborCount] of doc.neighbors) {
       if (topics.has(neighborTag)) continue
       if (neighborCount < MIN_NEIGHBOR_COUNT) continue
-      if (neighborCount / doc.count >= DIRECTIONAL_RATIO) {
+      if (neighborCount / doc.count >= ratio) {
         topics.add(neighborTag)
       }
     }
@@ -125,7 +126,6 @@ export async function detectTopics ({ language, hashtags = [], text }) {
     expandNeighbors(topics, langCache)
 
     // Phase 3: Synonym expansion (cache-only)
-    const topicsBeforePhase3 = new Set(topics)
     const currentTopics = [...topics]
     for (const tag of currentTopics) {
       const doc = langCache.byTag.get(tag)
@@ -254,11 +254,8 @@ export async function detectTopics ({ language, hashtags = [], text }) {
       }
     }
 
-    // Expand neighbors only for topics newly added in Phases 3-4 (not transitively)
-    const newlyAdded = [...topics].filter(t => !topicsBeforePhase3.has(t))
-    if (newlyAdded.length > 0) {
-      expandNeighbors(topics, langCache, newlyAdded)
-    }
+    // Second-hop expansion with stricter threshold to avoid transitive cascading
+    expandNeighbors(topics, langCache, { ratio: SECOND_HOP_RATIO })
 
     // Phase 5: Semantic text inference (embedding-based)
     // Only runs when: no hashtags, Phase 4 found nothing, text exists, enough embeddings for z-score
