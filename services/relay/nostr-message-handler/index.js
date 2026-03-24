@@ -111,9 +111,9 @@ export function limitNostrMessageLength ({ ws, nostrMessage }) {
         } else if (
           [
             eventKinds.FOLLOWS,
-            eventKinds.MAIN_APP_BUNDLE,
-            eventKinds.NEXT_APP_BUNDLE,
-            eventKinds.DRAFT_APP_BUNDLE
+            eventKinds.MAIN_SITE_MANIFEST,
+            eventKinds.NEXT_SITE_MANIFEST,
+            eventKinds.DRAFT_SITE_MANIFEST
           ].includes(event.kind)
         ) {
           // A FOLLOWS event with 1000 p tags (NIP-02) can take up to ~128 KB

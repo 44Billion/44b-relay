@@ -4,16 +4,16 @@ import { eventKinds } from '#constants/event.js'
 
 const BATCH_SIZE = 100
 // Skip chunks uploaded less than 3 days ago, as the referencing
-// events (e.g. bundle events) may not have been published yet.
+// events (e.g. site manifest events) may not have been published yet.
 const GRACE_PERIOD_SECONDS = 60 * 60 * 24 * 3
 
-// Collect all file root hashes from bundle events authored by a specific pubkey.
-async function collectBundleRootHashesForPubkey (pubkey) {
+// Collect all file root hashes from site manifest events authored by a specific pubkey.
+async function collectManifestRootHashesForPubkey (pubkey) {
   const rootXSet = new Set()
   const kindFilter = [
-    eventKinds.MAIN_APP_BUNDLE,
-    eventKinds.NEXT_APP_BUNDLE,
-    eventKinds.DRAFT_APP_BUNDLE
+    eventKinds.MAIN_SITE_MANIFEST,
+    eventKinds.NEXT_SITE_MANIFEST,
+    eventKinds.DRAFT_SITE_MANIFEST
   ].map(k => `kind = ${k}`).join(' OR ')
 
   let offset = 0
@@ -29,7 +29,7 @@ async function collectBundleRootHashesForPubkey (pubkey) {
     for (const hit of results) {
       if (!hit.nonIndexableTags) continue
       for (const tag of hit.nonIndexableTags) {
-        if (tag[0] === 'file' && tag[1]) rootXSet.add(tag[1])
+        if (tag[0] === 'path' && tag[2]) rootXSet.add(tag[2])
       }
     }
 
@@ -111,9 +111,9 @@ async function deleteStaleChunks () {
   let deletedCount = 0
 
   // Process one pubkey at a time to bound memory usage.
-  // Bundle rootX set and r-tag cache are discarded after each pubkey.
+  // Manifest rootX set and r-tag cache are discarded after each pubkey.
   for (const pubkey of pubkeys) {
-    const bundleRootXSet = await collectBundleRootHashesForPubkey(pubkey)
+    const manifestRootXSet = await collectManifestRootHashesForPubkey(pubkey)
     const rTagCache = new Map() // rootX → boolean, scoped to this pubkey
 
     let offset = 0
@@ -135,7 +135,7 @@ async function deleteStaleChunks () {
 
         let isReferenced = false
         for (const rootX of rootXSet) {
-          if (bundleRootXSet.has(rootX)) {
+          if (manifestRootXSet.has(rootX)) {
             isReferenced = true
             break
           }

@@ -36,7 +36,7 @@ function makeChunkEvent ({ ref, pubkey, rootX, index = 0, byteSize = 51000, crea
   }
 }
 
-function makeBundleEvent ({ ref, pubkey, kind = 37448, fileRootHashes = [] }) {
+function makeManifestEvent ({ ref, pubkey, kind = 35128, fileRootHashes = [] }) {
   return {
     ref,
     id: ref,
@@ -45,7 +45,7 @@ function makeBundleEvent ({ ref, pubkey, kind = 37448, fileRootHashes = [] }) {
     created_at: 100,
     ownerType: 'pubkey',
     indexableTags: [`d ${ref}`],
-    nonIndexableTags: fileRootHashes.map(h => ['file', h, 'path.js', 'text/javascript']),
+    nonIndexableTags: fileRootHashes.map(h => ['path', 'path.js', h]),
     content: '',
     sig: 'sig'
   }
@@ -67,17 +67,17 @@ describe('Job: Delete Stale Chunks', () => {
     assert.equal(deleteStaleChunksJob.default.frequency, 60 * 60 * 24)
   })
 
-  it('should delete stale chunks not referenced by any bundle or r tag', async () => {
+  it('should delete stale chunks not referenced by any manifest or r tag', async () => {
     const pubkey = '0000000000000000000000000000000000000000000000000000000000000001'
 
     // Stale chunk: rootX 'aaaa' not referenced anywhere
     const staleChunk = makeChunkEvent({ ref: 'stale1', pubkey, rootX: 'aaaa' })
 
-    // Referenced chunk: rootX 'bbbb' is in a bundle's file tags
+    // Referenced chunk: rootX 'bbbb' is in a manifest's path tags
     const referencedChunk = makeChunkEvent({ ref: 'referenced1', pubkey, rootX: 'bbbb' })
-    const bundle = makeBundleEvent({ ref: 'bundle1', pubkey, fileRootHashes: ['bbbb'] })
+    const manifest = makeManifestEvent({ ref: 'manifest1', pubkey, fileRootHashes: ['bbbb'] })
 
-    await mdb.index('events').addDocuments([staleChunk, referencedChunk, bundle])
+    await mdb.index('events').addDocuments([staleChunk, referencedChunk, manifest])
     await new Promise(resolve => setTimeout(resolve, 100))
 
     await deleteStaleChunksJob.run()
@@ -89,7 +89,7 @@ describe('Job: Delete Stale Chunks', () => {
 
     assert.ok(!events.find(e => e.ref === 'stale1'), 'Stale chunk should be deleted')
     assert.ok(events.find(e => e.ref === 'referenced1'), 'Referenced chunk should be kept')
-    assert.ok(events.find(e => e.ref === 'bundle1'), 'Bundle event should be kept')
+    assert.ok(events.find(e => e.ref === 'manifest1'), 'Manifest event should be kept')
   })
 
   it('should keep chunks referenced by r tags on same-author events', async () => {
@@ -202,7 +202,7 @@ describe('Job: Delete Stale Chunks', () => {
   it('should handle chunks with multiple c tags (multiple files) correctly', async () => {
     const pubkey = '0000000000000000000000000000000000000000000000000000000000000007'
 
-    // Chunk used in two files: rootX 'iiii' (referenced by same-author bundle) and 'jjjj' (not referenced)
+    // Chunk used in two files: rootX 'iiii' (referenced by same-author manifest) and 'jjjj' (not referenced)
     const sharedChunk = makeChunkEvent({
       ref: 'shared1',
       pubkey,
@@ -210,9 +210,9 @@ describe('Job: Delete Stale Chunks', () => {
       extraCTags: ['jjjj:5']
     })
 
-    const bundle = makeBundleEvent({ ref: 'bundle2', pubkey, fileRootHashes: ['iiii'] })
+    const manifest = makeManifestEvent({ ref: 'manifest2', pubkey, fileRootHashes: ['iiii'] })
 
-    await mdb.index('events').addDocuments([sharedChunk, bundle])
+    await mdb.index('events').addDocuments([sharedChunk, manifest])
     await new Promise(resolve => setTimeout(resolve, 100))
 
     await deleteStaleChunksJob.run()
@@ -232,8 +232,8 @@ describe('Job: Delete Stale Chunks', () => {
     // Chunk from pubkey A with rootX 'kkkk'
     const chunk = makeChunkEvent({ ref: 'cross1', pubkey: pubkeyA, rootX: 'kkkk' })
 
-    // Bundle from pubkey B referencing the same rootX — should NOT protect A's chunk
-    const bundle = makeBundleEvent({ ref: 'bundleB', pubkey: pubkeyB, fileRootHashes: ['kkkk'] })
+    // Manifest from pubkey B referencing the same rootX — should NOT protect A's chunk
+    const manifest = makeManifestEvent({ ref: 'manifestB', pubkey: pubkeyB, fileRootHashes: ['kkkk'] })
 
     // r-tag event from pubkey B referencing the same rootX — should NOT protect A's chunk
     const rTagEvent = {
@@ -248,7 +248,7 @@ describe('Job: Delete Stale Chunks', () => {
       sig: 'sig'
     }
 
-    await mdb.index('events').addDocuments([chunk, bundle, rTagEvent])
+    await mdb.index('events').addDocuments([chunk, manifest, rTagEvent])
     await new Promise(resolve => setTimeout(resolve, 100))
 
     await deleteStaleChunksJob.run()
@@ -259,7 +259,7 @@ describe('Job: Delete Stale Chunks', () => {
     const events = results.filter(e => e.ref !== '__processingState__')
 
     assert.ok(!events.find(e => e.ref === 'cross1'), 'Chunk should be deleted when only a different pubkey references it')
-    assert.ok(events.find(e => e.ref === 'bundleB'), 'Other pubkey bundle should be kept')
+    assert.ok(events.find(e => e.ref === 'manifestB'), 'Other pubkey manifest should be kept')
     assert.ok(events.find(e => e.ref === 'rEventB'), 'Other pubkey r-tag event should be kept')
   })
 })

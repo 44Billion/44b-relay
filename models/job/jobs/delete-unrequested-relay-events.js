@@ -8,7 +8,7 @@ const BATCH_SIZE = 50
 
 // Relay lists are essential infrastructure -- even unpopular real users'
 // relay lists get fetched by their few friends.  Keep them with a minimal bar.
-// App stalls are discoverable content -- unpopular apps are fine to clean up,
+// App listings are discoverable content -- unpopular apps are fine to clean up,
 // but they deserve more time to be discovered first.
 const CLEANUP_POLICIES = [
   {
@@ -19,8 +19,8 @@ const CLEANUP_POLICIES = [
     requestScoreThreshold: 1
   },
   {
-    name: 'app-stalls',
-    kinds: [eventKinds.MAIN_APP_STALL, eventKinds.NEXT_APP_STALL, eventKinds.DRAFT_APP_STALL],
+    name: 'app-listings',
+    kinds: [eventKinds.MAIN_APP_LISTING, eventKinds.NEXT_APP_LISTING, eventKinds.DRAFT_APP_LISTING],
     gracePeriodSeconds: 60 * 60 * 24 * 7, // 7 days
     requestScoreThreshold: 5
   }

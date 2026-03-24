@@ -48,9 +48,9 @@ describe('limitNostrMessageLength', () => {
     assert.strictEqual(result.isInvalid, true)
   })
 
-  it('should validate MAIN_APP_BUNDLE up to 128KB', () => {
+  it('should validate MAIN_SITE_MANIFEST up to 128KB', () => {
     const ws = createWs()
-    const nostrMessage = ['EVENT', { kind: eventKinds.MAIN_APP_BUNDLE, tags: [] }]
+    const nostrMessage = ['EVENT', { kind: eventKinds.MAIN_SITE_MANIFEST, tags: [] }]
     nostrMessage.byteLength = 128 * 1024
 
     const result = limitNostrMessageLength({ ws, nostrMessage })
