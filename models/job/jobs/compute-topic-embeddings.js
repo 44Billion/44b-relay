@@ -93,7 +93,7 @@ async function processLanguage (lang) {
   const needsEmbedding = []
   for (const doc of topTopics) {
     const text = buildTopicText(doc, wordsMap)
-    const hash = simpleHash(text)
+    const hash = simpleHash('passage: ' + text)
     if (doc.embeddingHash !== hash) {
       needsEmbedding.push({ doc, text, hash })
     }
@@ -105,7 +105,7 @@ async function processLanguage (lang) {
 
   for (let i = 0; i < needsEmbedding.length; i += BATCH_SIZE) {
     const batch = needsEmbedding.slice(i, i + BATCH_SIZE)
-    const texts = batch.map(b => b.text)
+    const texts = batch.map(b => 'passage: ' + b.text)
     const embeddings = await embedTexts(texts)
 
     if (!embeddings) {

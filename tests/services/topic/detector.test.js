@@ -362,21 +362,34 @@ describe('detectTopics', () => {
     afterEach(() => { mock.restoreAll() })
 
     it('should find topics via embedding similarity when no hashtags and Phase 4 found nothing', async () => {
-      // Create a mock embedding for 'bitcoin' pointing in direction [1, 0, 0, ...]
-      const bitcoinEmbedding = new Float32Array(384).fill(0)
-      bitcoinEmbedding[0] = 1
+      // Create embeddings: bitcoin pointing strongly in dim 0,
+      // 5 other topics pointing in other orthogonal directions.
+      // The query vector is close to bitcoin, so bitcoin should be the z-score outlier.
+      const makeUnitVec = (dim) => {
+        const v = new Float32Array(384).fill(0); v[dim] = 1; return v
+      }
 
       const embeddingsMap = new Map()
-      embeddingsMap.set('bitcoin', bitcoinEmbedding)
+      embeddingsMap.set('bitcoin', makeUnitVec(0))
+      embeddingsMap.set('photography', makeUnitVec(1))
+      embeddingsMap.set('cooking', makeUnitVec(2))
+      embeddingsMap.set('music', makeUnitVec(3))
+      embeddingsMap.set('sports', makeUnitVec(4))
 
-      populateCache('en', [
-        { tag: 'bitcoin', words: ['bitcoin'], acronym: null, count: 5000, neighbors: [] }
-      ], { embeddings: embeddingsMap })
+      const docs = [
+        { tag: 'bitcoin', words: ['bitcoin'], acronym: null, count: 5000, neighbors: [] },
+        { tag: 'photography', words: ['photography'], acronym: null, count: 3000, neighbors: [] },
+        { tag: 'cooking', words: ['cooking'], acronym: null, count: 2000, neighbors: [] },
+        { tag: 'music', words: ['music'], acronym: null, count: 4000, neighbors: [] },
+        { tag: 'sports', words: ['sports'], acronym: null, count: 2500, neighbors: [] }
+      ]
 
-      // Mock the embedder to return a vector close to bitcoin
+      populateCache('en', docs, { embeddings: embeddingsMap })
+
+      // Mock query embedding: very close to bitcoin's direction
       const mockEmbedding = new Float32Array(384).fill(0)
-      mockEmbedding[0] = 0.99 // very close to bitcoin's [1, 0, 0, ...]
-      mockEmbedding[1] = Math.sqrt(1 - 0.99 * 0.99) // make it unit-length
+      mockEmbedding[0] = 0.99
+      mockEmbedding[1] = Math.sqrt(1 - 0.99 * 0.99)
 
       mock.module('#services/topic/embedder.js', {
         namedExports: {
@@ -454,10 +467,16 @@ describe('detectTopics', () => {
 
     it('should gracefully degrade when embedder returns null', async () => {
       const embeddingsMap = new Map()
-      embeddingsMap.set('bitcoin', new Float32Array(384).fill(0.1))
+      for (const tag of ['tagone', 'tagtwo', 'tagthree', 'tagfour', 'tagfive']) {
+        embeddingsMap.set(tag, new Float32Array(384).fill(0.1))
+      }
 
       populateCache('en', [
-        { tag: 'bitcoin', words: ['bitcoin'], acronym: null, count: 5000, neighbors: [] }
+        { tag: 'tagone', words: ['tagone'], acronym: null, count: 5000, neighbors: [] },
+        { tag: 'tagtwo', words: ['tagtwo'], acronym: null, count: 3000, neighbors: [] },
+        { tag: 'tagthree', words: ['tagthree'], acronym: null, count: 2000, neighbors: [] },
+        { tag: 'tagfour', words: ['tagfour'], acronym: null, count: 4000, neighbors: [] },
+        { tag: 'tagfive', words: ['tagfive'], acronym: null, count: 2500, neighbors: [] }
       ], { embeddings: embeddingsMap })
 
       mock.module('#services/topic/embedder.js', {

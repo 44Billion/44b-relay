@@ -17,7 +17,8 @@ const MIN_TAG_COUNT_FOR_INFERENCE = 3
 const STRONG_TOKEN_MIN_LENGTH = 5
 const MAX_TOPICS = 12
 const MIN_SOURCE_COUNT_FOR_EXPANSION = 10
-const SEMANTIC_SIMILARITY_THRESHOLD = 0.60
+const SEMANTIC_Z_SCORE_THRESHOLD = 1.5
+const MIN_TOPICS_FOR_SEMANTIC = 5
 const MAX_SEMANTIC_TOPICS = 3
 
 // --- Cache ---
@@ -260,24 +261,29 @@ export async function detectTopics ({ language, hashtags = [], text }) {
     }
 
     // Phase 5: Semantic text inference (embedding-based)
-    // Only runs when: no hashtags, Phase 4 found nothing, text exists, cache has embeddings
-    if (hashtags.length === 0 && topics.size === 0 && text && langCache.embeddings?.size > 0) {
+    // Only runs when: no hashtags, Phase 4 found nothing, text exists, enough embeddings for z-score
+    if (hashtags.length === 0 && topics.size === 0 && text && langCache.embeddings?.size >= MIN_TOPICS_FOR_SEMANTIC) {
       // Must be a dynamic import for mocking in tests
       const { embedText, cosineSimilarity } = await import('#services/topic/embedder.js')
-      const textEmbedding = await embedText(text)
+      const textEmbedding = await embedText('query: ' + text)
 
       if (textEmbedding) {
         const scored = []
         for (const [tag, topicEmbedding] of langCache.embeddings) {
-          const sim = cosineSimilarity(textEmbedding, topicEmbedding)
-          if (sim >= SEMANTIC_SIMILARITY_THRESHOLD) {
-            scored.push({ tag, sim })
-          }
+          scored.push({ tag, sim: cosineSimilarity(textEmbedding, topicEmbedding) })
         }
 
-        scored.sort((a, b) => b.sim - a.sim)
-        for (const { tag } of scored.slice(0, MAX_SEMANTIC_TOPICS)) {
-          topics.add(tag)
+        // Use z-score to find outliers — absolute similarity is unreliable
+        const mean = scored.reduce((s, x) => s + x.sim, 0) / scored.length
+        const stddev = Math.sqrt(scored.reduce((s, x) => s + (x.sim - mean) ** 2, 0) / scored.length)
+
+        if (stddev > 0) {
+          scored.sort((a, b) => b.sim - a.sim)
+          for (const { tag, sim } of scored.slice(0, MAX_SEMANTIC_TOPICS)) {
+            if ((sim - mean) / stddev >= SEMANTIC_Z_SCORE_THRESHOLD) {
+              topics.add(tag)
+            }
+          }
         }
 
         if (topics.size > 0) {
