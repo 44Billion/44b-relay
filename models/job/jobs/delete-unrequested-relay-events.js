@@ -21,7 +21,8 @@ const CLEANUP_POLICIES = [
   {
     name: 'app-listings',
     kinds: [eventKinds.MAIN_APP_LISTING, eventKinds.NEXT_APP_LISTING, eventKinds.DRAFT_APP_LISTING],
-    gracePeriodSeconds: 60 * 60 * 24 * 7, // 7 days
+    // temporarily set to 1 year while we're beta testing
+    gracePeriodSeconds: 60 * 60 * 24 * 365, // 60 * 60 * 24 * 7, // 7 days
     requestScoreThreshold: 5
   }
 ]
