@@ -8,6 +8,7 @@
     "job:reconcile-used-bytes": "node bin/job/reconcile-used-bytes.js",
     "job:migrate-hashtag-stats-keys": "node bin/job/migrate-hashtag-stats-keys.js",
     "job:delete-old-bundle-events": "node bin/job/delete-old-bundle-events.js",
+    "job:reset-hashtag-stats-relations": "node bin/job/reset-hashtag-stats-relations.js",
     "// test": "--test-concurrency=1 to benefit from single MeiliSearch instance setup at global-setup.js without conflicts between parallel tests",
     "test": "NODE_ENV=test node --test --test-concurrency=1 --test-global-setup=tests/global-setup.js --experimental-test-module-mocks 'tests/**/*.test.js'",
     "test:only": "NODE_ENV=test node --test --test-only --test-concurrency=1 --test-global-setup=tests/global-setup.js --experimental-test-module-mocks 'tests/**/*.test.js'",
