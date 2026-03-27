@@ -16,6 +16,7 @@ import computeTopicEmbeddingsConfig from './compute-topic-embeddings.js'
 import deleteStaleChunksConfig from './delete-stale-chunks.js'
 import flushRequestedEventsConfig from './flush-requested-events.js'
 import deleteUnrequestedRelayEventsConfig from './delete-unrequested-relay-events.js'
+import deleteOrphanedAppListingsConfig from './delete-orphaned-app-listings.js'
 
 const jobs = [
   // exampleConfig,
@@ -35,7 +36,8 @@ const jobs = [
   computeTopicEmbeddingsConfig,
   deleteStaleChunksConfig,
   flushRequestedEventsConfig,
-  deleteUnrequestedRelayEventsConfig
+  deleteUnrequestedRelayEventsConfig,
+  deleteOrphanedAppListingsConfig
 ]
 
 export default jobs
