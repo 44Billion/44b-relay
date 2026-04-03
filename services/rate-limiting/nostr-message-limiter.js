@@ -6,16 +6,16 @@ const LIMIT_MULTIPLIER = process.env.IS_INTEGRATION_TEST === 'true' ? 1000 : 1
 
 function rateLimitNostrMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  const { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: 20 * LIMIT_MULTIPLIER, windowSeconds: 2 })
+  const { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: 60 * LIMIT_MULTIPLIER, windowSeconds: 2 })
 
   return { isRateLimited, nextWindow }
 }
 
 function rateLimitNostrAuthMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  let { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::a', reqsPerWindow: 20 * LIMIT_MULTIPLIER, windowMinutes: 1 })
+  let { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::a', reqsPerWindow: 60 * LIMIT_MULTIPLIER, windowMinutes: 1 })
   if (isRateLimited) return { isRateLimited, nextWindow }
-  ;({ isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::b', reqsPerWindow: 2 * LIMIT_MULTIPLIER, windowSeconds: 1 }))
+  ;({ isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::b', reqsPerWindow: 6 * LIMIT_MULTIPLIER, windowSeconds: 1 }))
 
   return { isRateLimited, nextWindow }
 }
