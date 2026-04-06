@@ -1,6 +1,8 @@
 import { eventTags } from '#constants/event.js'
 import { isType } from '#helpers/shared.js'
 import { isKnownEventKind, getPublishedAt } from '#helpers/event.js'
+const MAX_IDS = 500
+const MAX_LIMIT = 200
 const isSingleLetterTagRegExp = /^#[A-Za-z]$/
 const isTagQuery = key => isSingleLetterTagRegExp.test(key)
 
@@ -86,7 +88,7 @@ function parseSubscriptionFilters ({ filters }) {
           /^[0-9A-F]{4,64}$/i.test(v) // custom: 4 chars min (like expect 0000 PoW)
         )
           .map(v => v.toLowerCase())
-          .slice(0, 500) // custom: 500 ids limit
+          .slice(0, MAX_IDS) // custom: max ids limit
         if (ids.length > 0) ret.ids = [...new Set(ids)]
       }
 
@@ -104,7 +106,7 @@ function parseSubscriptionFilters ({ filters }) {
       // kinds
       if (isType(filter.kinds, 'array')) {
         const kinds = filter.kinds.filter(isKnownEventKind)
-          .slice(0, 10) // custom: 10 kinds limit
+          .slice(0, 30) // custom: 30 kinds limit
         if (kinds.length > 0) ret.kinds = [...new Set(kinds)]
       }
 
@@ -121,11 +123,12 @@ function parseSubscriptionFilters ({ filters }) {
       for (const [filterKey, filterValue] of Object.entries(filter).filter(([k]) => isTagQuery(k))) {
         if (isType(filterValue, 'array')) {
           const charLimits = getCharLimitsByTagKey(filterKey)
+          const tagLimit = filterKey === '#d' ? MAX_IDS : 30
           const tagFilter = filterValue.filter(v =>
             isType(v, 'string') &&
             v.length >= charLimits[0] && v.length < charLimits[1]
           )
-            .slice(0, 10) // custom: 10 tags limit
+            .slice(0, tagLimit) // custom: 30 tags limit (or max ids for #d)
           if (tagFilter.length > 0) ret[filterKey] = [...new Set(tagFilter)]
         }
       }
@@ -151,7 +154,7 @@ function parseSubscriptionFilters ({ filters }) {
         isType(filter.limit, 'number') &&
         filter.limit >= 0 // 0 will return EOSE and start streaming realtime
       ) {
-        ret.limit = Math.min(200, filter.limit) // custom: 200 max limit
+        ret.limit = Math.min(MAX_LIMIT, filter.limit) // custom: max limit
       }
 
       if (isType(filter.search, 'string')) {
