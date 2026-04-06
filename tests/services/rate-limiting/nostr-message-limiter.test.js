@@ -1,6 +1,12 @@
 import { describe, it, before, after, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import * as limiter from '#services/rate-limiting/nostr-message-limiter.js'
+import {
+  MESSAGE_GLOBAL_REQS_PER_WINDOW,
+  AUTH_BURST_REQS_PER_WINDOW,
+  MAX_SUBSCRIPTIONS_PER_WS_CONNECTION,
+  MAX_SUBSCRIPTIONS_PER_PUBKEY
+} from '#services/rate-limiting/nostr-message-limiter.js'
 import { eventKinds } from '#constants/event.js'
 
 describe('Nostr Message Limiter', () => {
@@ -17,14 +23,13 @@ describe('Nostr Message Limiter', () => {
       const pubkey = 'pubkey1'
       const ws = { ip: '1.2.3.4', nostr: { pubkey } }
 
-      // Limit is 20 per 2 seconds
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < MESSAGE_GLOBAL_REQS_PER_WINDOW; i++) {
         const { isRateLimited } = limiter.rateLimitNostrMessageByPubkey(ws)
         assert.equal(isRateLimited, false, `Request ${i + 1} should not be limited`)
       }
 
       const { isRateLimited, nextWindow } = limiter.rateLimitNostrMessageByPubkey(ws)
-      assert.equal(isRateLimited, true, 'Request 21 should be limited')
+      assert.equal(isRateLimited, true, `Request ${MESSAGE_GLOBAL_REQS_PER_WINDOW + 1} should be limited`)
       assert.ok(nextWindow instanceof Date, 'nextWindow should be a Date')
       assert.ok(nextWindow.getTime() > Date.now(), 'nextWindow should be in the future')
     })
@@ -33,14 +38,13 @@ describe('Nostr Message Limiter', () => {
       const ip = '1.2.3.5'
       const ws = { ip, nostr: {} }
 
-      // Limit is 20 per 2 seconds
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < MESSAGE_GLOBAL_REQS_PER_WINDOW; i++) {
         const { isRateLimited } = limiter.rateLimitNostrMessageByPubkey(ws)
         assert.equal(isRateLimited, false, `Request ${i + 1} should not be limited`)
       }
 
       const { isRateLimited, nextWindow } = limiter.rateLimitNostrMessageByPubkey(ws)
-      assert.equal(isRateLimited, true, 'Request 21 should be limited')
+      assert.equal(isRateLimited, true, `Request ${MESSAGE_GLOBAL_REQS_PER_WINDOW + 1} should be limited`)
       assert.ok(nextWindow instanceof Date, 'nextWindow should be a Date')
     })
   })
@@ -50,26 +54,20 @@ describe('Nostr Message Limiter', () => {
       const pubkey = 'auth_pubkey'
       const ws = { ip: '1.1.1.1', nostr: { pubkey } }
 
-      // Limit b: 2 per 1 second
-      // Global auth limit is 20 per minute.
+      for (let i = 0; i < AUTH_BURST_REQS_PER_WINDOW; i++) {
+        const res = limiter.rateLimitNostrAuthMessageByPubkey(ws)
+        assert.equal(res.isRateLimited, false)
+      }
 
-      // Request 1
+      // Should hit burst limit
       let res = limiter.rateLimitNostrAuthMessageByPubkey(ws)
-      assert.equal(res.isRateLimited, false)
-
-      // Request 2
-      res = limiter.rateLimitNostrAuthMessageByPubkey(ws)
-      assert.equal(res.isRateLimited, false)
-
-      // Request 3 (should hit burst limit)
-      res = limiter.rateLimitNostrAuthMessageByPubkey(ws)
       assert.equal(res.isRateLimited, true)
       assert.ok(res.nextWindow instanceof Date, 'nextWindow should be a Date when rate limited')
 
       // Advance time by 1.1 second
       mock.timers.tick(1100)
 
-      // Request 4 (burst window reset)
+      // Burst window reset
       res = limiter.rateLimitNostrAuthMessageByPubkey(ws)
       assert.equal(res.isRateLimited, false)
     })
@@ -82,9 +80,7 @@ describe('Nostr Message Limiter', () => {
           subscriptions: {}
         }
       }
-      const limit = 10 // MAX_SUBSCRIPTIONS_PER_WS_CONNECTION
-
-      for (let i = 0; i < limit; i++) {
+      for (let i = 0; i < MAX_SUBSCRIPTIONS_PER_WS_CONNECTION; i++) {
         ws.nostr.subscriptions[`sub${i}`] = { filters: [] }
       }
 
@@ -101,10 +97,9 @@ describe('Nostr Message Limiter', () => {
   describe('rateLimitNostrReqMessageByPubkey', () => {
     it('should limit subscriptions globally per pubkey', () => {
       const pubkey = 'pubkey_global_limit'
-      // MAX_SUBSCRIPTIONS_PER_PUBKEY = 50
       const clients = new Set()
       const wsFull = { nostr: { pubkey, subscriptions: {} } }
-      for (let i = 0; i < 50; i++) wsFull.nostr.subscriptions[`full_${i}`] = { filters: [{}] }
+      for (let i = 0; i < MAX_SUBSCRIPTIONS_PER_PUBKEY; i++) wsFull.nostr.subscriptions[`full_${i}`] = { filters: [{}] }
       clients.add(wsFull)
       const wss = { clients }
 
@@ -113,8 +108,6 @@ describe('Nostr Message Limiter', () => {
 
       // Test Replace
       res = limiter.rateLimitNostrReqMessageByPubkey(wss, wsFull, 'full_0', [{}])
-      // 50 filters total. Replacing 1 filter with 1 filter -> Total 50.
-      // Limit is 50. if >= 50, isRateLimited = true.
       assert.equal(res.isRateLimited, true)
     })
 

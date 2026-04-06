@@ -4,25 +4,31 @@ import { eventKinds } from '#constants/event.js'
 
 const LIMIT_MULTIPLIER = process.env.IS_INTEGRATION_TEST === 'true' ? 1000 : 1
 
+export const MESSAGE_GLOBAL_REQS_PER_WINDOW = 60 * LIMIT_MULTIPLIER
+export const MESSAGE_GLOBAL_WINDOW_SECONDS = 2
+
+export const AUTH_REQS_PER_WINDOW = 60 * LIMIT_MULTIPLIER
+export const AUTH_BURST_REQS_PER_WINDOW = 6 * LIMIT_MULTIPLIER
+
 function rateLimitNostrMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  const { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: 60 * LIMIT_MULTIPLIER, windowSeconds: 2 })
+  const { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: MESSAGE_GLOBAL_REQS_PER_WINDOW, windowSeconds: MESSAGE_GLOBAL_WINDOW_SECONDS })
 
   return { isRateLimited, nextWindow }
 }
 
 function rateLimitNostrAuthMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  let { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::a', reqsPerWindow: 60 * LIMIT_MULTIPLIER, windowMinutes: 1 })
+  let { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::a', reqsPerWindow: AUTH_REQS_PER_WINDOW, windowMinutes: 1 })
   if (isRateLimited) return { isRateLimited, nextWindow }
-  ;({ isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::b', reqsPerWindow: 6 * LIMIT_MULTIPLIER, windowSeconds: 1 }))
+  ;({ isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::auth::' + (pubkey ?? ip) + '::b', reqsPerWindow: AUTH_BURST_REQS_PER_WINDOW, windowSeconds: 1 }))
 
   return { isRateLimited, nextWindow }
 }
 
 // considering MAX_OPEN_CONNECTIONS = 30 per ip
 // if client does 1 conn per pubkey -> 30 pubkeys per ip -> 30 subs per conn/pubkey -> 900 subs total per ip
-const MAX_SUBSCRIPTIONS_PER_WS_CONNECTION = 30 * LIMIT_MULTIPLIER
+export const MAX_SUBSCRIPTIONS_PER_WS_CONNECTION = 30 * LIMIT_MULTIPLIER
 function rateLimitNostrReqMessageByWsConnection (ws, subscriptionId) {
   if (!isType(subscriptionId, 'string')) return { isRateLimited: false } // it will be invalid ahead at ReqHandler
   const { subscriptions } = ws.nostr
@@ -36,8 +42,8 @@ function rateLimitNostrReqMessageByWsConnection (ws, subscriptionId) {
 // considering MAX_OPEN_CONNECTIONS_PER_PUBKEY = 15 and MAX_OPEN_CONNECTIONS = 30 per ip
 // per-connection limit is 30 subs, so a pubkey needs only 5 connections to reach 150 subs
 // worst case per ip: 30 conns × 30 subs/conn = 900 subs, but capped at 150/pubkey
-const MAX_SUBSCRIPTIONS_PER_PUBKEY = 150 * LIMIT_MULTIPLIER
-const MAX_FILTERS_PER_PUBKEY = 150 * LIMIT_MULTIPLIER
+export const MAX_SUBSCRIPTIONS_PER_PUBKEY = 150 * LIMIT_MULTIPLIER
+export const MAX_FILTERS_PER_PUBKEY = 150 * LIMIT_MULTIPLIER
 // this may be slow because of wss.clients loop
 function rateLimitNostrReqMessageByPubkey (wss, ws, subscriptionId, filters) {
   if (!isType(subscriptionId, 'string')) return { isRateLimited: false } // it will be invalid ahead at ReqHandler
