@@ -1069,4 +1069,143 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
 
     assert.equal(wsReceiver.send.mock.calls.length, 0)
   })
+
+  // Regression: throwaway-author kinds were silently dropped on broad-flagged
+  // subscriptions because their authors have popularity 999.
+  // Filters of the form {kinds:[K], "#p":[me]} are flagged isBroad by isBroadFilter
+  // (precision = 1 since kinds-with-non-#d-tag still totals 1), so the pre-fix
+  // popularity gate dropped every event. This affected:
+  // - NIP-46 SIGNER_RPC (kind 24133) — ephemeral signer keys are throwaway
+  // - NIP-17/NIP-59 gift wraps (kind 1059) — author key is throwaway by design
+  // Without the fix, IPC delivery from one process to another for these
+  // subscriptions silently fails for any client subscribing through these patterns.
+  describe('throwaway-author kinds bypass popularity gate', () => {
+    it('should relay ephemeral SIGNER_RPC (kind 24133) on a broad #p filter even when author popularity is 999', async () => {
+      const originalEnv = process.env.IS_INTEGRATION_TEST
+      process.env.IS_INTEGRATION_TEST = 'false'
+
+      try {
+        getPopularityLevel.mock.mockImplementation(() => 999)
+
+        const wsReceiver = createWs('receiver')
+        // Typical NIP-46 client subscription
+        wsReceiver.nostr.subscriptions.sub1 = {
+          filters: [{ kinds: [24133], '#p': ['client_pubkey'], isBroad: true }]
+        }
+        const wss = { clients: [wsReceiver] }
+
+        const event = {
+          kind: 24133,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [['p', 'client_pubkey']],
+          pubkey: 'throwaway_signer_pubkey',
+          id: 'event_signer_rpc',
+          content: 'encrypted_payload'
+        }
+
+        await sendToClientsWithAMatchingFilter({ wss, event, eventLanguage: undefined })
+
+        assert.equal(wsReceiver.send.mock.calls.length, 1)
+        const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
+        assert.equal(relayMsg[0], 'EVENT')
+        assert.equal(relayMsg[1], 'sub1')
+      } finally {
+        process.env.IS_INTEGRATION_TEST = originalEnv
+      }
+    })
+
+    it('should relay NIP-17/NIP-59 gift wrap (kind 1059) on a broad #p filter even when author popularity is 999', async () => {
+      const originalEnv = process.env.IS_INTEGRATION_TEST
+      process.env.IS_INTEGRATION_TEST = 'false'
+
+      try {
+        getPopularityLevel.mock.mockImplementation(() => 999)
+
+        const wsReceiver = createWs('receiver')
+        wsReceiver.nostr.subscriptions.sub1 = {
+          filters: [{ kinds: [1059], '#p': ['recipient_pubkey'], isBroad: true }]
+        }
+        const wss = { clients: [wsReceiver] }
+
+        const event = {
+          kind: 1059,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [['p', 'recipient_pubkey']],
+          pubkey: 'throwaway_giftwrap_pubkey',
+          id: 'event_gift_wrap',
+          content: 'encrypted_seal'
+        }
+
+        await sendToClientsWithAMatchingFilter({ wss, event, eventLanguage: undefined })
+
+        assert.equal(wsReceiver.send.mock.calls.length, 1)
+        const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
+        assert.equal(relayMsg[0], 'EVENT')
+        assert.equal(relayMsg[1], 'sub1')
+      } finally {
+        process.env.IS_INTEGRATION_TEST = originalEnv
+      }
+    })
+
+    it('should relay any ephemeral kind on a broad filter even when author popularity is 999', async () => {
+      const originalEnv = process.env.IS_INTEGRATION_TEST
+      process.env.IS_INTEGRATION_TEST = 'false'
+
+      try {
+        getPopularityLevel.mock.mockImplementation(() => 999)
+
+        const wsReceiver = createWs('receiver')
+        // Bare {kinds:[ephemeral]} filter — broad by isBroadFilter (precision 1).
+        wsReceiver.nostr.subscriptions.sub1 = {
+          filters: [{ kinds: [29999], isBroad: true }]
+        }
+        const wss = { clients: [wsReceiver] }
+
+        const event = {
+          kind: 29999,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [],
+          pubkey: 'unknown_pubkey',
+          id: 'event_other_ephemeral',
+          content: ''
+        }
+
+        await sendToClientsWithAMatchingFilter({ wss, event, eventLanguage: undefined })
+
+        assert.equal(wsReceiver.send.mock.calls.length, 1)
+      } finally {
+        process.env.IS_INTEGRATION_TEST = originalEnv
+      }
+    })
+
+    it('should still drop a regular non-throwaway kind on a broad filter when author popularity is 999', async () => {
+      const originalEnv = process.env.IS_INTEGRATION_TEST
+      process.env.IS_INTEGRATION_TEST = 'false'
+
+      try {
+        getPopularityLevel.mock.mockImplementation(() => 999)
+
+        const wsReceiver = createWs('receiver')
+        wsReceiver.nostr.subscriptions.sub1 = {
+          filters: [{ kinds: [1], '#p': ['recipient_pubkey'], isBroad: true }]
+        }
+        const wss = { clients: [wsReceiver] }
+
+        const event = {
+          kind: 1,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [['p', 'recipient_pubkey']],
+          pubkey: 'spammy_pubkey',
+          id: 'event_regular_note',
+          content: 'spam mention'
+        }
+
+        await sendToClientsWithAMatchingFilter({ wss, event, eventLanguage: undefined })
+
+        assert.equal(wsReceiver.send.mock.calls.length, 0)
+      } finally {
+        process.env.IS_INTEGRATION_TEST = originalEnv
+      }
+    })
+  })
 })

@@ -1,7 +1,7 @@
 import { isExpiredEvent, /* isReplaceableEvent, */ isEphemeralEvent, isValidEvent /* , getPublishedAt */ } from '#helpers/event.js'
 import { sendCommandResult, sendEvent, sendClosed } from '#helpers/message.js'
 import { nostrClientMessages } from '#constants/message.js'
-// import { eventKinds } from '#constants/event.js'
+import { eventKinds } from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
 import { isAppEvent } from '#helpers/app.js'
@@ -136,6 +136,16 @@ class EventHandler {
   }
 }
 
+// Some kinds intentionally use throwaway author pubkeys. Also, specs that start communication
+// with a ephemeral kind from a user's main pubkey usually don't care about their popularity.
+// Author-popularity gate would systematically drop their events.
+// Examples:
+// - All ephemeral kinds (e.g., NIP-46 SIGNER_RPC kind 24133)
+// - NIP-59 gift wraps (kind 1059) used by NIP-17 DMs (regular, but throwaway author)
+function shouldBypassPopularityGate (event) {
+  return isEphemeralEvent(event) || event.kind === eventKinds.GIFT_WRAP
+}
+
 async function sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage, eventTopics }) {
   // Better to relay for those who may have subscribed to (e.g.: online status update)
   // if (isReplaceableEvent(event)) return
@@ -143,8 +153,9 @@ async function sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage, ev
   const maxUntil = Math.floor(Date.now() / 1000) + 10 * 60
   const isFutureEvent = event.created_at > maxUntil
 
-  await loadPopularityFilters()
-  const authorPopularityLevel = getPopularityLevel(event.pubkey)
+  const skipPopularityGate = shouldBypassPopularityGate(event)
+  if (!skipPopularityGate) await loadPopularityFilters()
+  const authorPopularityLevel = skipPopularityGate ? 1 : getPopularityLevel(event.pubkey)
 
   for (const ws of wss.clients) {
     if (ws.readyState !== webSocketReadyState.OPEN) continue
