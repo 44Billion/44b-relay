@@ -14,7 +14,9 @@ import { detectEventLanguage, getEventText } from '#helpers/language.js'
 import { extractHashtags } from '#helpers/hashtag.js'
 import { detectTopics } from '#services/topic/detector.js'
 import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
-import { broadcast } from '#services/ipc/cross-process-broadcaster.js'
+import { broadcast, waitUntilReady } from '#services/ipc/cross-process-broadcaster.js'
+
+const RELAY_IPC_TIMEOUT_MS = 2000
 
 class EventHandler {
   static run ({ wss, ws, nostrMessage }) {
@@ -26,7 +28,7 @@ class EventHandler {
   }
 
   async run () {
-    const { wss, ws, nostrMessage } = this
+    const { ws, nostrMessage } = this
     const [, event = {}] = nostrMessage
     try {
       trackIpActivity({ ip: ws.ip })
@@ -48,11 +50,15 @@ class EventHandler {
 
       let shouldRelay // e.g.: don't relay duplicates
       ;({ isSuccess, shouldRelay = isSuccess, message } = await this.processNostrEvent({ ws, event, ip: ws.ip, eventLanguage, eventTopics, eventHashtags }))
-      sendCommandResult({ ws, event, isSuccess, message })
+
       if (shouldRelay) {
-        broadcast({ event, eventLanguage, eventTopics })
-        return sendToClientsWithAMatchingFilter({ wss, event, eventLanguage, eventTopics })
+        const didBroadcast = await broadcast({ event, eventLanguage, eventTopics }, { timeoutMs: RELAY_IPC_TIMEOUT_MS })
+        if (!didBroadcast) {
+          return sendCommandResult({ ws, event, isSuccess: false, message: 'error: relay IPC unavailable; retry' })
+        }
       }
+
+      return sendCommandResult({ ws, event, isSuccess, message })
     } catch (error) {
       console.error('Error handling event:', error)
       sendCommandResult({ ws, event, isSuccess: false, message: 'error: internal server error' })
@@ -65,6 +71,14 @@ class EventHandler {
     if (isBlocked) return { isSuccess: false, shouldRelay: false, message }
 
     if (isExpiredEvent(event)) return { isSuccess: true, shouldRelay: false, message: 'expired: the event is already expired' }
+
+    // Accepted events are live-delivered through IPC, including local clients.
+    // If IPC is unavailable, reject before persistence to avoid storing an
+    // event that cross-worker subscribers never saw live.
+    if (!await waitUntilReady({ timeoutMs: RELAY_IPC_TIMEOUT_MS })) {
+      return { isSuccess: false, shouldRelay: false, message: 'error: relay IPC unavailable; retry' }
+    }
+
     if (isEphemeralEvent(event)) return { isSuccess: true, shouldRelay: true, message: '' }
     // Better to relay for those who may have subscribed to (e.g.: online status update)
     // else if (isReplaceableEvent(event)) shouldRelay = false

@@ -10,11 +10,22 @@ mock.module('#services/rate-limiting/web-socket-request-limiter.js', {
 })
 
 // 1b. Mock IPC Broadcaster
-const broadcastMock = mock.fn()
+let currentWss
+
+async function broadcastThroughCurrentWss (payload) {
+  if (currentWss && sendToClientsWithAMatchingFilter) {
+    await sendToClientsWithAMatchingFilter({ wss: currentWss, ...payload })
+  }
+  return true
+}
+
+const broadcastMock = mock.fn(broadcastThroughCurrentWss)
+const waitUntilReadyMock = mock.fn(async () => true)
 mock.module('#services/ipc/cross-process-broadcaster.js', {
   namedExports: {
     init: mock.fn(),
-    broadcast: broadcastMock
+    broadcast: broadcastMock,
+    waitUntilReady: waitUntilReadyMock
   }
 })
 
@@ -80,12 +91,19 @@ mock.module('#services/topic/detector.js', {
 
 // Import SUT
 // Note: We need to import AFTER mocks
-const { default: EventHandler, sendToClientsWithAMatchingFilter } = await import('#services/relay/nostr-message-handler/event-handler.js')
+const eventHandlerModule = await import('#services/relay/nostr-message-handler/event-handler.js')
+const EventHandler = eventHandlerModule.default
+const { sendToClientsWithAMatchingFilter } = eventHandlerModule
 const { default: EventSaver } = await import('#services/event/saver/mdb/index.js')
 const { getPopularityLevel } = await import('#services/event/maintainer/mdb/index.js')
 const { detectEventLanguage } = await import('#helpers/language.js')
 const { extractHashtags } = await import('#helpers/hashtag.js')
 const { detectTopics } = await import('#services/topic/detector.js')
+
+const createWss = (clients) => {
+  currentWss = { clients }
+  return currentWss
+}
 
 describe('EventHandler', () => {
   before(() => {
@@ -94,8 +112,12 @@ describe('EventHandler', () => {
 
   afterEach(() => {
     mock.reset()
+    currentWss = null
     EventSaver.run.mock.resetCalls()
     broadcastMock.mock.resetCalls()
+    broadcastMock.mock.mockImplementation(broadcastThroughCurrentWss)
+    waitUntilReadyMock.mock.resetCalls()
+    waitUntilReadyMock.mock.mockImplementation(async () => true)
   })
 
   const createWs = (id) => ({
@@ -123,9 +145,7 @@ describe('EventHandler', () => {
       filters: [{ kinds: [1], isBroad: true }]
     }
 
-    const wss = {
-      clients: [wsSender, wsReceiver]
-    }
+    const wss = createWss([wsSender, wsReceiver])
 
     const event = {
       kind: 1,
@@ -149,16 +169,15 @@ describe('EventHandler', () => {
     const saverArgs = EventSaver.run.mock.calls[0].arguments[0]
     assert.deepEqual(saverArgs.topics, ['pokemon', 'anime'])
 
-    // 3. Should broadcast with propagated topics
+    // 3. Should broadcast with propagated topics. Local and remote live
+    // delivery are now both performed by the IPC broadcaster.
     assert.equal(broadcastMock.mock.calls.length, 1)
     assert.deepEqual(broadcastMock.mock.calls[0].arguments[0].eventTopics, ['pokemon', 'anime'])
 
-    // 4. Should relay to receiver
+    // 4. The mocked broadcaster performs the local self-delivery path.
     assert.equal(wsReceiver.send.mock.calls.length, 1)
     const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
-    assert.equal(relayMsg[0], 'EVENT')
-    assert.equal(relayMsg[1], 'sub1')
-    assert.deepEqual(relayMsg[2], event)
+    assert.deepEqual(relayMsg, ['EVENT', 'sub1', event])
   })
 
   it('should NOT relay if event is expired', async () => {
@@ -167,7 +186,7 @@ describe('EventHandler', () => {
     const wsSender = createWs('sender')
     const wsReceiver = createWs('receiver')
     wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1] }] }
-    const wss = { clients: [wsSender, wsReceiver] }
+    const wss = createWss([wsSender, wsReceiver])
 
     const expiredEvent = {
       kind: 1,
@@ -239,7 +258,7 @@ describe('EventHandler', () => {
       const wsReceiver = createWs('receiver')
       // Receiver has broad filter
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -274,7 +293,7 @@ describe('EventHandler', () => {
       const wsReceiver = createWs('receiver')
       // Receiver has broad filter WITH includeSpam
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, includeSpam: true }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -308,7 +327,7 @@ describe('EventHandler', () => {
       const wsReceiver = createWs('receiver')
       // Receiver has broad filter WITH isSpam
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isSpam: true }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -342,7 +361,7 @@ describe('EventHandler', () => {
       const wsReceiver = createWs('receiver')
       // Receiver has broad filter WITH isSpam
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isSpam: true }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -374,7 +393,7 @@ describe('EventHandler', () => {
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['pt'] }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -407,7 +426,7 @@ describe('EventHandler', () => {
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['pt'] }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -441,7 +460,7 @@ describe('EventHandler', () => {
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['en'] }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -468,7 +487,7 @@ describe('EventHandler', () => {
     const wsSender = createWs('sender')
     const wsReceiver = createWs('receiver')
     wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], isBroad: true }] }
-    const wss = { clients: [wsSender, wsReceiver] }
+    const wss = createWss([wsSender, wsReceiver])
 
     const event = {
       kind: 1,
@@ -496,7 +515,7 @@ describe('EventHandler', () => {
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['pt', 'en'] }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -529,7 +548,7 @@ describe('EventHandler', () => {
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], language: ['pt', 'en'] }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -561,7 +580,7 @@ describe('EventHandler', () => {
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isRising: true }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -593,7 +612,7 @@ describe('EventHandler', () => {
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isRising: true }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -623,7 +642,7 @@ describe('EventHandler', () => {
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isPopular: true }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -655,7 +674,7 @@ describe('EventHandler', () => {
       const wsSender = createWs('sender')
       const wsReceiver = createWs('receiver')
       wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ isBroad: true, isPopular: true }] }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -687,7 +706,7 @@ describe('EventHandler', () => {
       wsReceiver.nostr.subscriptions['sub1'] = {
         filters: [{ isBroad: true, isSpam: true, isRising: true }]
       }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -719,7 +738,7 @@ describe('EventHandler', () => {
       wsReceiver.nostr.subscriptions['sub1'] = {
         filters: [{ isBroad: true, isSpam: true, isRising: true }]
       }
-      const wss = { clients: [wsSender, wsReceiver] }
+      const wss = createWss([wsSender, wsReceiver])
 
       const event = {
         kind: 1,
@@ -744,7 +763,7 @@ describe('EventHandler', () => {
     wsSender.nostr.pubkey = 'sender_pubkey'
     const wsReceiver = createWs('receiver')
     wsReceiver.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1] }] }
-    const wss = { clients: [wsSender, wsReceiver] }
+    const wss = createWss([wsSender, wsReceiver])
 
     const futureEvent = {
       kind: 1,
@@ -773,7 +792,7 @@ describe('EventHandler', () => {
     detectEventLanguage.mock.mockImplementation(() => 'en')
 
     const wsSender = createWs('sender')
-    const wss = { clients: [wsSender] }
+    const wss = createWss([wsSender])
 
     const event = {
       kind: 1,
@@ -797,7 +816,7 @@ describe('EventHandler', () => {
     getPopularityLevel.mock.mockImplementation(() => 1)
 
     const wsSender = createWs('sender')
-    const wss = { clients: [wsSender] }
+    const wss = createWss([wsSender])
 
     const ephemeralEvent = {
       kind: 20001, // ephemeral range
@@ -813,13 +832,93 @@ describe('EventHandler', () => {
 
     assert.equal(broadcastMock.mock.calls.length, 1)
     assert.deepEqual(broadcastMock.mock.calls[0].arguments[0].event, ephemeralEvent)
+    assert.equal(EventSaver.run.mock.calls.length, 0)
+  })
+
+  it('should let broadcaster self-delivery reach local subscribers', async () => {
+    getPopularityLevel.mock.mockImplementation(() => 1)
+
+    const wsSender = createWs('sender')
+    const wsReceiver = createWs('receiver')
+    wsReceiver.nostr.subscriptions.sub1 = { filters: [{ kinds: [1], isBroad: true }] }
+    const wss = createWss([wsSender, wsReceiver])
+
+    const event = {
+      kind: 1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      pubkey: 'pubkey1',
+      id: 'event_self_delivery',
+      content: 'hello'
+    }
+
+    broadcastMock.mock.mockImplementationOnce(async payload => {
+      await sendToClientsWithAMatchingFilter({ wss, ...payload })
+      return true
+    })
+
+    const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+    await handler.run()
+
+    assert.equal(wsReceiver.send.mock.calls.length, 1)
+    const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
+    assert.equal(relayMsg[0], 'EVENT')
+    assert.equal(relayMsg[1], 'sub1')
+    assert.deepEqual(relayMsg[2], event)
+  })
+
+  it('should reject and skip persistence when ipc is not ready', async () => {
+    waitUntilReadyMock.mock.mockImplementationOnce(async () => false)
+
+    const wsSender = createWs('sender')
+    const wss = createWss([wsSender])
+    const event = {
+      kind: 1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      pubkey: 'pubkey1',
+      id: 'event_ipc_not_ready',
+      content: 'hello'
+    }
+
+    const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+    await handler.run()
+
+    assert.equal(EventSaver.run.mock.calls.length, 0)
+    assert.equal(broadcastMock.mock.calls.length, 0)
+    const ackMsg = JSON.parse(wsSender.send.mock.calls[0].arguments[0])
+    assert.deepEqual(ackMsg, ['OK', 'event_ipc_not_ready', false, 'error: relay IPC unavailable; retry'])
+  })
+
+  it('should reject when ipc broadcast fails after persistence', async () => {
+    EventSaver.run.mock.mockImplementation(async () => ({ isSuccess: true, isDuplicate: false, message: '' }))
+    broadcastMock.mock.mockImplementationOnce(async () => false)
+
+    const wsSender = createWs('sender')
+    const wss = createWss([wsSender])
+    const event = {
+      kind: 1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      pubkey: 'pubkey1',
+      id: 'event_ipc_broadcast_failed',
+      content: 'hello'
+    }
+
+    const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+    await handler.run()
+
+    assert.equal(EventSaver.run.mock.calls.length, 1)
+    assert.equal(broadcastMock.mock.calls.length, 1)
+    const ackMsg = JSON.parse(wsSender.send.mock.calls[0].arguments[0])
+    assert.deepEqual(ackMsg, ['OK', 'event_ipc_broadcast_failed', false, 'error: relay IPC unavailable; retry'])
   })
 
   it('should NOT call broadcast when shouldRelay is false (duplicate)', async () => {
     EventSaver.run.mock.mockImplementation(async () => ({ isSuccess: true, isDuplicate: true, message: 'duplicate: already have this event' }))
 
     const wsSender = createWs('sender')
-    const wss = { clients: [wsSender] }
+    const wss = createWss([wsSender])
 
     const event = {
       kind: 1,
@@ -838,7 +937,7 @@ describe('EventHandler', () => {
 
   it('should NOT call broadcast when shouldRelay is false (expired)', async () => {
     const wsSender = createWs('sender')
-    const wss = { clients: [wsSender] }
+    const wss = createWss([wsSender])
 
     const expiredEvent = {
       kind: 1,
@@ -877,7 +976,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     wsReceiver.nostr.subscriptions['sub1'] = {
       filters: [{ kinds: [1], isBroad: true }]
     }
-    const wss = { clients: [wsReceiver] }
+    const wss = createWss([wsReceiver])
 
     const event = {
       kind: 1,
@@ -904,7 +1003,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     wsReceiver.nostr.subscriptions['sub1'] = {
       filters: [{ kinds: [7] }] // wants kind 7, event is kind 1
     }
-    const wss = { clients: [wsReceiver] }
+    const wss = createWss([wsReceiver])
 
     const event = {
       kind: 1,
@@ -928,7 +1027,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     wsReceiver.nostr.subscriptions['sub1'] = {
       filters: [{ kinds: [1] }]
     }
-    const wss = { clients: [wsReceiver] }
+    const wss = createWss([wsReceiver])
 
     const event = {
       kind: 1,
@@ -951,7 +1050,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     wsReceiver.nostr.subscriptions['sub1'] = {
       filters: [{ ids: ['event_id_filter'] }]
     }
-    const wss = { clients: [wsReceiver] }
+    const wss = createWss([wsReceiver])
 
     const event = {
       kind: 1,
@@ -982,7 +1081,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     ws1.nostr.subscriptions['sub1'] = { filters: [{ kinds: [1], isBroad: true }] }
     const ws2 = createWs('receiver2')
     ws2.nostr.subscriptions['sub2'] = { filters: [{ kinds: [1], isBroad: true }] }
-    const wss = { clients: [ws1, ws2] }
+    const wss = createWss([ws1, ws2])
 
     const event = {
       kind: 1,
@@ -1006,7 +1105,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     wsReceiver.nostr.subscriptions['sub1'] = {
       filters: [{ kinds: [1], isBroad: true }]
     }
-    const wss = { clients: [wsReceiver] }
+    const wss = createWss([wsReceiver])
 
     const event = {
       kind: 1,
@@ -1018,6 +1117,9 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     }
 
     broadcastMock.mock.resetCalls()
+    broadcastMock.mock.mockImplementation(async () => true)
+    waitUntilReadyMock.mock.resetCalls()
+    waitUntilReadyMock.mock.mockImplementation(async () => true)
     await sendToClientsWithAMatchingFilter({ wss, event, eventLanguage: undefined })
 
     // sendToClientsWithAMatchingFilter should NOT call broadcast — only EventHandler.run does
@@ -1031,7 +1133,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     wsReceiver.nostr.subscriptions.sub1 = {
       filters: [{ kinds: [1], topic: ['pokemon'], isBroad: true }]
     }
-    const wss = { clients: [wsReceiver] }
+    const wss = createWss([wsReceiver])
 
     const event = {
       kind: 1,
@@ -1054,7 +1156,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     wsReceiver.nostr.subscriptions.sub1 = {
       filters: [{ kinds: [1], topic: ['bitcoin'], isBroad: true }]
     }
-    const wss = { clients: [wsReceiver] }
+    const wss = createWss([wsReceiver])
 
     const event = {
       kind: 1,
@@ -1092,7 +1194,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
         wsReceiver.nostr.subscriptions.sub1 = {
           filters: [{ kinds: [24133], '#p': ['client_pubkey'], isBroad: true }]
         }
-        const wss = { clients: [wsReceiver] }
+        const wss = createWss([wsReceiver])
 
         const event = {
           kind: 24133,
@@ -1125,7 +1227,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
         wsReceiver.nostr.subscriptions.sub1 = {
           filters: [{ kinds: [1059], '#p': ['recipient_pubkey'], isBroad: true }]
         }
-        const wss = { clients: [wsReceiver] }
+        const wss = createWss([wsReceiver])
 
         const event = {
           kind: 1059,
@@ -1159,7 +1261,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
         wsReceiver.nostr.subscriptions.sub1 = {
           filters: [{ kinds: [29999], isBroad: true }]
         }
-        const wss = { clients: [wsReceiver] }
+        const wss = createWss([wsReceiver])
 
         const event = {
           kind: 29999,
@@ -1189,7 +1291,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
         wsReceiver.nostr.subscriptions.sub1 = {
           filters: [{ kinds: [1], '#p': ['recipient_pubkey'], isBroad: true }]
         }
-        const wss = { clients: [wsReceiver] }
+        const wss = createWss([wsReceiver])
 
         const event = {
           kind: 1,
