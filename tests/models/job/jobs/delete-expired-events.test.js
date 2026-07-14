@@ -4,6 +4,8 @@ import mdb from '#services/db/mdb.js'
 import { processBatch, loadSystemState } from '#models/job/jobs/process-pending-ops/index.js'
 import * as deleteExpiredEventsJob from '#models/job/jobs/delete-expired-events.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
+import { eventKinds } from '#constants/event.js'
+import { eventToRecord } from '#models/event/mapper.js'
 
 const runPendingOps = async () => {
   const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
@@ -131,6 +133,39 @@ describe('Job: Delete Expired Events', () => {
     // Verify usedBytes was decremented
     const owner = await mdb.index('storedEventOwners').getDocument(pubkey)
     assert.equal(owner.usedBytes, 300, 'usedBytes should be decremented by 200 (500 - 200 = 300)')
+  })
+
+  it('should remove expired private delivery records and decrement their usage', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const pubkey = '0000000000000000000000000000000000000000000000000000000000000098'
+    const receivedAt = now - (60 * 60 * 24 * 2) - 1
+    const events = [
+      { id: '8'.repeat(64), kind: eventKinds.PRIVATE_CHANNEL_BROADCAST, byteSize: 200 },
+      { id: '9'.repeat(64), kind: eventKinds.GIFT_WRAP, byteSize: 150 }
+    ]
+
+    await mdb.index('storedEventOwners').addDocuments([{
+      key: pubkey,
+      entityType: 'pubkey',
+      usedBytes: 500,
+      popularityLevel: 999
+    }])
+    await mdb.index('events').addDocuments(events.map(({ id, kind, byteSize }) => ({
+      ...eventToRecord({ id, kind, pubkey, created_at: receivedAt, tags: [], content: '', sig: 'sig' }, { receivedAt }),
+      byteSize,
+      ownerType: 'pubkey'
+    })))
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+    await deleteExpiredEventsJob.run()
+    await runPendingOps()
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    const { results: eventsAfterCleanup } = await mdb.index('events').getDocuments()
+    assert.equal(eventsAfterCleanup.filter(event => event.pubkey === pubkey).length, 0)
+
+    const owner = await mdb.index('storedEventOwners').getDocument(pubkey)
+    assert.equal(owner.usedBytes, 150)
   })
 
   it('should decrement usedBytes for IP owner when deleting expired events', async () => {

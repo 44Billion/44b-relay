@@ -1,5 +1,6 @@
 import { describe, it, before, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
+import { OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS, eventKinds } from '#constants/event.js'
 
 // 1. Mock Rate Limiter
 mock.module('#services/rate-limiting/web-socket-request-limiter.js', {
@@ -215,6 +216,46 @@ describe('EventHandler', () => {
 
     // Assert NOT called EventSaver
     assert.equal(EventSaver.run.mock.calls.length, 0)
+  })
+
+  it('should use the old-event authentication window for kind 5 events', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      const now = Math.floor(Date.now() / 1000)
+      const wss = createWss([])
+      const withinWindowWs = createWs('within-window')
+      const withinWindowEvent = {
+        kind: eventKinds.DELETION,
+        created_at: now - OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS + 1,
+        tags: [],
+        pubkey: 'deletion_pubkey',
+        id: 'deletion_within_window',
+        content: ''
+      }
+
+      await new EventHandler({ wss, ws: withinWindowWs, nostrMessage: ['EVENT', withinWindowEvent] }).run()
+
+      assert.deepEqual(JSON.parse(withinWindowWs.send.mock.calls[0].arguments[0]), ['OK', 'deletion_within_window', true, ''])
+      assert.equal(EventSaver.run.mock.calls.length, 1)
+
+      const pastWindowWs = createWs('past-window')
+      const pastWindowEvent = {
+        ...withinWindowEvent,
+        created_at: now - OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS - 1,
+        id: 'deletion_past_window'
+      }
+
+      await new EventHandler({ wss, ws: pastWindowWs, nostrMessage: ['EVENT', pastWindowEvent] }).run()
+
+      const rejection = JSON.parse(pastWindowWs.send.mock.calls[0].arguments[0])
+      assert.deepEqual(rejection.slice(0, 3), ['OK', 'deletion_past_window', false])
+      assert.match(rejection[3], /^auth-required:/)
+      assert.equal(EventSaver.run.mock.calls.length, 1)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
   })
 
   // it('should NOT relay if restricted reaction', async () => {
@@ -1172,7 +1213,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
     assert.equal(wsReceiver.send.mock.calls.length, 0)
   })
 
-  // Regression: throwaway-author kinds were silently dropped on broad-flagged
+  // Regression: private delivery and throwaway-author kinds were silently dropped on broad-flagged
   // subscriptions because their authors have popularity 999.
   // Filters of the form {kinds:[K], "#p":[me]} are flagged isBroad by isBroadFilter
   // (precision = 1 since kinds-with-non-#d-tag still totals 1), so the pre-fix
@@ -1181,7 +1222,7 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
   // - NIP-17/NIP-59 gift wraps (kind 1059) — author key is throwaway by design
   // Without the fix, IPC delivery from one process to another for these
   // subscriptions silently fails for any client subscribing through these patterns.
-  describe('throwaway-author kinds bypass popularity gate', () => {
+  describe('private delivery and throwaway-author kinds bypass popularity gate', () => {
     it('should relay ephemeral SIGNER_RPC (kind 24133) on a broad #p filter even when author popularity is 999', async () => {
       const originalEnv = process.env.IS_INTEGRATION_TEST
       process.env.IS_INTEGRATION_TEST = 'false'
@@ -1236,6 +1277,39 @@ describe('sendToClientsWithAMatchingFilter (standalone)', () => {
           pubkey: 'throwaway_giftwrap_pubkey',
           id: 'event_gift_wrap',
           content: 'encrypted_seal'
+        }
+
+        await sendToClientsWithAMatchingFilter({ wss, event, eventLanguage: undefined })
+
+        assert.equal(wsReceiver.send.mock.calls.length, 1)
+        const relayMsg = JSON.parse(wsReceiver.send.mock.calls[0].arguments[0])
+        assert.equal(relayMsg[0], 'EVENT')
+        assert.equal(relayMsg[1], 'sub1')
+      } finally {
+        process.env.IS_INTEGRATION_TEST = originalEnv
+      }
+    })
+
+    it('should relay private-channel broadcast (kind 3560) on a broad filter even when channel popularity is 999', async () => {
+      const originalEnv = process.env.IS_INTEGRATION_TEST
+      process.env.IS_INTEGRATION_TEST = 'false'
+
+      try {
+        getPopularityLevel.mock.mockImplementation(() => 999)
+
+        const wsReceiver = createWs('receiver')
+        wsReceiver.nostr.subscriptions.sub1 = {
+          filters: [{ kinds: [eventKinds.PRIVATE_CHANNEL_BROADCAST], isBroad: true }]
+        }
+        const wss = createWss([wsReceiver])
+
+        const event = {
+          kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [],
+          pubkey: 'private_channel_pubkey',
+          id: 'event_private_channel_broadcast',
+          content: 'encrypted_router'
         }
 
         await sendToClientsWithAMatchingFilter({ wss, event, eventLanguage: undefined })

@@ -3,7 +3,7 @@ import { maxDateNowSeconds } from '#config/mdb.js'
 import { bytesToBase64 } from '#helpers/base64.js'
 import { base16ToBytes } from '#helpers/base16.js'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { eventKinds } from '#constants/event.js'
+import { OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS, eventKinds } from '#constants/event.js'
 
 const textEncoder = new TextEncoder()
 export function addressToRef ({ address, kind, pubkey, dTag }) {
@@ -54,6 +54,38 @@ const eventKindsToIgnoreIndexableTags = {
   [eventKinds.LIST]: true
 }
 const almostAlwaysIndexableTags = new Set(['d', 'k'])
+const DAY_SECONDS = 60 * 60 * 24
+const PRIVATE_DELIVERY_MAX_RETENTION_SECONDS = DAY_SECONDS * 2
+const PRIVATE_DELIVERY_KINDS = new Set([
+  eventKinds.PRIVATE_CHANNEL_BROADCAST,
+  eventKinds.GIFT_WRAP
+])
+
+// These caps are local record metadata. They never rewrite a signed event tag.
+function applyExpirationRetentionPolicy ({ kind, expiresAt, receivedAt, now }) {
+  if (PRIVATE_DELIVERY_KINDS.has(kind)) {
+    const maxExpiration = receivedAt + PRIVATE_DELIVERY_MAX_RETENTION_SECONDS
+    return expiresAt == null || expiresAt > maxExpiration
+      ? maxExpiration
+      : expiresAt
+  }
+
+  if (kind === eventKinds.DELETION) {
+    const maxExpiration = now + OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS
+    return !expiresAt || expiresAt > maxExpiration
+      ? maxExpiration
+      : expiresAt
+  }
+
+  if ([6, 7, 16].includes(kind)) {
+    const maxExpiration = now + DAY_SECONDS * 3
+    return !expiresAt || expiresAt > maxExpiration
+      ? maxExpiration
+      : expiresAt
+  }
+
+  return expiresAt
+}
 
 export const MAX_INDEXABLE_TAGS = 10
 export const MAX_INDEXABLE_TAG_VALUE_LENGTH = 1000
@@ -64,6 +96,7 @@ export function eventToRecord (event, {
   const { id, kind, pubkey, created_at, sig } = event
   const record = { id, kind, pubkey, created_at, sig }
   const now = Math.floor(Date.now() / 1000)
+  const recordReceivedAt = receivedAt ?? now
 
   let dTag
   let isIndexable
@@ -95,10 +128,7 @@ export function eventToRecord (event, {
     tagIndex++
   }
 
-  if ([5, 6, 7, 16].includes(kind)) {
-    const maxExpiration = now + 60 * 60 * 24 * 3
-    if (!expiresAt || expiresAt > maxExpiration) expiresAt = maxExpiration
-  }
+  expiresAt = applyExpirationRetentionPolicy({ kind, expiresAt, receivedAt: recordReceivedAt, now })
 
   if (!dTag && dTag !== '') {
     if ((kind >= 10000 && kind < 20000) || (kind >= 30000 && kind < 40000)) dTag = ''
@@ -133,7 +163,7 @@ export function eventToRecord (event, {
     ...(quoteCounter && { quoteCounter }),
     ...(topics?.length && { topics }),
     lastAccessedAt: lastAccessedAt ?? now,
-    receivedAt: receivedAt ?? now
+    receivedAt: recordReceivedAt
   })
   return record
 }

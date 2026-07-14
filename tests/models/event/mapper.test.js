@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { MAX_INDEXABLE_TAGS, MAX_INDEXABLE_TAG_VALUE_LENGTH, addressToRef, idToRef, eventToRecord, recordToEvent } from '#models/event/mapper.js'
+import { OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS, eventKinds } from '#constants/event.js'
 
 describe('Event Mapper', () => {
   describe('addressToRef', () => {
@@ -75,6 +76,17 @@ describe('Event Mapper', () => {
       assert.deepEqual(record.nonIndexableTags[1], ['123', 'invalid'])
     })
 
+    it('should index the private broadcast deletion pubkey s tag', () => {
+      const deletionPubkey = 'a'.repeat(64)
+      const record = eventToRecord({
+        ...baseEvent,
+        kind: 3560,
+        tags: [['s', deletionPubkey], ['expiration', '1000000']]
+      })
+
+      assert.ok(record.indexableTags.includes(`s ${deletionPubkey}`))
+    })
+
     it('should respect MAX_INDEXABLE_TAGS limit', () => {
       const tags = []
       for (let i = 0; i < 15; i++) {
@@ -117,7 +129,35 @@ describe('Event Mapper', () => {
       assert.equal(record.expiresAt, 1000000)
     })
 
-    it('should limit expiration for kind 5 (deletion), kind 7 (reaction) and kind 6/16 (reposts)', () => {
+    it('should cap private delivery events at two days from receipt', () => {
+      const receivedAt = 1_700_000_000
+      const cap = receivedAt + 60 * 60 * 24 * 2
+      const vipPubkey = 'fc7085c383ba71745704bdc1c6efcf7fab0197501de598c5e6c537ac0b32a4cb'
+      const longExpiration = receivedAt + 60 * 60 * 24 * 10
+
+      for (const kind of [eventKinds.PRIVATE_CHANNEL_BROADCAST, eventKinds.GIFT_WRAP]) {
+        assert.equal(eventToRecord({ ...baseEvent, kind, tags: [] }, { receivedAt }).expiresAt, cap)
+        assert.equal(eventToRecord({ ...baseEvent, kind, pubkey: vipPubkey, tags: [['expiration', String(longExpiration)]] }, { receivedAt }).expiresAt, cap)
+      }
+    })
+
+    it('should retain a shorter private delivery expiration without changing other kinds', () => {
+      const receivedAt = 1_700_000_000
+      const shorterExpiration = receivedAt + 60 * 60
+      const longerExpiration = receivedAt + 60 * 60 * 24 * 10
+
+      for (const kind of [eventKinds.PRIVATE_CHANNEL_BROADCAST, eventKinds.GIFT_WRAP]) {
+        const event = { ...baseEvent, kind, tags: [['expiration', String(shorterExpiration)]] }
+        const record = eventToRecord(event, { receivedAt })
+        assert.equal(record.expiresAt, shorterExpiration)
+        assert.deepEqual(event.tags, [['expiration', String(shorterExpiration)]])
+      }
+
+      const ordinaryRecord = eventToRecord({ ...baseEvent, tags: [['expiration', String(longerExpiration)]] }, { receivedAt })
+      assert.equal(ordinaryRecord.expiresAt, longerExpiration)
+    })
+
+    it('should limit deletion expiration to the old-event authentication window', () => {
       const hugeExp = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60) // 1 year
       const event = {
         ...baseEvent,
@@ -125,9 +165,18 @@ describe('Event Mapper', () => {
         tags: [['expiration', hugeExp.toString()]]
       }
       const record = eventToRecord(event)
-      // Should be limited to 3 days
-      const maxAllowed = Math.floor(Date.now() / 1000) + (3 * 24 * 60 * 60)
+      const maxAllowed = Math.floor(Date.now() / 1000) + OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS
       assert.ok(record.expiresAt <= maxAllowed)
+    })
+
+    it('should retain the three-day cap for reactions and reposts', () => {
+      const hugeExp = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60)
+      const maxAllowed = Math.floor(Date.now() / 1000) + (3 * 24 * 60 * 60)
+
+      for (const kind of [eventKinds.REPOST, eventKinds.REACTION, eventKinds.GENERIC_REPOST]) {
+        const record = eventToRecord({ ...baseEvent, kind, tags: [['expiration', hugeExp.toString()]] })
+        assert.ok(record.expiresAt <= maxAllowed)
+      }
     })
 
     it('should calculate address-based ref for parameterized replaceable events (kind 30000)', () => {

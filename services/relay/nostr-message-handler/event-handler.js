@@ -1,7 +1,7 @@
 import { isExpiredEvent, /* isReplaceableEvent, */ isEphemeralEvent, isValidEvent /* , getPublishedAt */ } from '#helpers/event.js'
 import { sendCommandResult, sendEvent, sendClosed } from '#helpers/message.js'
 import { nostrClientMessages } from '#constants/message.js'
-import { eventKinds } from '#constants/event.js'
+import { OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS, eventKinds } from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
 import { isAppEvent } from '#helpers/app.js'
@@ -119,7 +119,7 @@ class EventHandler {
       // App events are an exception until we implement AUTH on nappup lib
       // (app uploader CLI)
       !isAppEvent(event) &&
-      event.created_at < (Math.floor(Date.now() / 1000) - 60 * 10) &&
+      event.created_at < (Math.floor(Date.now() / 1000) - OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS) &&
       // Annoying integration test tell use its a fail if we don't let it save 1 week ago events
       process.env.IS_INTEGRATION_TEST !== 'true'
     ) {
@@ -150,14 +150,20 @@ class EventHandler {
   }
 }
 
-// Some kinds intentionally use throwaway author pubkeys. Also, specs that start communication
-// with a ephemeral kind from a user's main pubkey usually don't care about their popularity.
+// Some kinds intentionally use throwaway author pubkeys or channel keys. Also, specs that start
+// communication with an ephemeral kind from a user's main pubkey usually don't care about popularity.
 // Author-popularity gate would systematically drop their events.
 // Examples:
 // - All ephemeral kinds (e.g., NIP-46 SIGNER_RPC kind 24133)
 // - NIP-59 gift wraps (kind 1059) used by NIP-17 DMs (regular, but throwaway author)
+// - Private-channel broadcasts (kind 3560) signed by a channel key
+const POPULARITY_GATE_BYPASS_KINDS = new Set([
+  eventKinds.GIFT_WRAP,
+  eventKinds.PRIVATE_CHANNEL_BROADCAST
+])
+
 function shouldBypassPopularityGate (event) {
-  return isEphemeralEvent(event) || event.kind === eventKinds.GIFT_WRAP
+  return isEphemeralEvent(event) || POPULARITY_GATE_BYPASS_KINDS.has(event.kind)
 }
 
 async function sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage, eventTopics }) {

@@ -154,6 +154,227 @@ describe('EventSaver (MDB) Integration', () => {
     assert.equal(result.message, 'invalid: some events to delete do not belong to the author or are deletion events')
   })
 
+  it('should delete explicit private broadcasts matching a one-time deletion key', async () => {
+    const deletionPubkey = pad64('d')
+    const channelPubkey = pad64('e')
+    const targetA = {
+      id: pad64('f1'),
+      pubkey: channelPubkey,
+      kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+      tags: [['s', deletionPubkey]],
+      created_at: 1000,
+      content: 'first encrypted chunk',
+      sig: VALID_SIG
+    }
+    const targetB = {
+      id: pad64('f2'),
+      pubkey: channelPubkey,
+      kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+      tags: [['s', deletionPubkey]],
+      created_at: 1001,
+      content: 'second encrypted chunk',
+      sig: VALID_SIG
+    }
+    const sameKeyButUntargeted = {
+      id: pad64('f3'),
+      pubkey: channelPubkey,
+      kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+      tags: [['s', deletionPubkey]],
+      created_at: 1002,
+      content: 'unrelated encrypted chunk',
+      sig: VALID_SIG
+    }
+    const { eventToRecord } = await import('#models/event/mapper.js')
+    const targets = [targetA, targetB, sameKeyButUntargeted].map(event => ({
+      ...eventToRecord(event, { receivedAt: event.created_at }),
+      byteSize: 100,
+      ownerType: 'pubkey',
+      ip: '1.2.3.4'
+    }))
+    await mdb.index('events').addDocuments(targets)
+
+    const deletionEvent = {
+      id: pad64('f4'),
+      pubkey: deletionPubkey,
+      kind: eventKinds.DELETION,
+      tags: [['k', '3560'], ['e', targetA.id], ['e', targetB.id]],
+      created_at: 2000,
+      content: '',
+      sig: VALID_SIG
+    }
+    const result = await EventSaver.run({ ws: {}, event: deletionEvent, ip: '1.2.3.4' })
+
+    assert.equal(result.isSuccess, true)
+    assert.equal(queueOpsMock.mock.calls.length, 2)
+    const targetOps = queueOpsMock.mock.calls[0].arguments[0]
+    assert.deepEqual(
+      targetOps.filter(op => op.type === 'deleteDocumentIfExists').map(op => op.data.key).sort(),
+      targets.slice(0, 2).map(target => target.ref).sort()
+    )
+    assert.equal(targetOps.filter(op => op.type === 'deltaUsage').length, 2)
+    const saveOps = queueOpsMock.mock.calls[1].arguments[0]
+    const insert = saveOps.find(op => op.type === 'insertOrReplaceDocument')
+    assert.equal(insert.data.document.id, deletionEvent.id)
+    assert.equal(insert.data.document.kind, eventKinds.DELETION)
+    assert.ok(insert.data.document.expiresAt <= Math.floor(Date.now() / 1000) + (3 * 24 * 60 * 60))
+  })
+
+  it('should reject a private broadcast deletion when any target lacks its deletion key', async () => {
+    const deletionPubkey = pad64('d1')
+    const channelPubkey = pad64('e1')
+    const matching = {
+      id: pad64('f5'),
+      pubkey: channelPubkey,
+      kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+      tags: [['s', deletionPubkey]],
+      created_at: 1000,
+      content: 'matching',
+      sig: VALID_SIG
+    }
+    const mismatched = {
+      id: pad64('f6'),
+      pubkey: channelPubkey,
+      kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+      tags: [['s', pad64('c')]],
+      created_at: 1001,
+      content: 'not authorized',
+      sig: VALID_SIG
+    }
+    const { eventToRecord } = await import('#models/event/mapper.js')
+    await mdb.index('events').addDocuments([matching, mismatched].map(event => ({
+      ...eventToRecord(event, { receivedAt: event.created_at }),
+      byteSize: 100,
+      ownerType: 'pubkey',
+      ip: '1.2.3.4'
+    })))
+
+    const deletionEvent = {
+      id: pad64('f7'),
+      pubkey: deletionPubkey,
+      kind: eventKinds.DELETION,
+      tags: [['k', '3560'], ['e', matching.id], ['e', mismatched.id]],
+      created_at: 2000,
+      content: '',
+      sig: VALID_SIG
+    }
+    const result = await EventSaver.run({ ws: {}, event: deletionEvent, ip: '1.2.3.4' })
+
+    assert.equal(result.isSuccess, false)
+    assert.equal(result.message, 'invalid: some private broadcast targets do not match the deletion key')
+    assert.equal(queueOpsMock.mock.calls.length, 0)
+  })
+
+  it('should reject an ordinary deletion of an untagged private broadcast without deleting other targets', async () => {
+    const ordinaryTarget = {
+      id: pad64('f8'),
+      pubkey: VALID_PUBKEY_DEL,
+      kind: 1,
+      tags: [],
+      created_at: 1000,
+      content: 'ordinary event',
+      sig: VALID_SIG
+    }
+    const privateBroadcast = {
+      id: pad64('f9'),
+      pubkey: VALID_PUBKEY_DEL,
+      kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+      tags: [],
+      created_at: 1001,
+      content: 'untagged private broadcast',
+      sig: VALID_SIG
+    }
+    const { eventToRecord } = await import('#models/event/mapper.js')
+    await mdb.index('events').addDocuments([ordinaryTarget, privateBroadcast].map(event => ({
+      ...eventToRecord(event, { receivedAt: event.created_at }),
+      byteSize: 100,
+      ownerType: 'pubkey',
+      ip: '1.2.3.4'
+    })))
+
+    const deletionEvent = {
+      id: pad64('fa'),
+      pubkey: VALID_PUBKEY_DEL,
+      kind: eventKinds.DELETION,
+      tags: [['e', ordinaryTarget.id], ['e', privateBroadcast.id]],
+      created_at: 2000,
+      content: '',
+      sig: VALID_SIG
+    }
+    const result = await EventSaver.run({ ws: {}, event: deletionEvent, ip: '1.2.3.4' })
+
+    assert.equal(result.isSuccess, false)
+    assert.equal(result.message, 'invalid: private broadcasts require an exact k=3560 deletion request')
+    assert.equal(queueOpsMock.mock.calls.length, 0)
+  })
+
+  it('should reject private broadcast deletion requests with address targets', async () => {
+    const deletionEvent = {
+      id: pad64('f8'),
+      pubkey: pad64('d2'),
+      kind: eventKinds.DELETION,
+      tags: [['k', '3560'], ['e', pad64('f9')], ['a', `3560:${pad64('e2')}:`]],
+      created_at: 2000,
+      content: '',
+      sig: VALID_SIG
+    }
+    const result = await EventSaver.run({ ws: {}, event: deletionEvent, ip: '1.2.3.4' })
+
+    assert.equal(result.isSuccess, false)
+    assert.equal(result.message, 'invalid: private broadcast deletion cannot target addresses')
+    assert.equal(queueOpsMock.mock.calls.length, 0)
+  })
+
+  it('should reject duplicate private broadcast deletion targets', async () => {
+    const deletionEvent = {
+      id: pad64('fa'),
+      pubkey: pad64('da'),
+      kind: eventKinds.DELETION,
+      tags: [['k', '3560'], ['e', pad64('fb')], ['e', pad64('fb')]],
+      created_at: 2000,
+      content: '',
+      sig: VALID_SIG
+    }
+    const result = await EventSaver.run({ ws: {}, event: deletionEvent, ip: '1.2.3.4' })
+
+    assert.equal(result.isSuccess, false)
+    assert.equal(result.message, 'invalid: private broadcast deletion requires one to 100 distinct event ids')
+    assert.equal(queueOpsMock.mock.calls.length, 0)
+  })
+
+  it('should reject a non-exact k=3560 deletion request even when the s tag matches', async () => {
+    const deletionPubkey = pad64('db')
+    const target = {
+      id: pad64('fc'),
+      pubkey: deletionPubkey,
+      kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+      tags: [['s', deletionPubkey]],
+      created_at: 1000,
+      content: 'private broadcast',
+      sig: VALID_SIG
+    }
+    const { eventToRecord } = await import('#models/event/mapper.js')
+    await mdb.index('events').addDocuments([{
+      ...eventToRecord(target, { receivedAt: target.created_at }),
+      byteSize: 100,
+      ownerType: 'pubkey',
+      ip: '1.2.3.4'
+    }])
+    const deletionEvent = {
+      id: pad64('fd'),
+      pubkey: deletionPubkey,
+      kind: eventKinds.DELETION,
+      tags: [['k', '3560'], ['k', '1'], ['e', target.id]],
+      created_at: 2000,
+      content: '',
+      sig: VALID_SIG
+    }
+    const result = await EventSaver.run({ ws: {}, event: deletionEvent, ip: '1.2.3.4' })
+
+    assert.equal(result.isSuccess, false)
+    assert.equal(result.message, 'invalid: private broadcasts require an exact k=3560 deletion request')
+    assert.equal(queueOpsMock.mock.calls.length, 0)
+  })
+
   it('should replace event and handle usage update', async () => {
     // Seed Old Event
     const oldEvent = {

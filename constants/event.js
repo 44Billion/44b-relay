@@ -23,6 +23,7 @@ const eventKinds = {
   VOICE_MESSAGE_REPLY: 1244,
   // https://airch.at - npub1ph0n0nlw37vwze32uwy68r9crhywmj89lnpljssyr6j6g2jv944svmcn4n
   // TRANSCRIBED_VOICE_MESSAGE: ?,
+  PRIVATE_CHANNEL_BROADCAST: 3560,
   MUTE_LIST: 10000,
   PINNED_NOTES: 10001,
   READ_WRITE_RELAYS: 10002,
@@ -74,6 +75,9 @@ const eventKinds = {
   MEDIA_STARTER_PACK: 39092
 }
 
+// Kind-5 events use this same window for local retention and unauthenticated publishing.
+const OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS = 60 * 10
+
 // these are 1:1 pubkey - event kind
 // so that data don't get lost below newer content / deleted
 // const eventKindTo1To1Table = {
@@ -107,6 +111,7 @@ const eventTags = {
   GEOLOCATION: 'g', // not used by anyone yet ["g", "DE", "country"] or ["g", "ww8p1r4t8", "geohash"]
   HASHTAG: 't',
   IMAGE: 'image', // https://github.com/nostr-protocol/nips/blob/master/23.md
+  KIND: 'k',
   LANGUAGE: 'l', // https://github.com/nostr-protocol/nips/blob/master/12.md
   NONCE: 'nonce',
   PUBKEY: 'p',
@@ -115,6 +120,7 @@ const eventTags = {
   REFERENCE: 'r',
   SUBJECT: 'subject',
   SUMMARY: 'summary', // https://github.com/nostr-protocol/nips/blob/master/23.md
+  SENDER: 's',
   TITLE: 'title' // https://github.com/nostr-protocol/nips/blob/master/23.md
 }
 
@@ -126,6 +132,7 @@ const RELAY_OWNED_KINDS = new Set([
 ])
 
 export {
+  OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS,
   eventKinds,
   // eventKindTo1To1Table,
   eventTags,

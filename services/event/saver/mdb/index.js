@@ -9,6 +9,15 @@ import { getEventByRef } from '#models/event/dao.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
 import { trackHashtagStats } from '#services/event/tracker/mdb/hashtag-stats.js'
 
+const HEX_EVENT_ID = /^[0-9a-f]{64}$/i
+
+function isPrivateBroadcastDeletion (event) {
+  const kindTags = event.tags.filter(tag => tag[0] === eventTags.KIND)
+  return kindTags.length === 1 &&
+    kindTags[0].length === 2 &&
+    kindTags[0][1] === String(eventKinds.PRIVATE_CHANNEL_BROADCAST)
+}
+
 export default class EventSaver {
   static run ({ ws, event, ip, language, topics, hashtags }) {
     return new this({ ws, event, ip, language, topics, hashtags }).save()
@@ -236,6 +245,57 @@ export default class EventSaver {
   }
 
   async handleDelete ({ author }) {
+    if (isPrivateBroadcastDeletion(this.event)) {
+      return this.handlePrivateBroadcastDelete({ author })
+    }
+    return this.handleStandardDelete({ author })
+  }
+
+  // The exact k=3560 marker authorizes a one-time deletion key to remove
+  // explicit private-channel outer events carrying that key in their s tag.
+  async handlePrivateBroadcastDelete ({ author }) {
+    const { event } = this
+    try {
+      const eventTagsOnly = event.tags.filter(tag => tag[0] === eventTags.EVENT)
+      const hasAddressTargets = event.tags.some(tag => tag[0] === eventTags.ADDRESS)
+      const ids = [...new Set(eventTagsOnly.map(tag => tag[1]))]
+
+      if (hasAddressTargets) {
+        return { isSuccess: false, isDuplicate: false, message: 'invalid: private broadcast deletion cannot target addresses' }
+      }
+      if (
+        ids.length === 0 ||
+        ids.length > 100 ||
+        ids.length !== eventTagsOnly.length ||
+        eventTagsOnly.some(tag => typeof tag[1] !== 'string' || !HEX_EVENT_ID.test(tag[1]))
+      ) {
+        return { isSuccess: false, isDuplicate: false, message: 'invalid: private broadcast deletion requires one to 100 distinct event ids' }
+      }
+
+      const idsFilter = `id IN [${ids.map(id => mdb.toMeiliValue(id)).join(', ')}]`
+      const senderTag = `${eventTags.SENDER} ${author}`
+      const { hits } = await mdb.index('events').search('', {
+        filter: `${idsFilter} AND kind = ${mdb.toMeiliValue(eventKinds.PRIVATE_CHANNEL_BROADCAST)} AND indexableTags = ${mdb.toMeiliValue(senderTag)}`,
+        limit: ids.length
+      })
+      const foundIds = new Set(hits.map(hit => hit.id))
+      const validTargets = hits.every(hit =>
+        hit.kind === eventKinds.PRIVATE_CHANNEL_BROADCAST &&
+        hit.indexableTags?.includes(senderTag)
+      ) && ids.every(id => foundIds.has(id))
+      if (!validTargets) {
+        return { isSuccess: false, isDuplicate: false, message: 'invalid: some private broadcast targets do not match the deletion key' }
+      }
+
+      await this.deleteHits(hits)
+      return { isSuccess: true }
+    } catch (err) {
+      console.error(err)
+      return { isSuccess: false, isDuplicate: false, message: 'error: error deleting' }
+    }
+  }
+
+  async handleStandardDelete ({ author }) {
     const { event } = this
     try {
       const idOrAddressTags = {
@@ -288,6 +348,18 @@ export default class EventSaver {
         .map(v => `(${v})`)
         .join(' OR ')
 
+      // Ordinary NIP-09 authorization never applies to private broadcasts.
+      // They require the exact k=3560 deletion-capability flow above instead.
+      const privateBroadcastFilter = `pubkey = ${authorVal} AND kind = ${eventKinds.PRIVATE_CHANNEL_BROADCAST} AND (${idsOrAddressesFilter})`
+      const { estimatedTotalHits: hasPrivateBroadcastTarget } = await mdb.index('events').search('', {
+        filter: privateBroadcastFilter,
+        limit: 1,
+        offset: mdb.constants.maxTotalHits
+      })
+      if (hasPrivateBroadcastTarget) {
+        return { isSuccess: false, isDuplicate: false, message: 'invalid: private broadcasts require an exact k=3560 deletion request' }
+      }
+
       // Check if any of the id/addresses are invalid (pubkey mismatch or kind 5)
       let filter = `(${
         idsOrAddressesFilter}) AND (NOT pubkey = ${
@@ -301,32 +373,32 @@ export default class EventSaver {
       filter = `pubkey = ${authorVal} AND (${idsOrAddressesFilter})`
       const searchRes = await mdb.index('events').search('', { filter, limit: 100 })
 
-      const ops = []
-      for (const hit of searchRes.hits) {
-        // Subtract size from owner
-        const ownerType = hit.ownerType || 'pubkey'
-        const ownerKey = ownerType === 'pubkey' ? hit.pubkey : ipToPrimaryKey(hit.ip)
-
-        if (ownerKey) {
-          ops.push({
-            type: 'deltaUsage',
-            data: { key: ownerKey, delta: -(hit.byteSize || 0), entityType: ownerType }
-          })
-        }
-        ops.push({
-          type: 'deleteDocumentIfExists',
-          data: { index: 'events', key: hit.ref }
-        })
-      }
-
-      if (ops.length > 0) {
-        await queueOps(ops)
-      }
+      await this.deleteHits(searchRes.hits)
 
       return { isSuccess: true }
     } catch (err) {
       console.error(err)
       return { isSuccess: false, isDuplicate: false, message: 'error: error deleting' }
     }
+  }
+
+  async deleteHits (hits) {
+    const ops = []
+    for (const hit of hits) {
+      const ownerType = hit.ownerType || 'pubkey'
+      const ownerKey = ownerType === 'pubkey' ? hit.pubkey : ipToPrimaryKey(hit.ip)
+
+      if (ownerKey) {
+        ops.push({
+          type: 'deltaUsage',
+          data: { key: ownerKey, delta: -(hit.byteSize || 0), entityType: ownerType }
+        })
+      }
+      ops.push({
+        type: 'deleteDocumentIfExists',
+        data: { index: 'events', key: hit.ref }
+      })
+    }
+    if (ops.length > 0) await queueOps(ops)
   }
 }
