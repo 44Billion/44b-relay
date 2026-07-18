@@ -8,7 +8,7 @@ import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
 import { base16ToBytes } from '#helpers/base16.js'
 
 const runPendingOps = async () => {
-  const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+  const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc'] })
   const state = await loadSystemState()
   await processBatch(hits, state)
 }

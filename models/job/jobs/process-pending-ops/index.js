@@ -2,6 +2,7 @@ import { Buffer } from 'buffer'
 import { ConservativeCountMin } from 'sketch-oxide-node'
 import mdb from '#services/db/mdb.js'
 import { pruneEvents } from '#services/event/maintainer/mdb/index.js'
+import { comparePendingOps, PENDING_OPS_SORT } from '#models/pending-op/order.js'
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { base16ToBytes, bytesToBase16 } from '#helpers/base16.js'
 import { base64ToBytes, bytesToBase64 } from '#helpers/base64.js'
@@ -9,6 +10,7 @@ import { createSketch } from '#services/event/tracker/mdb/ip-activity.js'
 import { wait } from '#helpers/timer.js'
 import { compressAsync, decompressAsync } from '#helpers/buffer.js'
 import { eventKinds } from '#constants/event.js'
+import { isPendingWorkflow, processPendingWorkflow } from '#services/event/pending-workflows.js'
 
 const BATCH_SIZE = 100
 const MAX_FILL_ATTEMPTS = 2
@@ -22,6 +24,8 @@ const INDEX_CONFIG = {
   ipActivities: { pkField: 'key' },
   requestedPubkeys: { pkField: 'key' },
   hashtagStats: { pkField: 'key' },
+  manifestPoolUsage: { pkField: 'key' },
+  manifestPoolReservations: { pkField: 'key' },
   pendingOps: { pkField: 'key' } // Should not be target of ops usually
 }
 
@@ -57,17 +61,34 @@ export async function run () {
   let fillAttempts = 0
 
   while (true) {
-    const needed = BATCH_SIZE - opsBuffer.length
+    if (opsBuffer.length === 0) {
+      try {
+        const { hits: startedWorkflows } = await mdb.index('pendingOps').search('', {
+          filter: 'phase != "queued" AND (type = "upsertManifestWithReservation" OR type = "deleteEventsWithAccounting")',
+          limit: 1,
+          sort: ['startedAt:asc', 'createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc']
+        })
+        if (startedWorkflows.length) {
+          await processBatch(startedWorkflows, systemState)
+          continue
+        }
+      } catch (error) {
+        console.error('Error fetching started pending workflow', error)
+        await wait(FILL_WAIT_MS)
+        continue
+      }
+    }
 
-    if (needed > 0) {
+    if (opsBuffer.length < BATCH_SIZE) {
       try {
         const { hits } = await mdb.index('pendingOps').search('', {
-          limit: needed,
-          offset: opsBuffer.length,
-          sort: ['createdAt:asc']
+          limit: BATCH_SIZE,
+          sort: PENDING_OPS_SORT
         })
         if (hits.length > 0) {
-          opsBuffer = opsBuffer.concat(hits)
+          const byKey = new Map(opsBuffer.map(op => [op.key, op]))
+          for (const op of hits) byKey.set(op.key, op)
+          opsBuffer = [...byKey.values()].sort(comparePendingOps).slice(0, BATCH_SIZE)
         }
       } catch (err) {
         console.error('Error fetching pending ops', err)
@@ -107,7 +128,7 @@ export async function run () {
   // log('Done processing pending storage operations.')
 }
 
-export async function processBatch (results, systemState) {
+async function processSimpleBatch (results, systemState) {
   // Accumulators
   const docsToAddOrUpdate = {} // index -> Map<key, doc>
   const keysToDelete = {} // index -> Set<primaryKey>
@@ -523,10 +544,34 @@ export async function processBatch (results, systemState) {
 
   await Promise.all(commitPromises)
 
+  for (const [indexName, ids] of Object.entries(processedOpsInBatch)) {
+    for (const id of ids) systemState[indexName].add(id)
+  }
+
   // 5. Delete Ops from Pending
   if (opsToDeleteFromQueue.length > 0) {
     await mdb.index('pendingOps').deleteDocuments(opsToDeleteFromQueue)
   }
+}
+
+export async function processBatch (results, systemState) {
+  results = [...results].sort(comparePendingOps)
+  let simpleOps = []
+  const flushSimpleOps = async () => {
+    if (!simpleOps.length) return
+    await processSimpleBatch(simpleOps, systemState)
+    simpleOps = []
+  }
+
+  for (const op of results) {
+    if (!isPendingWorkflow(op)) {
+      simpleOps.push(op)
+      continue
+    }
+    await flushSimpleOps()
+    await processPendingWorkflow(op)
+  }
+  await flushSimpleOps()
 }
 
 export default {

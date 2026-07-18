@@ -2,7 +2,7 @@ import mdb from '#services/db/mdb.js'
 import { loadAndMaybeRotateSketches } from '#services/event/tracker/mdb/requested-events.js'
 import { eventKinds } from '#constants/event.js'
 import { Buffer } from 'buffer'
-import { releaseManifestBatch } from '#services/event/manifest-pool.js'
+import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
 
 const BATCH_SIZE = 50
 
@@ -50,7 +50,7 @@ async function deleteUnrequestedRelayEvents () {
         filter: baseFilter,
         limit: BATCH_SIZE,
         offset,
-        fields: ['ref', 'byteSize', 'pubkey', 'kind']
+        fields: ['ref', 'id', 'byteSize', 'pubkey', 'kind', 'ownerType', 'ip']
       })
 
       if (results.length === 0) break
@@ -67,14 +67,15 @@ async function deleteUnrequestedRelayEvents () {
       }
 
       if (candidates.length > 0) {
-        await mdb.index('events').deleteDocuments(candidates.map(hit => hit.ref))
-        const manifests = candidates.filter(hit => hit.kind !== eventKinds.READ_WRITE_RELAYS)
-        await releaseManifestBatch(manifests, { pruning: true })
+        await queueDeleteEventsWithAccounting(candidates, {
+          pruning: policy.name === 'site-manifests',
+          source: 'deleteUnrequestedRelayEvents'
+        })
         deletedCount += candidates.length
       }
 
       if (results.length < BATCH_SIZE) break
-      offset += (results.length - candidates.length)
+      offset += results.length
     }
 
     if (deletedCount > 0) {

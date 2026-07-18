@@ -11,7 +11,13 @@ export default {
     'rejectionCount',
     'usedDatabaseSize',
     'reconciledAt',
-    'reservationTokens'
+    'mutationVersion',
+    'reservationTokens',
+    'settlementTokens',
+    'metricTokens',
+    'accountingTokens',
+    'workflowTokens',
+    'lastReconciliationToken'
   ],
   settings: {
     displayedAttributes: ['*'],

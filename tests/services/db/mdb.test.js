@@ -9,6 +9,8 @@ import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
 import popularPubkeySchema from '#models/popular-pubkey/schema.js'
 import ipActivitySchema from '#models/ip-activity/schema.js'
 import maintenanceStateSchema from '#models/maintenance-state/schema.js'
+import manifestPoolUsageSchema from '#models/manifest-pool-usage/schema.js'
+import manifestPoolReservationSchema from '#models/manifest-pool-reservation/schema.js'
 
 describe('Meilisearch Client', () => {
   const schemas = [
@@ -19,7 +21,9 @@ describe('Meilisearch Client', () => {
     popularPubkeySchema,
     ipActivitySchema,
     maintenanceStateSchema,
-    jobSchema
+    jobSchema,
+    manifestPoolUsageSchema,
+    manifestPoolReservationSchema
   ]
 
   it('should have initialized database with correct indexes and settings', async () => {
@@ -97,5 +101,22 @@ describe('Meilisearch Client', () => {
         }
       }
     }
+  })
+
+  it('normalizes legacy pending operations with deterministic sort fields', async () => {
+    const key = 'legacy-op-for-migration-test'
+    await db.index('pendingOps').addDocuments([{
+      key,
+      type: 'legacyTest',
+      data: {},
+      createdAt: 123
+    }])
+
+    await migrate(db, () => {})
+    const operation = await db.index('pendingOps').getDocument(key)
+    assert.equal(operation.batchId, `legacy-${key}`)
+    assert.equal(operation.position, 0)
+    assert.equal(operation.phase, 'queued')
+    await db.index('pendingOps').deleteDocument(key)
   })
 })

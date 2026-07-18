@@ -3,6 +3,7 @@ import { RELAY_OWNED_KINDS } from '#constants/event.js'
 import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps, VIP_PUBKEYS } from '#services/event/maintainer/mdb/index.js'
 import { FastBloomFilter, packFilter, unpackFilter } from '#helpers/bloom.js'
 import { base16ToBytes } from '#helpers/base16.js'
+import { PENDING_OPS_REVERSE_SORT } from '#models/pending-op/order.js'
 
 async function run () {
   console.log('Running storage tiers maintenance...')
@@ -59,7 +60,7 @@ async function run () {
   try {
     const { hits } = await mdb.index('pendingOps').search('', {
       filter: 'source = "maintainStorageTiers"',
-      sort: ['createdAt:desc'],
+      sort: PENDING_OPS_REVERSE_SORT,
       limit: 1
     })
     if (hits.length > 0) {

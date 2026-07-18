@@ -1,4 +1,4 @@
-import { describe, it, beforeEach } from 'node:test'
+import { describe, it, beforeEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
 import * as maintainer from '#services/event/maintainer/mdb/index.js'
@@ -41,7 +41,58 @@ describe('Event Maintainer (MDB)', () => {
       assert.equal(parsedData.foo, 'bar')
       assert.equal(parsedData.key, 'abc')
       assert.ok(doc.key) // UUID present
+      assert.match(doc.key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+      assert.match(doc.batchId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
       assert.ok(doc.createdAt)
+    })
+
+    it('preserves array order with explicit batch positions', async () => {
+      const nowMock = mock.method(Date, 'now', () => 123456789)
+      try {
+        await Promise.all([
+          maintainer.queueOps([
+            { type: 'a0', data: {} },
+            { type: 'a1', data: {} },
+            { type: 'a2', data: {} }
+          ]),
+          maintainer.queueOps([
+            { type: 'b0', data: {} },
+            { type: 'b1', data: {} }
+          ])
+        ])
+      } finally {
+        nowMock.mock.restore()
+      }
+
+      const { hits } = await mdb.index('pendingOps').search('', {
+        limit: 10,
+        sort: ['createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc']
+      })
+      assert.equal(new Set(hits.map(op => op.key)).size, 5)
+      assert.deepEqual(new Set(hits.map(op => op.createdAt)), new Set([123456789]))
+
+      const batches = Map.groupBy(hits, op => op.batchId)
+      assert.equal(batches.size, 2)
+      const orderedTypes = [...batches.values()].map(batch => batch.map(op => op.type))
+      assert.ok(orderedTypes.some(types => JSON.stringify(types) === JSON.stringify(['a0', 'a1', 'a2'])))
+      assert.ok(orderedTypes.some(types => JSON.stringify(types) === JSON.stringify(['b0', 'b1'])))
+      for (const batch of batches.values()) {
+        assert.deepEqual(batch.map(op => op.position), batch.map((_op, index) => index))
+      }
+    })
+
+    it('keeps positions stable when a logical batch crosses the processor batch size', async () => {
+      await maintainer.queueOps(Array.from({ length: 101 }, (_value, index) => ({
+        type: `op-${index}`,
+        data: { index }
+      })))
+      const { hits } = await mdb.index('pendingOps').search('', {
+        limit: 200,
+        sort: ['createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc']
+      })
+      assert.equal(hits.length, 101)
+      assert.equal(new Set(hits.map(op => op.batchId)).size, 1)
+      assert.deepEqual(hits.map(op => op.position), Array.from({ length: 101 }, (_value, index) => index))
     })
   })
 

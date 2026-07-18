@@ -95,6 +95,7 @@ import maintenanceStateSchema from '#models/maintenance-state/schema.js'
 import hashtagStatsSchema from '#models/hashtag-stats/schema.js'
 import iconProviderHealthSchema from '#models/icon-provider-health/schema.js'
 import manifestPoolUsageSchema from '#models/manifest-pool-usage/schema.js'
+import manifestPoolReservationSchema from '#models/manifest-pool-reservation/schema.js'
 import { addToCleanup } from '#helpers/process.js'
 
 // Remember if deleting by filter, that filtering by <primaryKey> = xyz
@@ -265,7 +266,8 @@ export async function migrate (db, log = console.log) {
     maintenanceStateSchema,
     hashtagStatsSchema,
     iconProviderHealthSchema,
-    manifestPoolUsageSchema
+    manifestPoolUsageSchema,
+    manifestPoolReservationSchema
   ]
   const idxsByUid = idxs.reduce((r, v) => ({ ...r, [v.uid]: v }), {})
   const currentIdxsByUid = await db.getIndexes({ limit: db.constants.maxBigIndexes })
@@ -332,5 +334,30 @@ export async function migrate (db, log = console.log) {
 
   const leftoverIdxs = Object.keys(currentIdxsByUid).filter(uid => !idxsByUid[uid]).join(', ')
   if (leftoverIdxs) log(`Consider deleting these leftover indexes: ${leftoverIdxs}`)
+
+  // Older pending operations used only createdAt, so operations queued in the
+  // same millisecond had no stable tie-break. Their original array order cannot
+  // be reconstructed, but assigning one deterministic legacy batch per item
+  // makes pagination stable after adding the new sort fields.
+  let pendingOffset = 0
+  while (true) {
+    const { results } = await db.index('pendingOps').getDocuments({
+      limit: 500,
+      offset: pendingOffset,
+      fields: ['key', 'batchId', 'position', 'phase']
+    })
+    if (!results.length) break
+    const patches = results
+      .filter(op => !op.batchId || !Number.isSafeInteger(op.position) || op.position < 0)
+      .map(op => ({
+        key: op.key,
+        batchId: `legacy-${op.key}`,
+        position: 0,
+        phase: op.phase || 'queued'
+      }))
+    if (patches.length) await db.index('pendingOps').updateDocuments(patches)
+    if (results.length < 500) break
+    pendingOffset += results.length
+  }
   log('Migration done')
 }

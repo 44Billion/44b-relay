@@ -1,9 +1,8 @@
 import mdb from '#services/db/mdb.js'
-import { queueOps } from '#services/event/maintainer/mdb/index.js'
 import { eventKinds } from '#constants/event.js'
-import { ipToPrimaryKey } from '#helpers/mdb.js'
 import { recordToEvent } from '#models/event/mapper.js'
 import { validateIrfsChunkEvent } from '#services/event/irfs-chunk-validator.js'
+import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
 
 const BATCH_SIZE = 100
 const GRACE_PERIOD_SECONDS = 60 * 60 * 24 * 3
@@ -74,7 +73,6 @@ async function deleteStaleChunks () {
   for (const pubkey of pubkeys) {
     const referencedRoots = await collectBlobRefsForPubkey(pubkey)
     let offset = 0
-    const usageDeltas = new Map()
 
     while (true) {
       const { results } = await mdb.index('events').getDocuments({
@@ -83,34 +81,20 @@ async function deleteStaleChunks () {
         offset
       })
       if (!results.length) break
-      const ops = []
+      const selected = []
       for (const hit of results) {
         const invalid = !isValidStoredChunk(hit)
         const oldAndUnreferenced = hit.receivedAt <= receivedBefore && !referencedRoots.has(hit.mmrRoot)
         if (!invalid && !oldAndUnreferenced) continue
-        ops.push({ type: 'deleteDocumentIfExists', data: { index: 'events', key: hit.ref } })
-        const ownerType = hit.ownerType === 'ip' ? 'ip' : 'pubkey'
-        const key = ownerType === 'ip' ? ipToPrimaryKey(hit.ip) : hit.pubkey
-        if (key) {
-          const usageKey = `${ownerType}:${key}`
-          const usage = usageDeltas.get(usageKey) || { ownerType, key, delta: 0 }
-          usage.delta -= hit.byteSize || 0
-          usageDeltas.set(usageKey, usage)
-        }
+        selected.push(hit)
       }
-      if (ops.length) {
-        await queueOps(ops)
-        deletedCount += ops.length
+      if (selected.length) {
+        await queueDeleteEventsWithAccounting(selected, { source: 'deleteStaleChunks' })
+        deletedCount += selected.length
       }
       if (results.length < BATCH_SIZE) break
       offset += results.length
     }
-
-    const usageOps = [...usageDeltas.values()].filter(usage => usage.delta < 0).map(usage => ({
-      type: 'deltaUsage',
-      data: { key: usage.key, delta: usage.delta, entityType: usage.ownerType }
-    }))
-    if (usageOps.length) await queueOps(usageOps)
   }
   console.log(`Queued ${deletedCount} invalid or stale chunks for deletion`)
 }

@@ -21,7 +21,7 @@ describe('Job: Process Pending Ops - Sequences', () => {
     processPendingOps = await import('#models/job/jobs/process-pending-ops/index.js')
 
     runSingleBatch = async () => {
-      const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+      const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc'] })
       const state = await processPendingOps.loadSystemState()
       await processPendingOps.processBatch(hits, state)
     }
@@ -188,5 +188,29 @@ describe('Job: Process Pending Ops - Sequences', () => {
       const isNotFound = (e.code === 'document_not_found') || (e.cause?.code === 'document_not_found') || (e.response && e.response.status === 404)
       assert.ok(isNotFound, 'Should return document_not_found')
     }
+  })
+
+  it('preserves one batch order across the 100-operation page boundary', async () => {
+    const ref = 'cross_page_doc'
+    await mdb.index('pendingOps').addDocuments(Array.from({ length: 101 }, (_value, position) => ({
+      key: `cross-page-${position}`,
+      type: 'insertOrReplaceDocument',
+      data: { index: 'events', document: { ref, position } },
+      createdAt: 5000,
+      batchId: 'one-logical-batch',
+      position,
+      phase: 'queued'
+    })))
+
+    for (let page = 0; page < 2; page++) {
+      const { hits } = await mdb.index('pendingOps').search('', {
+        limit: 100,
+        sort: ['createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc']
+      })
+      await processPendingOps.processBatch(hits, await processPendingOps.loadSystemState())
+    }
+
+    assert.equal((await mdb.index('events').getDocument(ref)).position, 100)
+    assert.equal((await mdb.index('pendingOps').search('', { limit: 1 })).hits.length, 0)
   })
 })

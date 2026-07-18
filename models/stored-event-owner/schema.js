@@ -7,7 +7,8 @@ export default {
     'popularityLevel',
     'previousPopularityLevel',
     'usedBytes',
-    'lastActiveAt'
+    'lastActiveAt',
+    'accountingTokens'
   ],
   settings: {
     filterableAttributes: [

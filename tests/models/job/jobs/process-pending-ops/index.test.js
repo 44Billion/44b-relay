@@ -28,7 +28,7 @@ describe('Job: Process Pending Ops', () => {
     processPendingOps = await import('#models/job/jobs/process-pending-ops/index.js')
 
     runSingleBatch = async () => {
-      const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+      const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc'] })
       const state = await processPendingOps.loadSystemState()
       await processPendingOps.processBatch(hits, state)
     }

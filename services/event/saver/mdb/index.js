@@ -11,9 +11,9 @@ import { trackHashtagStats } from '#services/event/tracker/mdb/hashtag-stats.js'
 import {
   cancelManifestReservation,
   isManifestKind,
-  releaseManifestUsage,
   reserveManifestCapacity
 } from '#services/event/manifest-pool.js'
+import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
 
 const HEX_EVENT_ID = /^[0-9a-f]{64}$/i
 
@@ -121,7 +121,10 @@ export default class EventSaver {
           pubkey: author,
           newBytes: byteSize,
           oldBytes: oldEvent?.byteSize || 0,
-          isReplacement: Boolean(oldEvent)
+          isReplacement: Boolean(oldEvent),
+          eventId: event.id,
+          ref: record.ref,
+          oldEventId: oldEvent?.id || ''
         })
         if (!manifestReservation.accepted) {
           return { isSuccess: false, isDuplicate: false, message: `blocked: ${manifestReservation.reason}` }
@@ -162,11 +165,21 @@ export default class EventSaver {
         // language, topics and receivedAt are already in record
       }
 
-      // Add 'insertOrReplaceDocument' op
-      ops.push({
-        type: 'insertOrReplaceDocument',
-        data: { index: 'events', document: dbEvent }
-      })
+      if (manifestReservation?.accepted) {
+        ops.push({
+          type: 'upsertManifestWithReservation',
+          reservationKey: manifestReservation.reservationKey,
+          data: {
+            document: dbEvent,
+            reservationKey: manifestReservation.reservationKey
+          }
+        })
+      } else {
+        ops.push({
+          type: 'insertOrReplaceDocument',
+          data: { index: 'events', document: dbEvent }
+        })
+      }
 
       if (popularityLevel <= 6) {
         const pushHllOpById = (eventId, field) => {
@@ -266,7 +279,7 @@ export default class EventSaver {
       return { isSuccess: true, isDuplicate: false, message: '' }
     } catch (err) {
       if (manifestReservation?.accepted) {
-        await cancelManifestReservation(author, manifestReservation).catch(error => console.error('Failed to cancel manifest reservation', error))
+        await cancelManifestReservation(manifestReservation.reservationKey).catch(error => console.error('Failed to cancel manifest reservation', error))
       }
       console.error(err)
       return { isSuccess: false, message: 'error: error saving' }
@@ -412,29 +425,6 @@ export default class EventSaver {
   }
 
   async deleteHits (hits) {
-    const ops = []
-    for (const hit of hits) {
-      const ownerType = hit.ownerType || 'pubkey'
-      const ownerKey = ownerType === 'pubkey' ? hit.pubkey : ipToPrimaryKey(hit.ip)
-
-      if (ownerKey && !RELAY_OWNED_KINDS.has(hit.kind)) {
-        ops.push({
-          type: 'deltaUsage',
-          data: { key: ownerKey, delta: -(hit.byteSize || 0), entityType: ownerType }
-        })
-      }
-      ops.push({
-        type: 'deleteDocumentIfExists',
-        data: { index: 'events', key: hit.ref }
-      })
-    }
-    if (ops.length > 0) {
-      await queueOps(ops)
-      for (const hit of hits) {
-        if (isManifestKind(hit.kind)) {
-          await releaseManifestUsage({ pubkey: hit.pubkey, logicalBytes: hit.byteSize || 0 })
-        }
-      }
-    }
+    await queueDeleteEventsWithAccounting(hits, { source: 'nip09' })
   }
 }

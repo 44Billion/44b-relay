@@ -5,6 +5,7 @@ import { primaryKeyToIp, ipToPrimaryKey, isValidPrimaryKey } from '#helpers/mdb.
 import { base16ToBytes } from '#helpers/base16.js'
 import { getRelaySelfPubkey } from '#helpers/relay-self.js'
 import { eventKinds, RELAY_OWNED_KINDS } from '#constants/event.js'
+import { PENDING_OPS_SORT } from '#models/pending-op/order.js'
 
 const ONE_MB = 1024 * 1024
 const EVENT_BATCH_SIZE = 20
@@ -233,11 +234,18 @@ const queueOps = (() => {
   async function queueOps (ops) {
     if (!ops || ops.length === 0) return
     const now = Date.now()
-    const documents = ops.map(op => {
+    const batchId = crypto.randomUUID()
+    const documents = ops.map((op, position) => {
+      const phase = op.phase ?? 'queued'
       return {
         key: crypto.randomUUID(),
         type: op.type,
         data: op.data,
+        batchId,
+        position,
+        phase,
+        ...(phase !== 'queued' ? { startedAt: now } : {}),
+        ...(![null, undefined].includes(op.reservationKey) ? { reservationKey: op.reservationKey } : {}),
         ...(![null, undefined].includes(op.source) ? { source: op.source } : {}),
         createdAt: now
       }
@@ -248,7 +256,7 @@ const queueOps = (() => {
   return process.env.IS_INTEGRATION_TEST === 'true'
     ? async (ops) => {
       async function runSingleBatch () {
-        const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+        const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: PENDING_OPS_SORT })
         const processPendingOps = await import('#models/job/jobs/process-pending-ops/index.js')
         const state = await processPendingOps.loadSystemState()
         await processPendingOps.processBatch(hits, state)

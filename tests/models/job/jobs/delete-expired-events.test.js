@@ -9,7 +9,7 @@ import { eventToRecord } from '#models/event/mapper.js'
 import { getManifestPoolUsage, reconcileManifestPoolUsage } from '#services/event/manifest-pool.js'
 
 const runPendingOps = async () => {
-  const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+  const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc'] })
   if (hits.length === 0) return
   const state = await loadSystemState()
   await processBatch(hits, state)

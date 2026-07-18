@@ -1,9 +1,6 @@
 import mdb from '#services/db/mdb.js'
 import { eventToRecord, recordToEvent } from './mapper.js'
-import { queueOps } from '#services/event/maintainer/mdb/index.js'
-import { ipToPrimaryKey } from '#helpers/mdb.js'
-import { MANIFEST_KINDS, RELAY_OWNED_KINDS } from '#constants/event.js'
-import { releaseManifestBatch } from '#services/event/manifest-pool.js'
+import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
 
 export async function getEventByRef (ref, options = {}) {
   return mdb.index('events').getDocument(ref, {
@@ -147,43 +144,12 @@ export async function deleteExpiredEvents () {
         filter,
         limit: BATCH_SIZE,
         offset,
-        attributesToRetrieve: ['ref', 'byteSize', 'ownerType', 'pubkey', 'ip', 'kind']
+        attributesToRetrieve: ['ref', 'id', 'byteSize', 'ownerType', 'pubkey', 'ip', 'kind']
       })
 
       if (hits.length === 0) break
 
-      // Group by owner to batch deltaUsage ops
-      const usageByOwner = {}
-      const ops = []
-
-      for (const hit of hits) {
-        // Schedule event deletion as a queued operation (atomic with usage update)
-        ops.push({
-          type: 'deleteDocumentIfExists',
-          data: { index: 'events', key: hit.ref }
-        })
-
-        if (RELAY_OWNED_KINDS.has(hit.kind)) continue
-        const ownerType = hit.ownerType || 'pubkey'
-        const ownerKey = ownerType === 'pubkey' ? hit.pubkey : ipToPrimaryKey(hit.ip)
-        if (!ownerKey) continue
-        if (!usageByOwner[ownerKey]) usageByOwner[ownerKey] = { entityType: ownerType, delta: 0 }
-        usageByOwner[ownerKey].delta -= (hit.byteSize || 0)
-      }
-
-      // Queue deltaUsage ops to decrement usedBytes
-      for (const [key, { entityType, delta }] of Object.entries(usageByOwner)) {
-        if (delta === 0) continue
-        ops.push({
-          type: 'deltaUsage',
-          data: { key, delta, entityType }
-        })
-      }
-
-      if (ops.length > 0) {
-        await queueOps(ops)
-        await releaseManifestBatch(hits.filter(hit => MANIFEST_KINDS.has(hit.kind)))
-      }
+      await queueDeleteEventsWithAccounting(hits, { source: 'deleteExpiredEvents' })
 
       // If we got fewer than BATCH_SIZE, we've exhausted the results
       if (hits.length < BATCH_SIZE) break

@@ -6,8 +6,9 @@ import {
   getManifestPoolUsage,
   MANIFEST_POOL_LIMITS,
   reconcileManifestPoolUsage,
-  releaseManifestBatch
+  recoverManifestReservations
 } from '#services/event/manifest-pool.js'
+import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
 
 const BATCH_SIZE = 250
 const RECONCILE_INTERVAL_SECONDS = 60 * 60
@@ -37,7 +38,7 @@ async function scanEvents (filter, options, visit) {
   while (true) {
     const { results } = await mdb.index('events').getDocuments({
       filter,
-      fields: ['ref', 'pubkey', 'byteSize', 'receivedAt'],
+      fields: ['ref', 'id', 'kind', 'pubkey', 'byteSize', 'receivedAt', 'ownerType', 'ip'],
       limit: BATCH_SIZE,
       offset,
       ...options
@@ -82,18 +83,22 @@ async function pruneFilter ({ filter, bytesToRemove, sketches }) {
     }
 
     if (selected.length) {
-      await mdb.index('events').deleteDocuments(selected.map(event => event.ref))
-      await releaseManifestBatch(selected, { pruning: true })
+      await queueDeleteEventsWithAccounting(selected, {
+        pruning: true,
+        source: 'pruneManifestPool'
+      })
       bytesRemoved += selected.reduce((sum, event) => sum + (event.byteSize || 0), 0)
       manifestsRemoved += selected.length
     }
-    return selected.length
+    // Deletion is asynchronous, so the result set has not shrunk yet.
+    return 0
   })
 
   return { bytesRemoved, manifestsRemoved }
 }
 
 export async function pruneManifestPool () {
+  await recoverManifestReservations()
   let usage = await getManifestPoolUsage()
   const now = Math.floor(Date.now() / 1000)
   if (!usage.global.reconciledAt || now - usage.global.reconciledAt >= RECONCILE_INTERVAL_SECONDS) {
@@ -103,6 +108,7 @@ export async function pruneManifestPool () {
   const sketches = await loadAndMaybeRotateSketches()
   let bytesRemoved = 0
   let manifestsRemoved = 0
+  let scheduledAuthorPruning = false
 
   // Correct abusive authors first. This also reduces the global pool before
   // its own target is evaluated.
@@ -115,10 +121,14 @@ export async function pruneManifestPool () {
     })
     bytesRemoved += result.bytesRemoved
     manifestsRemoved += result.manifestsRemoved
+    scheduledAuthorPruning ||= result.manifestsRemoved > 0
   }
 
+  // Let author-quota deletions settle before calculating the global deficit;
+  // otherwise the same still-visible manifest could be selected twice in one
+  // run. The five-minute follow-up handles the global pool if still needed.
   usage = await getManifestPoolUsage()
-  if (usage.global.logicalBytes > MANIFEST_POOL_LIMITS.global.nominal) {
+  if (!scheduledAuthorPruning && usage.global.logicalBytes > MANIFEST_POOL_LIMITS.global.nominal) {
     const result = await pruneFilter({
       filter: `(${KIND_FILTER})`,
       bytesToRemove: usage.global.logicalBytes - MANIFEST_POOL_LIMITS.global.target,
@@ -132,13 +142,20 @@ export async function pruneManifestPool () {
   console.log('Manifest pool capacity pruning', {
     logicalBytes: finalUsage.global.logicalBytes,
     manifestCount: finalUsage.global.manifestCount,
-    bytesRemoved,
-    manifestsRemoved,
+    bytesScheduled: bytesRemoved,
+    manifestsScheduled: manifestsRemoved,
     pruningCount: finalUsage.global.pruningCount,
     rejectionCount: finalUsage.global.rejectionCount,
     usedDatabaseSize: finalUsage.global.usedDatabaseSize ?? null
   })
-  return { bytesRemoved, manifestsRemoved, usage: finalUsage }
+  return {
+    bytesScheduled: bytesRemoved,
+    manifestsScheduled: manifestsRemoved,
+    // Keep aliases for callers of the existing internal API during rollout.
+    bytesRemoved,
+    manifestsRemoved,
+    usage: finalUsage
+  }
 }
 
 export async function run () {
@@ -150,6 +167,7 @@ export async function run () {
 export default {
   key: 'pruneManifestPool',
   frequency: 60 * 5,
+  initialDelay: 3,
   shouldUseLock: true,
   run
 }

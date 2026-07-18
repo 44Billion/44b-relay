@@ -6,15 +6,26 @@ export default {
     'type',
     'data',
     'createdAt',
+    'batchId',
+    'position',
+    'phase',
+    'startedAt',
+    'reservationKey',
     'source'
   ],
   settings: {
     filterableAttributes: [
       'type',
+      'phase',
+      'reservationKey',
       'source'
     ],
     sortableAttributes: [
-      'createdAt'
+      'createdAt',
+      'batchId',
+      'position',
+      'key',
+      'startedAt'
     ]
   }
 }

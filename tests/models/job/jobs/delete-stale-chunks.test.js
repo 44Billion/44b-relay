@@ -9,7 +9,7 @@ import { processBatch, loadSystemState } from '#models/job/jobs/process-pending-
 import * as deleteStaleChunksJob from '#models/job/jobs/delete-stale-chunks.js'
 
 const runPendingOps = async () => {
-  const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
+  const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc'] })
   if (!hits.length) return
   await processBatch(hits, await loadSystemState())
 }

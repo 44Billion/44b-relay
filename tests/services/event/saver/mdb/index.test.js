@@ -207,11 +207,11 @@ describe('EventSaver (MDB) Integration', () => {
     assert.equal(result.isSuccess, true)
     assert.equal(queueOpsMock.mock.calls.length, 2)
     const targetOps = queueOpsMock.mock.calls[0].arguments[0]
+    const deletionWorkflow = targetOps.find(op => op.type === 'deleteEventsWithAccounting')
     assert.deepEqual(
-      targetOps.filter(op => op.type === 'deleteDocumentIfExists').map(op => op.data.key).sort(),
+      deletionWorkflow.data.events.map(event => event.ref).sort(),
       targets.slice(0, 2).map(target => target.ref).sort()
     )
-    assert.equal(targetOps.filter(op => op.type === 'deltaUsage').length, 2)
     const saveOps = queueOpsMock.mock.calls[1].arguments[0]
     const insert = saveOps.find(op => op.type === 'insertOrReplaceDocument')
     assert.equal(insert.data.document.id, deletionEvent.id)
@@ -641,7 +641,7 @@ describe('EventSaver (MDB) Integration', () => {
     // 1 call: Saving the deletion event itself. 0 calls for actual deletions because of created_at check.
     assert.equal(queueOpsMock.mock.calls.length, 1)
     const allOps = queueOpsMock.mock.calls.flatMap(call => call.arguments[0])
-    const deleteOps = allOps.filter(op => op.type === 'deleteDocumentIfExists')
+    const deleteOps = allOps.filter(op => op.type === 'deleteEventsWithAccounting')
     assert.equal(deleteOps.length, 0, 'Should not have any delete ops')
   })
 
@@ -686,9 +686,9 @@ describe('EventSaver (MDB) Integration', () => {
     // 2 calls: one from handleDelete for the deletion, one for saving the deletion event itself
     assert.equal(queueOpsMock.mock.calls.length, 2)
     const allOps = queueOpsMock.mock.calls.flatMap(call => call.arguments[0])
-    const deleteOp = allOps.find(op => op.type === 'deleteDocumentIfExists')
+    const deleteOp = allOps.find(op => op.type === 'deleteEventsWithAccounting')
     assert.ok(deleteOp)
-    assert.equal(deleteOp.data.key, record.ref)
+    assert.deepEqual(deleteOp.data.events.map(event => event.ref), [record.ref])
   })
 
   it('should handle VIP event correctly (simulated by mock)', async () => {
@@ -847,8 +847,8 @@ describe('EventSaver (MDB) Integration', () => {
     // We expect queueOps to contain a delete op ONLY for Event 1
     // Note: Addressable events use 'ref' (address hash) as key, not event.id
     const allOps = queueOpsMock.mock.calls.flatMap(call => call.arguments[0])
-    const deleteOps = allOps.filter(op => op.type === 'deleteDocumentIfExists')
-    const deletedKeys = deleteOps.map(op => op.data.key)
+    const deleteOps = allOps.filter(op => op.type === 'deleteEventsWithAccounting')
+    const deletedKeys = deleteOps.flatMap(op => op.data.events.map(event => event.ref))
 
     // Event 1 ref should be deleted
     assert.ok(deletedKeys.includes(documents[0].ref), 'Event 1 should be deleted')
