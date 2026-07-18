@@ -1,6 +1,6 @@
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { idToRef } from '#models/event/mapper.js'
+import { addressToRef, idToRef } from '#models/event/mapper.js'
 
 // Mock dependencies
 const queueOpsMock = mock.fn()
@@ -208,5 +208,70 @@ describe('EventSaver HLL', () => {
       }
     }
     assert.ok(found, 'Should have mergeNip45Hll op')
+  })
+
+  it('should ignore malformed q targets without logging an HLL processing error', async t => {
+    const consoleErrorMock = t.mock.method(console, 'error', () => {})
+    checkStorageLimitAndPruneMock.mock.mockImplementation(() => {
+      return { popularityLevel: 1, ops: [] }
+    })
+
+    const malformedTargets = [
+      'abc', // odd length: the production regression
+      'a'.repeat(62),
+      'a'.repeat(66),
+      '0g'.repeat(32)
+    ]
+    for (const [index, target] of malformedTargets.entries()) {
+      queueOpsMock.mock.resetCalls()
+      const event = {
+        id: `${'b'.repeat(63)}${index}`,
+        pubkey: 'c'.repeat(64),
+        kind: 1,
+        tags: [['q', target]],
+        created_at: 1000,
+        content: 'quote with malformed target',
+        sig: 'd'.repeat(128)
+      }
+
+      const result = await EventSaver.run({ ws: {}, event, ip: '127.0.0.1' })
+
+      assert.equal(result.isSuccess, true)
+      const queuedOps = queueOpsMock.mock.calls.flatMap(call => call.arguments[0] ?? [])
+      assert.ok(queuedOps.some(op => op.type === 'insertOrReplaceDocument'))
+      assert.equal(
+        queuedOps.some(op => op.type === 'mergeNip45Hll' && op.data.field === 'quoteCounter'),
+        false
+      )
+    }
+    assert.equal(consoleErrorMock.mock.callCount(), 0)
+  })
+
+  it('should fall back from a malformed E target to a valid A target', async t => {
+    const consoleErrorMock = t.mock.method(console, 'error', () => {})
+    const rootAddress = `30023:${'a'.repeat(64)}:article`
+    const event = {
+      id: 'b'.repeat(64),
+      pubkey: 'c'.repeat(64),
+      kind: 1111,
+      tags: [['E', 'abc'], ['A', rootAddress]],
+      created_at: 1000,
+      content: 'comment',
+      sig: 'd'.repeat(128)
+    }
+
+    checkStorageLimitAndPruneMock.mock.mockImplementation(() => {
+      return { popularityLevel: 1, ops: [] }
+    })
+    queueOpsMock.mock.resetCalls()
+
+    const result = await EventSaver.run({ ws: {}, event, ip: '127.0.0.1' })
+
+    assert.equal(result.isSuccess, true)
+    const queuedOps = queueOpsMock.mock.calls.flatMap(call => call.arguments[0] ?? [])
+    const mergeOp = queuedOps.find(op => op.type === 'mergeNip45Hll')
+    assert.equal(mergeOp?.data.key, addressToRef({ address: rootAddress }))
+    assert.equal(mergeOp?.data.field, 'commentCounter')
+    assert.equal(consoleErrorMock.mock.callCount(), 0)
   })
 })

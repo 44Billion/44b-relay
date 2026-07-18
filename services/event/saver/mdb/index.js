@@ -183,7 +183,9 @@ export default class EventSaver {
 
       if (popularityLevel <= 6) {
         const pushHllOpById = (eventId, field) => {
-          if (!eventId) return
+          // Relationship tags are untrusted event data. Invalid targets should
+          // neither block storing the event nor reach idToRef().
+          if (typeof eventId !== 'string' || !HEX_EVENT_ID.test(eventId)) return false
           try {
             const offset = parseInt(eventId[32], 16) + 8
             const hll = new HLL(offset)
@@ -198,16 +200,30 @@ export default class EventSaver {
                 offset
               }
             })
+            return true
           } catch (e) {
             console.error(`Failed to process HLL for ${field}:`, e)
+            return false
           }
         }
 
         const pushHllOpByAddress = (address, field) => {
-          if (!address) return
+          if (typeof address !== 'string') return false
+          const firstSeparator = address.indexOf(':')
+          const secondSeparator = address.indexOf(':', firstSeparator + 1)
+          if (firstSeparator <= 0 || secondSeparator < 0) return false
+
+          const kind = address.slice(0, firstSeparator)
+          const pubkey = address.slice(firstSeparator + 1, secondSeparator)
+          const numericKind = Number(kind)
+          if (
+            !/^(0|[1-9][0-9]*)$/.test(kind) ||
+            !Number.isSafeInteger(numericKind) ||
+            !HEX_EVENT_ID.test(pubkey)
+          ) return false
+
           try {
             // Derive offset from the pubkey in the address (kind:pubkey:dTag)
-            const pubkey = address.split(':')[1]
             const offset = parseInt(pubkey[32], 16) + 8
             const hll = new HLL(offset)
             hll.add(base16ToBytes(author))
@@ -221,8 +237,10 @@ export default class EventSaver {
                 offset
               }
             })
+            return true
           } catch (e) {
             console.error(`Failed to process HLL for ${field}:`, e)
+            return false
           }
         }
 
@@ -230,8 +248,9 @@ export default class EventSaver {
           // Root event engagement (uppercase tags per NIP-22)
           const rootEventId = event.tags.find(t => t[0] === 'E')?.[1]
           const rootEventAddress = event.tags.find(t => t[0] === 'A')?.[1]
-          if (rootEventId) pushHllOpById(rootEventId, 'commentCounter')
-          else pushHllOpByAddress(rootEventAddress, 'commentCounter')
+          if (!pushHllOpById(rootEventId, 'commentCounter')) {
+            pushHllOpByAddress(rootEventAddress, 'commentCounter')
+          }
 
           // Also push for the parent comment (lowercase 'e' per NIP-22).
           // Comments are never addressable, so only 'e' (not 'a') is relevant here.
@@ -256,8 +275,9 @@ export default class EventSaver {
         } else if (event.kind === eventKinds.GENERIC_REPOST) {
           const rootEventId = event.tags.find(t => t[0] === 'e')?.[1]
           const rootEventAddress = event.tags.find(t => t[0] === 'a')?.[1]
-          if (rootEventId) pushHllOpById(rootEventId, 'repostCounter')
-          else pushHllOpByAddress(rootEventAddress, 'repostCounter')
+          if (!pushHllOpById(rootEventId, 'repostCounter')) {
+            pushHllOpByAddress(rootEventAddress, 'repostCounter')
+          }
         }
 
         // Quote counter
