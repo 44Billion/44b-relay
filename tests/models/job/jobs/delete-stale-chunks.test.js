@@ -1,54 +1,72 @@
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
+import NMMR from 'nmmr'
+import { encode } from 'libp2r2p/base93'
 import mdb from '#services/db/mdb.js'
+import { ipToPrimaryKey } from '#helpers/mdb.js'
+import { eventToRecord } from '#models/event/mapper.js'
 import { processBatch, loadSystemState } from '#models/job/jobs/process-pending-ops/index.js'
 import * as deleteStaleChunksJob from '#models/job/jobs/delete-stale-chunks.js'
 
 const runPendingOps = async () => {
   const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
-  if (hits.length === 0) return
-  const state = await loadSystemState()
-  await processBatch(hits, state)
+  if (!hits.length) return
+  await processBatch(hits, await loadSystemState())
 }
 
-// Seconds well beyond the 3-day grace period
 const OLD_RECEIVED_AT = Math.floor(Date.now() / 1000) - 60 * 60 * 24 * 10
+const root = hex => hex.repeat(64)
 
-function makeChunkEvent ({ ref, pubkey, rootX, index = 0, byteSize = 51000, created_at = 100, receivedAt = OLD_RECEIVED_AT, extraCTags = [] }) {
-  const ctagMainValue = `${rootX}:${index}`
-  const indexableTags = [`c ${ctagMainValue}`, `d ${ref}`]
-  for (const extra of extraCTags) {
-    indexableTags.push(`c ${extra}`)
+function makeChunkEvent ({
+  ref, pubkey, contentKey = ref, byteSize = 51000,
+  receivedAt = OLD_RECEIVED_AT, ownerType = 'pubkey', ip
+}) {
+  const contentBytes = new TextEncoder().encode(contentKey)
+  const proof = new Uint8Array(0)
+  const mmrRoot = NMMR.calculateRoot({ contentBytes, index: 0, total: 1, proof })
+  const event = {
+    id: '9'.repeat(64),
+    pubkey,
+    kind: 34601,
+    created_at: 100,
+    tags: [
+      ['d', NMMR.deriveChunkId(mmrRoot, 0)],
+      ['mmr', '0', '1', '']
+    ],
+    content: encode(contentBytes),
+    sig: 'f'.repeat(128)
   }
+  return {
+    ...eventToRecord(event, {
+      receivedAt,
+      derivedMetadata: { mmrRoot, mmrIndex: 0, mmrTotal: 1 }
+    }),
+    ref,
+    byteSize,
+    ownerType,
+    ...(ip && { ip })
+  }
+}
+
+function makeReferencingEvent ({ ref, pubkey, roots }) {
   return {
     ref,
     id: ref,
     pubkey,
-    kind: 34600,
-    created_at,
-    byteSize,
+    kind: 35128,
+    created_at: 100,
+    byteSize: 100,
     ownerType: 'pubkey',
-    receivedAt,
-    indexableTags,
-    nonIndexableTags: [],
+    receivedAt: OLD_RECEIVED_AT,
+    blobRefs: roots,
     content: '',
     sig: 'sig'
   }
 }
 
-function makeManifestEvent ({ ref, pubkey, kind = 35128, fileRootHashes = [] }) {
-  return {
-    ref,
-    id: ref,
-    pubkey,
-    kind,
-    created_at: 100,
-    ownerType: 'pubkey',
-    indexableTags: [`d ${ref}`],
-    nonIndexableTags: fileRootHashes.map(h => ['path', 'path.js', h]),
-    content: '',
-    sig: 'sig'
-  }
+async function storedRefs () {
+  const { results } = await mdb.index('events').getDocuments({ limit: 100 })
+  return new Set(results.map(event => event.ref).filter(ref => ref !== '__processingState__'))
 }
 
 describe('Job: Delete Stale Chunks', () => {
@@ -60,206 +78,132 @@ describe('Job: Delete Stale Chunks', () => {
     ])
   })
 
-  it('config should have correct structure', () => {
+  it('has the expected daily locked configuration', () => {
     assert.equal(deleteStaleChunksJob.default.key, 'deleteStaleChunks')
     assert.equal(typeof deleteStaleChunksJob.default.run, 'function')
     assert.equal(deleteStaleChunksJob.default.shouldUseLock, true)
     assert.equal(deleteStaleChunksJob.default.frequency, 60 * 60 * 24)
   })
 
-  it('should delete stale chunks not referenced by any manifest or r tag', async () => {
-    const pubkey = '0000000000000000000000000000000000000000000000000000000000000001'
-
-    // Stale chunk: rootX 'aaaa' not referenced anywhere
-    const staleChunk = makeChunkEvent({ ref: 'stale1', pubkey, rootX: 'aaaa' })
-
-    // Referenced chunk: rootX 'bbbb' is in a manifest's path tags
-    const referencedChunk = makeChunkEvent({ ref: 'referenced1', pubkey, rootX: 'bbbb' })
-    const manifest = makeManifestEvent({ ref: 'manifest1', pubkey, fileRootHashes: ['bbbb'] })
-
-    await mdb.index('events').addDocuments([staleChunk, referencedChunk, manifest])
-    await new Promise(resolve => setTimeout(resolve, 100))
+  it('deletes old unreferenced chunks and keeps a same-author referenced root', async () => {
+    const pubkey = root('1')
+    const stale = makeChunkEvent({ ref: 'stale1', pubkey })
+    const kept = makeChunkEvent({ ref: 'kept1', pubkey })
+    await mdb.index('events').addDocuments([
+      stale,
+      kept,
+      makeReferencingEvent({ ref: 'manifest1', pubkey, roots: [kept.mmrRoot] })
+    ])
 
     await deleteStaleChunksJob.run()
     await runPendingOps()
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    const { results } = await mdb.index('events').getDocuments({ limit: 100 })
-    const events = results.filter(e => e.ref !== '__processingState__')
-
-    assert.ok(!events.find(e => e.ref === 'stale1'), 'Stale chunk should be deleted')
-    assert.ok(events.find(e => e.ref === 'referenced1'), 'Referenced chunk should be kept')
-    assert.ok(events.find(e => e.ref === 'manifest1'), 'Manifest event should be kept')
+    const refs = await storedRefs()
+    assert.equal(refs.has('stale1'), false)
+    assert.equal(refs.has('kept1'), true)
+    assert.equal(refs.has('manifest1'), true)
   })
 
-  it('should keep chunks referenced by r tags on same-author events', async () => {
-    const pubkey = '0000000000000000000000000000000000000000000000000000000000000002'
-
-    // Chunk with rootX 'cccc'
-    const chunk = makeChunkEvent({ ref: 'rchunk1', pubkey, rootX: 'cccc' })
-
-    // Same-author event referencing this file's root hash via r tag
-    const referencingEvent = {
-      ref: 'noter1',
-      id: 'noter1',
-      pubkey,
-      kind: 1,
-      created_at: 200,
-      ownerType: 'pubkey',
-      indexableTags: ['r cccc'],
-      content: 'references the file root hash',
-      sig: 'sig'
-    }
-
-    await mdb.index('events').addDocuments([chunk, referencingEvent])
-    await new Promise(resolve => setTimeout(resolve, 100))
+  it('loads blobRefs from any same-author event, including roots beyond indexed tags', async () => {
+    const pubkey = root('2')
+    const chunk = makeChunkEvent({ ref: 'chunk2', pubkey })
+    await mdb.index('events').addDocuments([
+      chunk,
+      { ...makeReferencingEvent({ ref: 'note2', pubkey, roots: [chunk.mmrRoot] }), kind: 1 }
+    ])
 
     await deleteStaleChunksJob.run()
     await runPendingOps()
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    const { results } = await mdb.index('events').getDocuments({ limit: 100 })
-    const events = results.filter(e => e.ref !== '__processingState__')
-
-    assert.ok(events.find(e => e.ref === 'rchunk1'), 'Chunk referenced by r tag should be kept')
+    assert.equal((await storedRefs()).has('chunk2'), true)
   })
 
-  it('should skip chunks uploaded within the grace period', async () => {
-    const pubkey = '0000000000000000000000000000000000000000000000000000000000000003'
-    const recentReceivedAt = Math.floor(Date.now() / 1000) - 60 * 60 // 1 hour ago
-
-    // Recent chunk (within grace period) — unreferenced but should be kept
-    const recentChunk = makeChunkEvent({
-      ref: 'recent1',
-      pubkey,
-      rootX: 'dddd',
-      receivedAt: recentReceivedAt
-    })
-
-    // Old chunk — unreferenced and should be deleted
-    const oldChunk = makeChunkEvent({ ref: 'old1', pubkey, rootX: 'eeee' })
-
-    await mdb.index('events').addDocuments([recentChunk, oldChunk])
-    await new Promise(resolve => setTimeout(resolve, 100))
+  it('keeps a recent unreferenced chunk during the three-day grace period', async () => {
+    const pubkey = root('3')
+    await mdb.index('events').addDocuments([
+      makeChunkEvent({
+        ref: 'recent3',
+        pubkey,
+        receivedAt: Math.floor(Date.now() / 1000) - 60 * 60
+      }),
+      makeChunkEvent({ ref: 'old3', pubkey })
+    ])
 
     await deleteStaleChunksJob.run()
     await runPendingOps()
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    const { results } = await mdb.index('events').getDocuments({ limit: 100 })
-    const events = results.filter(e => e.ref !== '__processingState__')
-
-    assert.ok(events.find(e => e.ref === 'recent1'), 'Recent chunk should be kept (grace period)')
-    assert.ok(!events.find(e => e.ref === 'old1'), 'Old unreferenced chunk should be deleted')
+    const refs = await storedRefs()
+    assert.equal(refs.has('recent3'), true)
+    assert.equal(refs.has('old3'), false)
   })
 
-  it('should skip chunks owned by IP (non-popular users)', async () => {
-    const pubkey = '0000000000000000000000000000000000000000000000000000000000000004'
-
-    // Chunk owned by IP — should be skipped by the job
-    const ipChunk = {
-      ...makeChunkEvent({ ref: 'ipchunk1', pubkey, rootX: 'ffff' }),
-      ownerType: 'ip',
-      ip: '10.0.0.1'
-    }
-
-    await mdb.index('events').addDocuments([ipChunk])
-    await new Promise(resolve => setTimeout(resolve, 100))
+  it('deletes missing or invalid derived metadata immediately, even during grace', async () => {
+    const pubkey = root('4')
+    const recent = Math.floor(Date.now() / 1000)
+    const missing = makeChunkEvent({ ref: 'missing4', pubkey, receivedAt: recent })
+    const range = makeChunkEvent({ ref: 'range4', pubkey, receivedAt: recent })
+    const mutated = makeChunkEvent({ ref: 'mutated4', pubkey, receivedAt: recent })
+    await mdb.index('events').addDocuments([
+      { ...missing, mmrRoot: undefined },
+      { ...range, mmrIndex: 2, mmrTotal: 2 },
+      { ...mutated, nonFtsContent: `${mutated.nonFtsContent}x` }
+    ])
 
     await deleteStaleChunksJob.run()
     await runPendingOps()
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    const { results } = await mdb.index('events').getDocuments({ limit: 100 })
-    const events = results.filter(e => e.ref !== '__processingState__')
-
-    assert.ok(events.find(e => e.ref === 'ipchunk1'), 'IP-owned chunk should be skipped')
+    const refs = await storedRefs()
+    assert.equal(refs.has('missing4'), false)
+    assert.equal(refs.has('range4'), false)
+    assert.equal(refs.has('mutated4'), false)
   })
 
-  it('should decrement usedBytes for pubkey when deleting stale chunks', async () => {
-    const pubkey = '0000000000000000000000000000000000000000000000000000000000000005'
+  it('does not let a different author protect a chunk with the same root', async () => {
+    const pubkeyA = root('5')
+    const pubkeyB = root('6')
+    const chunk = makeChunkEvent({ ref: 'chunk5', pubkey: pubkeyA, contentKey: 'shared-content' })
+    const sameRoot = makeChunkEvent({ ref: 'other5', pubkey: pubkeyB, contentKey: 'shared-content' }).mmrRoot
+    assert.equal(chunk.mmrRoot, sameRoot)
+    await mdb.index('events').addDocuments([
+      chunk,
+      makeReferencingEvent({ ref: 'manifest6', pubkey: pubkeyB, roots: [sameRoot] })
+    ])
 
+    await deleteStaleChunksJob.run()
+    await runPendingOps()
+    assert.equal((await storedRefs()).has('chunk5'), false)
+  })
+
+  it('updates ordinary pubkey usage after deleting chunks', async () => {
+    const pubkey = root('7')
     await mdb.index('storedEventOwners').addDocuments([{
       key: pubkey,
       entityType: 'pubkey',
       usedBytes: 100000,
       popularityLevel: 3
     }])
-
-    const chunk = makeChunkEvent({ ref: 'usage1', pubkey, rootX: 'gggg', byteSize: 51000 })
-
-    await mdb.index('events').addDocuments([chunk])
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await mdb.index('events').addDocuments([
+      makeChunkEvent({ ref: 'chunk7', pubkey, byteSize: 51000 })
+    ])
 
     await deleteStaleChunksJob.run()
     await runPendingOps()
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    const owner = await mdb.index('storedEventOwners').getDocument(pubkey)
-    assert.equal(owner.usedBytes, 49000, 'usedBytes should be decremented by chunk byteSize')
+    assert.equal((await mdb.index('storedEventOwners').getDocument(pubkey)).usedBytes, 49000)
   })
 
-  it('should handle chunks with multiple c tags (multiple files) correctly', async () => {
-    const pubkey = '0000000000000000000000000000000000000000000000000000000000000007'
-
-    // Chunk used in two files: rootX 'iiii' (referenced by same-author manifest) and 'jjjj' (not referenced)
-    const sharedChunk = makeChunkEvent({
-      ref: 'shared1',
-      pubkey,
-      rootX: 'iiii',
-      extraCTags: ['jjjj:5']
-    })
-
-    const manifest = makeManifestEvent({ ref: 'manifest2', pubkey, fileRootHashes: ['iiii'] })
-
-    await mdb.index('events').addDocuments([sharedChunk, manifest])
-    await new Promise(resolve => setTimeout(resolve, 100))
+  it('also collects and accounts for IP-owned chunks by their signed author', async () => {
+    const pubkey = root('8')
+    const ip = '10.0.0.8'
+    const ownerKey = ipToPrimaryKey(ip)
+    await mdb.index('storedEventOwners').addDocuments([{
+      key: ownerKey,
+      entityType: 'ip',
+      usedBytes: 52000,
+      popularityLevel: 999
+    }])
+    await mdb.index('events').addDocuments([
+      makeChunkEvent({ ref: 'chunk8', pubkey, byteSize: 51000, ownerType: 'ip', ip })
+    ])
 
     await deleteStaleChunksJob.run()
     await runPendingOps()
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    const { results } = await mdb.index('events').getDocuments({ limit: 100 })
-    const events = results.filter(e => e.ref !== '__processingState__')
-
-    assert.ok(events.find(e => e.ref === 'shared1'), 'Chunk with one referenced rootX should be kept')
-  })
-
-  it('should delete chunks when only a different pubkey references the same rootX', async () => {
-    const pubkeyA = '0000000000000000000000000000000000000000000000000000000000000008'
-    const pubkeyB = '0000000000000000000000000000000000000000000000000000000000000009'
-
-    // Chunk from pubkey A with rootX 'kkkk'
-    const chunk = makeChunkEvent({ ref: 'cross1', pubkey: pubkeyA, rootX: 'kkkk' })
-
-    // Manifest from pubkey B referencing the same rootX — should NOT protect A's chunk
-    const manifest = makeManifestEvent({ ref: 'manifestB', pubkey: pubkeyB, fileRootHashes: ['kkkk'] })
-
-    // r-tag event from pubkey B referencing the same rootX — should NOT protect A's chunk
-    const rTagEvent = {
-      ref: 'rEventB',
-      id: 'rEventB',
-      pubkey: pubkeyB,
-      kind: 1,
-      created_at: 200,
-      ownerType: 'pubkey',
-      indexableTags: ['r kkkk'],
-      content: '',
-      sig: 'sig'
-    }
-
-    await mdb.index('events').addDocuments([chunk, manifest, rTagEvent])
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    await deleteStaleChunksJob.run()
-    await runPendingOps()
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    const { results } = await mdb.index('events').getDocuments({ limit: 100 })
-    const events = results.filter(e => e.ref !== '__processingState__')
-
-    assert.ok(!events.find(e => e.ref === 'cross1'), 'Chunk should be deleted when only a different pubkey references it')
-    assert.ok(events.find(e => e.ref === 'manifestB'), 'Other pubkey manifest should be kept')
-    assert.ok(events.find(e => e.ref === 'rEventB'), 'Other pubkey r-tag event should be kept')
+    assert.equal((await storedRefs()).has('chunk8'), false)
+    assert.equal((await mdb.index('storedEventOwners').getDocument(ownerKey)).usedBytes, 1000)
   })
 })

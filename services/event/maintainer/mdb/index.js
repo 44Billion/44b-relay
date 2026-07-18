@@ -8,6 +8,7 @@ import { eventKinds, RELAY_OWNED_KINDS } from '#constants/event.js'
 
 const ONE_MB = 1024 * 1024
 const EVENT_BATCH_SIZE = 20
+const ORDINARY_KIND_FILTER = [...RELAY_OWNED_KINDS].map(kind => `kind != ${kind}`).join(' AND ')
 
 export const VIP_PUBKEYS = new Set([
   getRelaySelfPubkey(),
@@ -109,14 +110,13 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
 
   let cleared = 0
 
-  // First pass: prefer deleting chunk events (kind 34600) since they are
-  // much heavier (~51KB each) and clear space faster than other event kinds.
-  // Skip chunks shared across files (multiple c tags) to avoid breaking other files.
+  // First pass: prefer deleting large IRFS chunk events. A v2 chunk belongs to
+  // exactly one root/index coordinate, so there is no legacy multi-c heuristic.
   {
     let chunkOffset = 0
     const ownerFilter = ownerType === 'pubkey'
-      ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey"`
-      : `ip = ${mdb.toMeiliValue(primaryKeyToIp(ownerKey))} AND ownerType = "ip"`
+      ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey" AND ${ORDINARY_KIND_FILTER}`
+      : `ip = ${mdb.toMeiliValue(primaryKeyToIp(ownerKey))} AND ownerType = "ip" AND ${ORDINARY_KIND_FILTER}`
 
     while (cleared < bytesToRemove) {
       const searchRes = await mdb.index('events').search('', {
@@ -133,12 +133,6 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
       let bytesInBatch = 0
 
       for (const hit of searchRes.hits) {
-        // Count c tags across indexed and non-indexed to detect shared chunks
-        const cTagCount =
-          (hit.indexableTags || []).filter(t => t.startsWith('c ')).length +
-          (hit.nonIndexableTags || []).filter(t => t[0] === 'c').length
-        if (cTagCount > 1) continue // shared across files, skip
-
         keysToDelete.push(hit.ref)
         bytesInBatch += (hit.byteSize || 0)
       }
@@ -157,8 +151,8 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
   while (cleared < bytesToRemove) {
     // Fetch oldest events
     const filter = ownerType === 'pubkey'
-      ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey"`
-      : `ip = ${mdb.toMeiliValue(primaryKeyToIp(ownerKey))} AND ownerType = "ip"`
+      ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey" AND ${ORDINARY_KIND_FILTER}`
+      : `ip = ${mdb.toMeiliValue(primaryKeyToIp(ownerKey))} AND ownerType = "ip" AND ${ORDINARY_KIND_FILTER}`
 
     const searchRes = await mdb.index('events').search('', {
       filter,

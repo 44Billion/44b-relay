@@ -1,15 +1,15 @@
 import mdb from '#services/db/mdb.js'
-import { queueOps } from '#services/event/maintainer/mdb/index.js'
 import { loadAndMaybeRotateSketches } from '#services/event/tracker/mdb/requested-events.js'
 import { eventKinds } from '#constants/event.js'
 import { Buffer } from 'buffer'
+import { releaseManifestBatch } from '#services/event/manifest-pool.js'
 
 const BATCH_SIZE = 50
 
 // Relay lists are essential infrastructure -- even unpopular real users'
 // relay lists get fetched by their few friends.  Keep them with a minimal bar.
-// App listings are discoverable content -- unpopular apps are fine to clean up,
-// but they deserve more time to be discovered first.
+// Unified manifests are discoverable content and inherit the former listing
+// retention policy. Relay lists remain outside the manifest capacity pool.
 const CLEANUP_POLICIES = [
   {
     name: 'relay-lists',
@@ -19,8 +19,8 @@ const CLEANUP_POLICIES = [
     requestScoreThreshold: 1
   },
   {
-    name: 'app-listings',
-    kinds: [eventKinds.MAIN_APP_LISTING, eventKinds.NEXT_APP_LISTING, eventKinds.DRAFT_APP_LISTING],
+    name: 'site-manifests',
+    kinds: [eventKinds.MAIN_SITE_MANIFEST, eventKinds.NEXT_SITE_MANIFEST, eventKinds.DRAFT_SITE_MANIFEST],
     // temporarily set to 1 year while we're beta testing
     gracePeriodSeconds: 60 * 60 * 24 * 365, // 60 * 60 * 24 * 7, // 7 days
     requestScoreThreshold: 5
@@ -50,34 +50,31 @@ async function deleteUnrequestedRelayEvents () {
         filter: baseFilter,
         limit: BATCH_SIZE,
         offset,
-        fields: ['ref', 'byteSize']
+        fields: ['ref', 'byteSize', 'pubkey', 'kind']
       })
 
       if (results.length === 0) break
 
-      const ops = []
-      let batchDeleted = 0
+      const candidates = []
 
       for (const hit of results) {
         const refBuf = Buffer.from(hit.ref)
         const score = sketchCurrent.estimate(refBuf) + sketchPrevious.estimate(refBuf)
 
         if (score <= policy.requestScoreThreshold) {
-          ops.push({
-            type: 'deleteDocumentIfExists',
-            data: { index: 'events', key: hit.ref }
-          })
-          batchDeleted++
+          candidates.push(hit)
         }
       }
 
-      if (ops.length > 0) {
-        await queueOps(ops)
-        deletedCount += batchDeleted
+      if (candidates.length > 0) {
+        await mdb.index('events').deleteDocuments(candidates.map(hit => hit.ref))
+        const manifests = candidates.filter(hit => hit.kind !== eventKinds.READ_WRITE_RELAYS)
+        await releaseManifestBatch(manifests, { pruning: true })
+        deletedCount += candidates.length
       }
 
       if (results.length < BATCH_SIZE) break
-      offset += (results.length - batchDeleted)
+      offset += (results.length - candidates.length)
     }
 
     if (deletedCount > 0) {

@@ -99,6 +99,17 @@ describe('Event Mapper', () => {
       assert.equal(record.nonIndexableTags.length, 5) // The rest
     })
 
+    it('derives exact lowercase blobRefs from every r tag beyond the indexing cap', () => {
+      const rootA = 'a'.repeat(64)
+      const rootB = 'b'.repeat(64)
+      const tags = Array.from({ length: MAX_INDEXABLE_TAGS }, (_, index) => ['t', `tag${index}`])
+      tags.push(['r', rootA, 'path index.html'], ['r', rootB], ['r', rootA], ['r', 'A'.repeat(64)])
+
+      const record = eventToRecord({ ...baseEvent, tags })
+      assert.deepEqual(record.blobRefs, [rootA, rootB])
+      assert.ok(record.nonIndexableTags.some(tag => tag[0] === 'r' && tag[1] === rootB))
+    })
+
     it('should ignore indexable tags for specific kinds, except for "k" tag', () => {
       const event = {
         ...baseEvent,

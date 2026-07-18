@@ -6,6 +6,7 @@ import * as deleteExpiredEventsJob from '#models/job/jobs/delete-expired-events.
 import { ipToPrimaryKey } from '#helpers/mdb.js'
 import { eventKinds } from '#constants/event.js'
 import { eventToRecord } from '#models/event/mapper.js'
+import { getManifestPoolUsage, reconcileManifestPoolUsage } from '#services/event/manifest-pool.js'
 
 const runPendingOps = async () => {
   const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc'] })
@@ -19,7 +20,8 @@ describe('Job: Delete Expired Events', () => {
     await Promise.all([
       mdb.index('events').deleteAllDocuments(),
       mdb.index('pendingOps').deleteAllDocuments(),
-      mdb.index('storedEventOwners').deleteAllDocuments()
+      mdb.index('storedEventOwners').deleteAllDocuments(),
+      mdb.index('manifestPoolUsage').deleteAllDocuments()
     ])
   })
 
@@ -228,6 +230,35 @@ describe('Job: Delete Expired Events', () => {
     // Verify usedBytes was decremented
     const owner = await mdb.index('storedEventOwners').getDocument(ipKey)
     assert.equal(owner.usedBytes, 550, 'usedBytes should be decremented by 450 (1000 - 300 - 150 = 550)')
+  })
+
+  it('should release expired manifests from the subsidized pool but not ordinary owner usage', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const pubkey = 'b'.repeat(64)
+    await mdb.index('storedEventOwners').addDocuments([{
+      key: pubkey,
+      entityType: 'pubkey',
+      usedBytes: 500,
+      popularityLevel: 3
+    }])
+    await mdb.index('events').addDocuments([{
+      ref: 'expired_manifest',
+      id: 'c'.repeat(64),
+      pubkey,
+      kind: 35128,
+      created_at: now - 1000,
+      expiresAt: now - 1,
+      receivedAt: now - 1000,
+      byteSize: 300,
+      ownerType: 'pubkey'
+    }])
+    await reconcileManifestPoolUsage()
+
+    await deleteExpiredEventsJob.run()
+    await runPendingOps()
+
+    assert.equal((await getManifestPoolUsage()).global.logicalBytes, 0)
+    assert.equal((await mdb.index('storedEventOwners').getDocument(pubkey)).usedBytes, 500)
   })
 
   it('config should have correct structure', () => {

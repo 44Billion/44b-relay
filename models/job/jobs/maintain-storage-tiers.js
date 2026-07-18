@@ -1,4 +1,5 @@
 import mdb from '#services/db/mdb.js'
+import { RELAY_OWNED_KINDS } from '#constants/event.js'
 import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps, VIP_PUBKEYS } from '#services/event/maintainer/mdb/index.js'
 import { FastBloomFilter, packFilter, unpackFilter } from '#helpers/bloom.js'
 import { base16ToBytes } from '#helpers/base16.js'
@@ -174,7 +175,8 @@ async function relegateEvents (pubkey, state, popularityLevel) {
   let offset = 0
 
   while (true) {
-    const filter = `pubkey = ${mdb.toMeiliValue(pubkey)} AND ownerType = "pubkey"`
+    const relayOwnedExclusion = [...RELAY_OWNED_KINDS].map(kind => `kind != ${kind}`).join(' AND ')
+    const filter = `pubkey = ${mdb.toMeiliValue(pubkey)} AND ownerType = "pubkey" AND ${relayOwnedExclusion}`
     // Use sort and variable offset to ensure progress through the list
     const { results: events } = await mdb.index('events').getDocuments({
       filter,

@@ -8,6 +8,12 @@ import { eventToRecord, idToRef, addressToRef } from '#models/event/mapper.js'
 import { getEventByRef } from '#models/event/dao.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
 import { trackHashtagStats } from '#services/event/tracker/mdb/hashtag-stats.js'
+import {
+  cancelManifestReservation,
+  isManifestKind,
+  releaseManifestUsage,
+  reserveManifestCapacity
+} from '#services/event/manifest-pool.js'
 
 const HEX_EVENT_ID = /^[0-9a-f]{64}$/i
 
@@ -19,17 +25,17 @@ function isPrivateBroadcastDeletion (event) {
 }
 
 export default class EventSaver {
-  static run ({ ws, event, ip, language, topics, hashtags }) {
-    return new this({ ws, event, ip, language, topics, hashtags }).save()
+  static run ({ ws, event, ip, language, topics, hashtags, derivedMetadata }) {
+    return new this({ ws, event, ip, language, topics, hashtags, derivedMetadata }).save()
   }
 
-  constructor ({ ws, event, ip, language, topics, hashtags }) {
-    Object.assign(this, { ws, event, ip, language, topics, hashtags, receivedAt: Date.now() })
+  constructor ({ ws, event, ip, language, topics, hashtags, derivedMetadata }) {
+    Object.assign(this, { ws, event, ip, language, topics, hashtags, derivedMetadata, receivedAt: Date.now() })
   }
 
   async save () {
     const { event, ip } = this
-    const byteSize = JSON.stringify(event).length
+    const byteSize = new TextEncoder().encode(JSON.stringify(event)).byteLength
     const author = getAuthorPubkey(event)
 
     const { estimatedTotalHits: isDuplicate } = await mdb.index('events').search('', {
@@ -46,9 +52,15 @@ export default class EventSaver {
       if (!res.isSuccess) return res
     }
 
+    let manifestReservation
     try {
       let record
-      const recordOpts = { language: this.language, topics: this.topics, receivedAt: Math.floor(this.receivedAt / 1000) }
+      const recordOpts = {
+        language: this.language,
+        topics: this.topics,
+        receivedAt: Math.floor(this.receivedAt / 1000),
+        derivedMetadata: this.derivedMetadata
+      }
 
       if (event.kind !== eventKinds.DELETION) {
         const getDTagFromEvent = event => {
@@ -93,13 +105,9 @@ export default class EventSaver {
         }
       }
 
-      // 1. Check Limits & Prepare Ops
-      const { ownerType, _ownerKey, popularityLevel, ops: storageOps } = await checkStorageLimitAndPrune({ pubkey: author, ip, newEventSize: byteSize, kind: event.kind })
-
       // Convert to MDB Record
       record ??= eventToRecord(event, recordOpts)
 
-      // 2. Handle Replacement info (subtract old event size)
       let oldEvent = null
 
       try {
@@ -107,6 +115,24 @@ export default class EventSaver {
       } catch (_e) {
         // Not found, new event
       }
+
+      if (isManifestKind(event.kind)) {
+        manifestReservation = await reserveManifestCapacity({
+          pubkey: author,
+          newBytes: byteSize,
+          oldBytes: oldEvent?.byteSize || 0,
+          isReplacement: Boolean(oldEvent)
+        })
+        if (!manifestReservation.accepted) {
+          return { isSuccess: false, isDuplicate: false, message: `blocked: ${manifestReservation.reason}` }
+        }
+      }
+
+      // 1. Check ordinary owner limits and prepare operations. Relay-owned
+      // manifests use their separate subsidized-pool reservation above.
+      const { ownerType, _ownerKey, popularityLevel, ops: storageOps } = await checkStorageLimitAndPrune({ pubkey: author, ip, newEventSize: byteSize, kind: event.kind })
+
+      // 2. Handle replacement accounting for ordinary, non-subsidized kinds.
 
       const ops = [...storageOps]
 
@@ -239,6 +265,9 @@ export default class EventSaver {
 
       return { isSuccess: true, isDuplicate: false, message: '' }
     } catch (err) {
+      if (manifestReservation?.accepted) {
+        await cancelManifestReservation(author, manifestReservation).catch(error => console.error('Failed to cancel manifest reservation', error))
+      }
       console.error(err)
       return { isSuccess: false, message: 'error: error saving' }
     }
@@ -388,7 +417,7 @@ export default class EventSaver {
       const ownerType = hit.ownerType || 'pubkey'
       const ownerKey = ownerType === 'pubkey' ? hit.pubkey : ipToPrimaryKey(hit.ip)
 
-      if (ownerKey) {
+      if (ownerKey && !RELAY_OWNED_KINDS.has(hit.kind)) {
         ops.push({
           type: 'deltaUsage',
           data: { key: ownerKey, delta: -(hit.byteSize || 0), entityType: ownerType }
@@ -399,6 +428,13 @@ export default class EventSaver {
         data: { index: 'events', key: hit.ref }
       })
     }
-    if (ops.length > 0) await queueOps(ops)
+    if (ops.length > 0) {
+      await queueOps(ops)
+      for (const hit of hits) {
+        if (isManifestKind(hit.kind)) {
+          await releaseManifestUsage({ pubkey: hit.pubkey, logicalBytes: hit.byteSize || 0 })
+        }
+      }
+    }
   }
 }

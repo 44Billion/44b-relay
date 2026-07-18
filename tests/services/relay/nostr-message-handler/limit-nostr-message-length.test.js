@@ -75,7 +75,7 @@ describe('limitNostrMessageLength', () => {
     assert.strictEqual(result.isInvalid, false)
   })
 
-  it('should invalidate BINARY_DATA_CHUNK if content too short and not last chunk', () => {
+  it('should leave chunk structure and decoded size to the IRFS validator', () => {
     const ws = createWs()
     const content = 'a'.repeat(50000) // less than 58286
     const nostrMessage = [
@@ -83,16 +83,16 @@ describe('limitNostrMessageLength', () => {
       {
         kind: eventKinds.BINARY_DATA_CHUNK,
         content,
-        tags: [['c', 'root:0', '10']] // index 0, total 10 -> not last
+        tags: [['mmr', '0', '10', '']]
       }
     ]
     nostrMessage.byteLength = content.length + 100
 
     const result = limitNostrMessageLength({ ws, nostrMessage })
-    assert.strictEqual(result.isInvalid, true)
+    assert.strictEqual(result.isInvalid, false)
   })
 
-  it('should validate BINARY_DATA_CHUNK if content too short and IS last chunk', () => {
+  it('should invalidate BINARY_DATA_CHUNK over 72 KiB', () => {
     const ws = createWs()
     const content = 'a'.repeat(50000)
     const nostrMessage = [
@@ -103,9 +103,18 @@ describe('limitNostrMessageLength', () => {
         tags: [['c', 'root:9', '10']] // index 9, total 10 -> is last
       }
     ]
-    nostrMessage.byteLength = content.length + 100
+    nostrMessage.byteLength = 72 * 1024 + 1
 
     const result = limitNostrMessageLength({ ws, nostrMessage })
-    assert.strictEqual(result.isInvalid, false)
+    assert.strictEqual(result.isInvalid, true)
+  })
+
+  it('should treat legacy kind 34600 as a generic 4 KiB event', () => {
+    const ws = createWs()
+    const nostrMessage = ['EVENT', { kind: 34600, content: 'a'.repeat(5000), tags: [] }]
+    nostrMessage.byteLength = 5100
+
+    const result = limitNostrMessageLength({ ws, nostrMessage })
+    assert.strictEqual(result.isInvalid, true)
   })
 })

@@ -99,15 +99,10 @@ export function limitNostrMessageLength ({ ws, nostrMessage }) {
           // won't allow image data url
           isInvalid = typeof event.content !== 'string' || msgByteLength > 4 * 1024
         } else if (event.kind === eventKinds.BINARY_DATA_CHUNK) {
-          if (typeof event.content === 'string') {
-            // Minimum Length: 58,286 bytes (all zeros)
-            // Maximum Length: 62,770 bytes (all ones)
-            const contentByteLength = new TextEncoder().encode(event.content).byteLength
-            isInvalid = contentByteLength > 62770 || (isntLastChunk(event.tags) && contentByteLength < 58286)
-            if (isInvalid) console.log(`Binary data chunk event with invalid content length: ${contentByteLength} bytes`)
-          } else {
-            isInvalid = true
-          }
+          // Content and proof are strict Base93 and are validated after the
+          // signature. This outer limit leaves room for 51,000 data bytes,
+          // compact proof hashes, tags, and the Nostr envelope.
+          isInvalid = typeof event.content !== 'string' || msgByteLength > 72 * 1024
         } else if (
           [
             eventKinds.FOLLOWS,
@@ -132,25 +127,6 @@ export function limitNostrMessageLength ({ ws, nostrMessage }) {
 
   sendCommandResult({ ws, event, isSuccess: false, message: 'invalid: message is too long' })
   return { isInvalid: true }
-}
-
-// const currentCtag = `${chunk.rootX}:${chunk.index}`
-// ['c', currentCtag, chunk.length, ...chunk.proof],
-function isntLastChunk (tags = []) {
-  const cTags = tags.filter(tag => tag[0] === 'c' && typeof tag[1] === 'string' && tag[2] !== undefined)
-
-  if (cTags.length === 0) return true
-
-  const isAnyLast = cTags.some(tag => {
-    const cTagValue = tag[1]
-    const totalChunks = parseInt(tag[2], 10)
-    const parts = cTagValue.split(':')
-    const index = parseInt(parts[parts.length - 1], 10)
-
-    return !isNaN(index) && !isNaN(totalChunks) && index === totalChunks - 1
-  })
-
-  return !isAnyLast
 }
 
 // function restrictUnauthenticatedMessage ({ ws, nostrMessage }) {

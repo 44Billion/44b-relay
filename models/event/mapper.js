@@ -89,9 +89,15 @@ function applyExpirationRetentionPolicy ({ kind, expiresAt, receivedAt, now }) {
 
 export const MAX_INDEXABLE_TAGS = 10
 export const MAX_INDEXABLE_TAG_VALUE_LENGTH = 1000
+export function deriveBlobRefs (tags) {
+  return [...new Set(tags
+    .filter(tag => Array.isArray(tag) && tag[0] === 'r' && /^[0-9a-f]{64}$/.test(tag[1]))
+    .map(tag => tag[1]))]
+}
+
 export function eventToRecord (event, {
   language, expiresAt, lastAccessedAt, receivedAt, isContentSearchable = false, fts,
-  commentCounter, replyCounter, repostCounter, quoteCounter, topics
+  commentCounter, replyCounter, repostCounter, quoteCounter, topics, derivedMetadata
 } = {}) {
   const { id, kind, pubkey, created_at, sig } = event
   const record = { id, kind, pubkey, created_at, sig }
@@ -165,6 +171,13 @@ export function eventToRecord (event, {
     lastAccessedAt: lastAccessedAt ?? now,
     receivedAt: recordReceivedAt
   })
+  const blobRefs = deriveBlobRefs(event.tags)
+  if (blobRefs.length) record.blobRefs = blobRefs
+  if (derivedMetadata) {
+    record.mmrRoot = derivedMetadata.mmrRoot
+    record.mmrIndex = derivedMetadata.mmrIndex
+    record.mmrTotal = derivedMetadata.mmrTotal
+  }
   return record
 }
 
@@ -179,7 +192,7 @@ export function recordToEvent (record, { withMeta = false } = {}) {
   const tags = Array.isArray(nonIndexableTags) ? [...nonIndexableTags] : []
   for (let i = 0; i < indexableTags.length; i++) {
     const [k, v] = indexableTags[i].split(' ', 2)
-    const [tagIndex, ...extraValues] = indexableTagExtras[i]
+    const [tagIndex, ...extraValues] = indexableTagExtras[i] || [i]
     tags.splice(tagIndex, 0, [k, v, ...extraValues])
   }
   return {

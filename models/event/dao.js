@@ -2,6 +2,8 @@ import mdb from '#services/db/mdb.js'
 import { eventToRecord, recordToEvent } from './mapper.js'
 import { queueOps } from '#services/event/maintainer/mdb/index.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
+import { MANIFEST_KINDS, RELAY_OWNED_KINDS } from '#constants/event.js'
+import { releaseManifestBatch } from '#services/event/manifest-pool.js'
 
 export async function getEventByRef (ref, options = {}) {
   return mdb.index('events').getDocument(ref, {
@@ -145,7 +147,7 @@ export async function deleteExpiredEvents () {
         filter,
         limit: BATCH_SIZE,
         offset,
-        attributesToRetrieve: ['ref', 'byteSize', 'ownerType', 'pubkey', 'ip']
+        attributesToRetrieve: ['ref', 'byteSize', 'ownerType', 'pubkey', 'ip', 'kind']
       })
 
       if (hits.length === 0) break
@@ -161,6 +163,7 @@ export async function deleteExpiredEvents () {
           data: { index: 'events', key: hit.ref }
         })
 
+        if (RELAY_OWNED_KINDS.has(hit.kind)) continue
         const ownerType = hit.ownerType || 'pubkey'
         const ownerKey = ownerType === 'pubkey' ? hit.pubkey : ipToPrimaryKey(hit.ip)
         if (!ownerKey) continue
@@ -177,7 +180,10 @@ export async function deleteExpiredEvents () {
         })
       }
 
-      if (ops.length > 0) await queueOps(ops)
+      if (ops.length > 0) {
+        await queueOps(ops)
+        await releaseManifestBatch(hits.filter(hit => MANIFEST_KINDS.has(hit.kind)))
+      }
 
       // If we got fewer than BATCH_SIZE, we've exhausted the results
       if (hits.length < BATCH_SIZE) break

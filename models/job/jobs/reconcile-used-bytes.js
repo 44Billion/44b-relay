@@ -1,5 +1,6 @@
 import mdb from '#services/db/mdb.js'
 import { primaryKeyToIp } from '#helpers/mdb.js'
+import { RELAY_OWNED_KINDS } from '#constants/event.js'
 
 const BATCH_SIZE = 100
 
@@ -27,9 +28,11 @@ async function run () {
 
       while (true) {
         const filterValue = entityType === 'pubkey' ? key : primaryKeyToIp(key)
-        const filter = entityType === 'pubkey'
+        const ownerFilter = entityType === 'pubkey'
           ? `pubkey = ${mdb.toMeiliValue(filterValue)} AND ownerType = "pubkey"`
           : `ip = ${mdb.toMeiliValue(filterValue)} AND ownerType = "ip"`
+        const relayOwnedFilter = [...RELAY_OWNED_KINDS].map(kind => `kind != ${kind}`).join(' AND ')
+        const filter = `(${ownerFilter}) AND ${relayOwnedFilter}`
 
         // Use getDocuments() instead of search() to bypass maxTotalHits limitation
         const { results: evResults } = await mdb.index('events').getDocuments({

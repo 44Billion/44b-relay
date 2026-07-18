@@ -64,10 +64,7 @@ const eventKinds = {
   CALENDAR: 31924,
   EDITABLE_VIDEO: 34235,
   EDITABLE_SHORT_VIDEO: 34236,
-  BINARY_DATA_CHUNK: 34600,
-  MAIN_APP_LISTING: 37348,
-  NEXT_APP_LISTING: 37349,
-  DRAFT_APP_LISTING: 37350,
+  BINARY_DATA_CHUNK: 34601,
   MAIN_SITE_MANIFEST: 35128, // stable
   NEXT_SITE_MANIFEST: 35129, // insider
   DRAFT_SITE_MANIFEST: 35130, // vibe coded preview
@@ -126,9 +123,15 @@ const eventTags = {
 
 const RELAY_OWNED_KINDS = new Set([
   eventKinds.READ_WRITE_RELAYS, // 10002
-  eventKinds.MAIN_APP_LISTING, // 37348
-  eventKinds.NEXT_APP_LISTING, // 37349
-  eventKinds.DRAFT_APP_LISTING // 37350
+  eventKinds.MAIN_SITE_MANIFEST,
+  eventKinds.NEXT_SITE_MANIFEST,
+  eventKinds.DRAFT_SITE_MANIFEST
+])
+
+const MANIFEST_KINDS = new Set([
+  eventKinds.MAIN_SITE_MANIFEST,
+  eventKinds.NEXT_SITE_MANIFEST,
+  eventKinds.DRAFT_SITE_MANIFEST
 ])
 
 export {
@@ -136,5 +139,6 @@ export {
   eventKinds,
   // eventKindTo1To1Table,
   eventTags,
+  MANIFEST_KINDS,
   RELAY_OWNED_KINDS
 }

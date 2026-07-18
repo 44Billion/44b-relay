@@ -19,6 +19,11 @@ export default {
     'id',
     'pubkey',
     'kind',
+    'byteSize',
+    'blobRefs',
+    'mmrRoot',
+    'mmrIndex',
+    'mmrTotal',
     'nonIndexableTags', // [tags[position], tags[position2], ...]
     // [`${keyN} ${valueN}`] // whitespace is a soft word separator - https://www.meilisearch.com/docs/learn/engine/datatypes#separators
     // useful in case we want to turn itags searchable (instead)
@@ -63,6 +68,10 @@ export default {
       'id',
       'pubkey',
       'kind',
+      'blobRefs',
+      'mmrRoot',
+      'mmrIndex',
+      'mmrTotal',
       'indexableTags',
       'created_at',
       'receivedAt',
@@ -77,6 +86,9 @@ export default {
     ],
     sortableAttributes: [
       'created_at',
+      'receivedAt',
+      'byteSize',
+      'ref',
       'id',
       'engagementCount'
     ],

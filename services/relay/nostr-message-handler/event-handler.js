@@ -15,6 +15,7 @@ import { extractHashtags } from '#helpers/hashtag.js'
 import { detectTopics } from '#services/topic/detector.js'
 import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
 import { broadcast, waitUntilReady } from '#services/ipc/cross-process-broadcaster.js'
+import { validateIrfsChunkEvent } from '#services/event/irfs-chunk-validator.js'
 
 const RELAY_IPC_TIMEOUT_MS = 2000
 
@@ -35,6 +36,15 @@ class EventHandler {
       let { isSuccess, message } = await isValidEvent({ event, clientMessage: nostrClientMessages.EVENT })
       if (!isSuccess) return sendCommandResult({ ws, event, isSuccess, message })
 
+      let derivedMetadata
+      if (event.kind === eventKinds.BINARY_DATA_CHUNK) {
+        try {
+          derivedMetadata = validateIrfsChunkEvent(event)
+        } catch (error) {
+          return sendCommandResult({ ws, event, isSuccess: false, message: `invalid: ${error.message}` })
+        }
+      }
+
       // TODO: Check impact on performance then move from deta to mdb
       // const { isSpam } = await fightSpamOnNostrEvent(ws, event)
       // if (isSpam) return sendCommandResult({ ws, event, isSuccess: false, message: 'blocked: your IP is involved with spam' })
@@ -49,7 +59,7 @@ class EventHandler {
       })
 
       let shouldRelay // e.g.: don't relay duplicates
-      ;({ isSuccess, shouldRelay = isSuccess, message } = await this.processNostrEvent({ ws, event, ip: ws.ip, eventLanguage, eventTopics, eventHashtags }))
+      ;({ isSuccess, shouldRelay = isSuccess, message } = await this.processNostrEvent({ ws, event, ip: ws.ip, eventLanguage, eventTopics, eventHashtags, derivedMetadata }))
 
       if (shouldRelay) {
         const didBroadcast = await broadcast({ event, eventLanguage, eventTopics }, { timeoutMs: RELAY_IPC_TIMEOUT_MS })
@@ -65,7 +75,7 @@ class EventHandler {
     }
   }
 
-  async processNostrEvent ({ ws, event, ip, eventLanguage, eventTopics, eventHashtags }) {
+  async processNostrEvent ({ ws, event, ip, eventLanguage, eventTopics, eventHashtags, derivedMetadata }) {
     let isSuccess, shouldRelay, message, isBlocked, isDuplicate
     ;({ isBlocked, message } = this.applyCustomRelayRestrictionsToNostrEvent({ event }))
     if (isBlocked) return { isSuccess: false, shouldRelay: false, message }
@@ -83,7 +93,7 @@ class EventHandler {
     // Better to relay for those who may have subscribed to (e.g.: online status update)
     // else if (isReplaceableEvent(event)) shouldRelay = false
 
-    ;({ isSuccess, isDuplicate, message } = await this.maybePersistEvent({ ws, event, ip, language: eventLanguage, topics: eventTopics, hashtags: eventHashtags }))
+    ;({ isSuccess, isDuplicate, message } = await this.maybePersistEvent({ ws, event, ip, language: eventLanguage, topics: eventTopics, hashtags: eventHashtags, derivedMetadata }))
     if (!isSuccess || isDuplicate) shouldRelay = false
     shouldRelay ??= true
 
@@ -145,8 +155,8 @@ class EventHandler {
     return { isBlocked: false, message: '' }
   }
 
-  maybePersistEvent ({ ws, event, ip, language, topics, hashtags }) {
-    return EventSaver.run({ ws, event, ip, language, topics, hashtags })
+  maybePersistEvent ({ ws, event, ip, language, topics, hashtags, derivedMetadata }) {
+    return EventSaver.run({ ws, event, ip, language, topics, hashtags, derivedMetadata })
   }
 }
 
