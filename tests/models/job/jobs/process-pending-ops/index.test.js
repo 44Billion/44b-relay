@@ -4,7 +4,7 @@ import mdb from '#services/db/mdb.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { compressAsync } from '#helpers/buffer.js'
-import { bytesToBase64 } from '#helpers/base64.js'
+import { bytesToBase64Url } from 'libp2r2p/base64'
 import { sha256 } from '@noble/hashes/sha2.js'
 
 describe('Job: Process Pending Ops', () => {
@@ -206,7 +206,7 @@ describe('Job: Process Pending Ops', () => {
       const pubkey = 'pk_hll_1'
       const hll1 = new HLL(12)
       hll1.add(sha256(utf8Encoder.encode('ip1')))
-      const hllBase64 = bytesToBase64(await compressAsync(hll1.getRegisters()))
+      const hllBase64 = bytesToBase64Url(await compressAsync(hll1.getRegisters()))
 
       const op = {
         key: 'op_hll_1',
@@ -229,7 +229,7 @@ describe('Job: Process Pending Ops', () => {
       // Add another op with NEW IP
       const hll2 = new HLL(12)
       hll2.add(sha256(utf8Encoder.encode('ip2')))
-      const otherHllBase64 = bytesToBase64(await compressAsync(hll2.getRegisters()))
+      const otherHllBase64 = bytesToBase64Url(await compressAsync(hll2.getRegisters()))
       const op2 = {
         key: 'op_hll_2',
         createdAt: Date.now(),
@@ -251,7 +251,7 @@ describe('Job: Process Pending Ops', () => {
       // HLL merge of same content results in same count, so delta should be 0.
       const hll3 = new HLL(12)
       hll3.add(sha256(utf8Encoder.encode('ip1')))
-      const anotherHllBase64 = bytesToBase64(await compressAsync(hll3.getRegisters()))
+      const anotherHllBase64 = bytesToBase64Url(await compressAsync(hll3.getRegisters()))
       const op3 = {
         key: 'op_hll_3',
         createdAt: Date.now(),

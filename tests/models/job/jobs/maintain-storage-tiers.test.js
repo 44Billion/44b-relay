@@ -5,7 +5,7 @@ import { processBatch, loadSystemState } from '#models/job/jobs/process-pending-
 import * as maintainStorageTiersJob from '#models/job/jobs/maintain-storage-tiers.js'
 import { VIP_PUBKEYS } from '#services/event/maintainer/mdb/index.js'
 import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
-import { base16ToBytes } from '#helpers/base16.js'
+import { base16ToBytes } from 'libp2r2p/base16'
 
 const runPendingOps = async () => {
   const { hits } = await mdb.index('pendingOps').search('', { limit: 1000, sort: ['createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc'] })

@@ -1,18 +1,18 @@
 /* eslint-disable camelcase */
 import { maxDateNowSeconds } from '#config/mdb.js'
-import { bytesToBase64 } from '#helpers/base64.js'
-import { base16ToBytes } from '#helpers/base16.js'
+import { bytesToBase64Url } from 'libp2r2p/base64'
+import { base16ToBytes } from 'libp2r2p/base16'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS, eventKinds } from '#constants/event.js'
 
 const textEncoder = new TextEncoder()
 export function addressToRef ({ address, kind, pubkey, dTag }) {
   address ??= `${kind}:${pubkey}:${dTag ?? ''}`
-  return bytesToBase64(sha256(textEncoder.encode(address)))
+  return bytesToBase64Url(sha256(textEncoder.encode(address)))
 }
 
 export function idToRef (id) {
-  return bytesToBase64(base16ToBytes(id))
+  return bytesToBase64Url(base16ToBytes(id))
 }
 
 // These events have one-letter (indexable) tags because

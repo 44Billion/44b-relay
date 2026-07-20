@@ -1,6 +1,6 @@
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { bytesToBase64 } from '#helpers/base64.js'
+import { bytesToBase64Url } from 'libp2r2p/base64'
 import { eventKinds } from '#constants/event.js'
 import { queueOps } from '#services/event/maintainer/mdb/index.js'
 import { compressAsync } from '#helpers/buffer.js'
@@ -128,7 +128,7 @@ export async function flushRequestedPubkeysToMDB () {
     const compressed = await compressAsync(hll.getRegisters())
     ops.push({
       type: 'mergeHll',
-      data: { key: pubkey, hll: bytesToBase64(compressed) }
+      data: { key: pubkey, hll: bytesToBase64Url(compressed) }
     })
   }
 

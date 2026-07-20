@@ -8,7 +8,7 @@ export default {
   // hyphens (-), and underscores (_).
   primaryKey: 'ref',
   attributes: [
-    'ref', // id or address: dTag ? bytesToBase64(sha256(new TextEncoder().encode(`${kind}:${pubkey}:${dTag}`)) : bytesToBase64(base16ToBytes(id)))
+    'ref', // id/address encoded with bytesToBase64Url
     'receivedAt', // in seconds
     // keep in memory and from time to time write to db
     // and if not dirty for a while, remove from memory

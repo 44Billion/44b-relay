@@ -1,7 +1,7 @@
 import { getAuthorPubkey } from '#helpers/event.js'
 import { eventKinds, eventTags, RELAY_OWNED_KINDS } from '#constants/event.js'
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
-import { base16ToBytes, bytesToBase16 } from '#helpers/base16.js'
+import { base16ToBytes, bytesToBase16 } from 'libp2r2p/base16'
 import mdb from '#services/db/mdb.js'
 import { checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
 import { eventToRecord, idToRef, addressToRef } from '#models/event/mapper.js'

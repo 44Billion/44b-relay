@@ -1,7 +1,7 @@
 import mdb from '#services/db/mdb.js'
 import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
 import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
-import { base16ToBytes } from '#helpers/base16.js'
+import { base16ToBytes } from 'libp2r2p/base16'
 import { triggerManualJob } from '../trigger.js'
 import maintainStorageTiersConfig from './maintain-storage-tiers.js'
 

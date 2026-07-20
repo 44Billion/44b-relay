@@ -1,5 +1,5 @@
 import { getPublicKey, nip19 } from 'nostr-tools'
-import { bytesToBase16 } from '#helpers/base16.js'
+import { bytesToBase16 } from 'libp2r2p/base16'
 
 export const FALLBACK_RELAY_SELF_SECRET_HEX = '1'.repeat(64)
 

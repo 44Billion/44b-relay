@@ -2,7 +2,7 @@ import mdb from '#services/db/mdb.js'
 import { RELAY_OWNED_KINDS } from '#constants/event.js'
 import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, queueOps, VIP_PUBKEYS } from '#services/event/maintainer/mdb/index.js'
 import { FastBloomFilter, packFilter, unpackFilter } from '#helpers/bloom.js'
-import { base16ToBytes } from '#helpers/base16.js'
+import { base16ToBytes } from 'libp2r2p/base16'
 import { PENDING_OPS_REVERSE_SORT } from '#models/pending-op/order.js'
 
 async function run () {

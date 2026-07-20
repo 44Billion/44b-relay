@@ -29,6 +29,14 @@ describe('Event Mapper', () => {
       // 32 bytes to base64 should be around 43 chars (padding removed)
       assert.equal(ref.length, 43)
     })
+
+    it('preserves the established Base64URL representation', () => {
+      assert.equal(idToRef('f'.repeat(64)), `${'_'.repeat(42)}8`)
+    })
+
+    it('rejects malformed hexadecimal IDs', () => {
+      assert.throws(() => idToRef('1g'.repeat(32)), /Invalid Base16/)
+    })
   })
 
   describe('eventToRecord', () => {
