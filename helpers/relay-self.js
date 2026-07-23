@@ -1,5 +1,5 @@
-import { getPublicKey, nip19 } from 'nostr-tools'
-import { bytesToBase16 } from 'libp2r2p/base16'
+import { getPublicKey } from 'libp2r2p/key'
+import { nsecDecode } from 'libp2r2p/nip19'
 
 export const FALLBACK_RELAY_SELF_SECRET_HEX = '1'.repeat(64)
 
@@ -15,9 +15,7 @@ function decodeNsecSecret (value) {
   const trimmed = value.trim()
   if (!trimmed.startsWith('nsec1')) return null
 
-  const decoded = nip19.decode(trimmed)
-  if (decoded.type !== 'nsec') throw new Error('Expected nsec secret key')
-  return bytesToBase16(decoded.data)
+  return nsecDecode(trimmed)
 }
 
 export function getRelaySelfSecretHex () {

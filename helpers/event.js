@@ -1,39 +1,15 @@
 import { eventKinds, eventTags } from '#constants/event.js'
+import {
+  isAddressableEvent,
+  isEphemeralEvent,
+  isRegularEvent,
+  isReplaceableEvent
+} from 'libp2r2p/event'
 import { isType } from '#helpers/shared.js'
 import { pick } from '#helpers/object.js'
 import EventValidator from '#services/event/validator.js'
 import { generateKey } from '#services/db/deta.js'
 
-function isRegularEvent (event, {
-  isReplaceable = isReplaceableEvent(event),
-  isAddressable = isAddressableEvent(event)
-} = {}) {
-  return !isReplaceable && !isAddressable
-}
-function isReplaceableEvent (event) {
-  return event.kind === eventKinds.METADATA ||
-    // event.kind === eventKinds.RECOMMEND_RELAY || // because it is not the best tool for the job, we let just 1 per pubkey
-    event.kind === eventKinds.FOLLOWS ||
-    // event.kind === eventKinds.CHANNEL_METADATA || // one per pubkey per e tag value
-    (event.kind >= 10000 && event.kind < 20000) ||
-    // experimental: for replaceable check based on d tag,
-    // consider just the first tags to avoid processing too many tags
-    (event.tags[0]?.[0] === 'd' && event.tags[0][1] === '')
-}
-function isAddressableEvent (event) {
-  return isType(event.kind, 'number') && (
-    (event.kind >= 30000 && event.kind < 40000) ||
-    (event.tags[0]?.[0] === 'd' && event.tags[0][1].length > 0)
-  )
-}
-function isEphemeralEvent (event) {
-  if (event.kind >= 20000 && event.kind < 30000) return true
-  // experimental: for ephemeral check based on expiration tag,
-  // consider just the first two tags to avoid processing too many tags
-  const expirationTag = event.tags.slice(0, 2).find(v => v[0] === eventTags.EXPIRATION)
-  if (!expirationTag) return false
-  return isExpiredEvent(event, { expirationTag })
-}
 // Limited by nip19 or else it could be 64bit unsigned int
 // Good thing is we don't need to convert to string on json nor use BigInt
 // Bad thing is collision resistance is lower
@@ -44,14 +20,13 @@ function isKnownEventKind (kind) {
     kind <= kindLimit
 }
 
-function isExpiredEvent (event, { expirationTag } = {}) {
+function isExpiredEvent (event) {
   let expiration
-  try { expiration = parseInt(expirationTag || event.tags.find(v => v[0] === eventTags.EXPIRATION)?.[1], 10) } catch (_err) {}
+  try { expiration = parseInt(event.tags.find(v => v[0] === eventTags.EXPIRATION)?.[1], 10) } catch (_err) {}
   return (
-    isType(expiration, 'number') && (
-      expiration <= event.created_at ||
-      expiration <= (Date.now() / 1000)
-    )
+    isType(expiration, 'number') &&
+    !Number.isNaN(expiration) &&
+    (expiration <= event.created_at || expiration <= (Date.now() / 1000))
   )
 }
 

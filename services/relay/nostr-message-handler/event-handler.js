@@ -18,6 +18,7 @@ import { broadcast, waitUntilReady } from '#services/ipc/cross-process-broadcast
 import { validateIrfsChunkEvent } from '#services/event/irfs-chunk-validator.js'
 
 const RELAY_IPC_TIMEOUT_MS = 2000
+const TAG_DEFINED_EPHEMERAL_CLOCK_SKEW_SECONDS = 60
 
 class EventHandler {
   static run ({ wss, ws, nostrMessage }) {
@@ -80,7 +81,12 @@ class EventHandler {
     ;({ isBlocked, message } = this.applyCustomRelayRestrictionsToNostrEvent({ event }))
     if (isBlocked) return { isSuccess: false, shouldRelay: false, message }
 
-    if (isExpiredEvent(event)) return { isSuccess: true, shouldRelay: false, message: 'expired: the event is already expired' }
+    const isTagDefinedEphemeral = isEphemeralEvent(event, { includeLegacyKindRanges: false })
+    const tagDefinedEphemeralExpired = isTagDefinedEphemeral &&
+      Date.now() / 1000 >= event.created_at + TAG_DEFINED_EPHEMERAL_CLOCK_SKEW_SECONDS
+    if (tagDefinedEphemeralExpired || (!isTagDefinedEphemeral && isExpiredEvent(event))) {
+      return { isSuccess: true, shouldRelay: false, message: 'expired: the event is already expired' }
+    }
 
     // Accepted events are live-delivered through IPC, including local clients.
     // If IPC is unavailable, reject before persistence to avoid storing an

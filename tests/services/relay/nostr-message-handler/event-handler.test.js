@@ -218,6 +218,29 @@ describe('EventHandler', () => {
     assert.equal(EventSaver.run.mock.calls.length, 0)
   })
 
+  it('should reject an expiration earlier than created_at even before wall-clock expiry', async () => {
+    const wsSender = createWs('sender')
+    const wss = createWss([wsSender])
+    const now = Math.floor(Date.now() / 1000)
+    const event = {
+      kind: 1,
+      created_at: now + 100,
+      tags: [['expiration', String(now + 50)]],
+      pubkey: 'pubkey1',
+      id: 'event_invalid_expiration_order',
+      content: 'expired'
+    }
+
+    const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+    await handler.run()
+
+    const acknowledgement = JSON.parse(wsSender.send.mock.calls[0].arguments[0])
+    assert.equal(acknowledgement[2], true)
+    assert.match(acknowledgement[3], /expired/)
+    assert.equal(broadcastMock.mock.calls.length, 0)
+    assert.equal(EventSaver.run.mock.calls.length, 0)
+  })
+
   it('should use the old-event authentication window for kind 5 events', async () => {
     const originalEnv = process.env.IS_INTEGRATION_TEST
     process.env.IS_INTEGRATION_TEST = 'false'
@@ -873,6 +896,51 @@ describe('EventHandler', () => {
 
     assert.equal(broadcastMock.mock.calls.length, 1)
     assert.deepEqual(broadcastMock.mock.calls[0].arguments[0].event, ephemeralEvent)
+    assert.equal(EventSaver.run.mock.calls.length, 0)
+  })
+
+  it('should relay but not persist a fresh tag-defined ephemeral event', async () => {
+    getPopularityLevel.mock.mockImplementation(() => 1)
+
+    const wsSender = createWs('sender')
+    const wss = createWss([wsSender])
+    const createdAt = Math.floor(Date.now() / 1000)
+    const event = {
+      kind: 500,
+      created_at: createdAt,
+      tags: [['p', 'someone'], ['expiration', String(createdAt)]],
+      pubkey: 'pubkey1',
+      id: 'event_tag_ephemeral',
+      content: 'ephemeral'
+    }
+
+    const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+    await handler.run()
+
+    assert.equal(broadcastMock.mock.calls.length, 1)
+    assert.equal(EventSaver.run.mock.calls.length, 0)
+  })
+
+  it('should stop relaying a tag-defined ephemeral event after its grace window', async () => {
+    const wsSender = createWs('sender')
+    const wss = createWss([wsSender])
+    const createdAt = Math.floor(Date.now() / 1000) - 61
+    const event = {
+      kind: 500,
+      created_at: createdAt,
+      tags: [['p', 'someone'], ['expiration', String(createdAt)]],
+      pubkey: 'pubkey1',
+      id: 'event_old_tag_ephemeral',
+      content: 'ephemeral'
+    }
+
+    const handler = new EventHandler({ wss, ws: wsSender, nostrMessage: ['EVENT', event] })
+    await handler.run()
+
+    const acknowledgement = JSON.parse(wsSender.send.mock.calls[0].arguments[0])
+    assert.equal(acknowledgement[2], true)
+    assert.match(acknowledgement[3], /expired/)
+    assert.equal(broadcastMock.mock.calls.length, 0)
     assert.equal(EventSaver.run.mock.calls.length, 0)
   })
 

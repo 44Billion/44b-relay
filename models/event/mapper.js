@@ -2,6 +2,7 @@
 import { maxDateNowSeconds } from '#config/mdb.js'
 import { bytesToBase64Url } from 'libp2r2p/base64'
 import { base16ToBytes } from 'libp2r2p/base16'
+import { isAddressableEvent, isReplaceableEvent } from 'libp2r2p/event'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS, eventKinds } from '#constants/event.js'
 
@@ -137,7 +138,7 @@ export function eventToRecord (event, {
   expiresAt = applyExpirationRetentionPolicy({ kind, expiresAt, receivedAt: recordReceivedAt, now })
 
   if (!dTag && dTag !== '') {
-    if ((kind >= 10000 && kind < 20000) || (kind >= 30000 && kind < 40000)) dTag = ''
+    if (isReplaceableEvent(event) || isAddressableEvent(event)) dTag = ''
     else {
       switch (kind) {
         case 0:

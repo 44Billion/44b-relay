@@ -73,6 +73,17 @@ describe('Event Validator', () => {
     assert.match(result.message, /wrong event kind/)
   })
 
+  it('should reject personal copy events from the public relay', () => {
+    const event = generateValidEvent({ kind: eventKinds.PERSONAL_COPY })
+    const validator = new EventValidator({
+      event,
+      clientMessage: nostrClientMessages.EVENT
+    })
+    const result = validator.isValid()
+    assert.equal(result.isSuccess, false)
+    assert.match(result.message, /wrong event kind/)
+  })
+
   describe('Tag Validation', () => {
     it('should validate valid expiration tag', () => {
       const event = {

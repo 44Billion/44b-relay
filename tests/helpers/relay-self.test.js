@@ -31,9 +31,8 @@ describe('helpers/relay-self', () => {
 
   it('should decode nsec-encoded secret key', async () => {
     // nsec for secret '1'.repeat(64) - we generate it dynamically
-    const { nip19 } = await import('nostr-tools')
-    const secretBytes = Uint8Array.from(Buffer.from('1'.repeat(64), 'hex'))
-    const nsec = nip19.nsecEncode(secretBytes)
+    const { nsecEncode } = await import('libp2r2p/nip19')
+    const nsec = nsecEncode('1'.repeat(64))
 
     process.env.RELAY_SELF_NOSTR_SECRET_KEY = nsec
 

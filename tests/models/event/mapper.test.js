@@ -209,6 +209,17 @@ describe('Event Mapper', () => {
       assert.equal(record.ref, expectedRef)
     })
 
+    it('should use the first d tag in any position for tag-defined addressable events', () => {
+      const event = {
+        ...baseEvent,
+        kind: 500,
+        tags: [['p', 'someone'], ['d', 'first'], ['d', 'ignored']]
+      }
+      const record = eventToRecord(event)
+      const expectedRef = addressToRef({ kind: 500, pubkey: 'pub', dTag: 'first' })
+      assert.equal(record.ref, expectedRef)
+    })
+
     it('should use ftsContent when isContentSearchable is true', () => {
       const record = eventToRecord(baseEvent, { isContentSearchable: true })
       assert.equal(record.ftsContent, 'hello')

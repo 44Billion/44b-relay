@@ -43,6 +43,7 @@ export default class EventValidator {
 
   doesMessageAllowKind () {
     const { event: { kind }, clientMessage } = this
+    if (kind === eventKinds.PERSONAL_COPY) return false
     if (!clientMessage) return true
     if (![nostrClientMessages.AUTH, nostrClientMessages.EVENT].includes(clientMessage)) return false
     if (kind === eventKinds.AUTH) {
@@ -129,7 +130,7 @@ export default class EventValidator {
           if (!isType(conditionsQueryString, 'string')) return false
           if (!isType(delegationSig, 'string')) return false
 
-          // https://github.com/nbd-wtf/nostr-tools/blob/901445dea118399c248e20ad128f1c58d8c48046/nip26.ts#L61
+          // NIP-26 delegation conditions use kind, created_at and tag clauses.
           function hasValidConditions () {
             const conditions = conditionsQueryString.split('&') // '' => ['']
             let pendingKindConditionFulfillment

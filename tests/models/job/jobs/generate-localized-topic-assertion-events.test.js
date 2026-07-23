@@ -6,7 +6,7 @@ import hashtagStatsSchema from '#models/hashtag-stats/schema.js'
 import { patchIcons } from '#models/hashtag-stats/dao.js'
 import { eventKinds } from '#constants/event.js'
 import { getRelaySelfPubkey } from '#helpers/relay-self.js'
-import { verifyEvent } from 'nostr-tools'
+import { isValidEvent } from 'libp2r2p/event'
 
 describe('Job: Generate Localized Topic Assertion Events', () => {
   let generateJob
@@ -163,7 +163,7 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
       tags,
       sig: doc.sig
     }
-    assert.ok(verifyEvent(signedEvent), 'Event signature should be valid')
+    assert.ok(isValidEvent(signedEvent), 'Event signature should be valid')
   })
 
   it('should include icon tag when icon is resolved for a topic', async () => {

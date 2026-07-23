@@ -2,6 +2,7 @@ import { getAuthorPubkey } from '#helpers/event.js'
 import { eventKinds, eventTags, RELAY_OWNED_KINDS } from '#constants/event.js'
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { base16ToBytes, bytesToBase16 } from 'libp2r2p/base16'
+import { isAddressableEvent, isReplaceableEvent } from 'libp2r2p/event'
 import mdb from '#services/db/mdb.js'
 import { checkStorageLimitAndPrune, queueOps } from '#services/event/maintainer/mdb/index.js'
 import { eventToRecord, idToRef, addressToRef } from '#models/event/mapper.js'
@@ -65,13 +66,7 @@ export default class EventSaver {
       if (event.kind !== eventKinds.DELETION) {
         const getDTagFromEvent = event => {
           let dTag = event.tags.find(tag => tag[0] === eventTags.DEDUPLICATION && (tag[1] || tag[1] === ''))?.[1]
-          if (
-            dTag === undefined && (
-              (event.kind >= 10000 && event.kind < 20000) ||
-              (event.kind >= 30000 && event.kind < 40000) ||
-              [0, 3].includes(event.kind)
-            )
-          ) dTag = ''
+          if (dTag === undefined && (isReplaceableEvent(event) || isAddressableEvent(event))) dTag = ''
           return dTag
         }
         const dTag = getDTagFromEvent(event)

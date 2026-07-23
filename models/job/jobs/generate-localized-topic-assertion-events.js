@@ -12,7 +12,7 @@
  * includes the icon URL in an `icon` tag when available.
  */
 import mdb from '#services/db/mdb.js'
-import { finalizeEvent } from 'nostr-tools'
+import { finalizeEvent } from 'libp2r2p/event'
 import { getRelaySelfSecretBytes, getRelaySelfPubkey } from '#helpers/relay-self.js'
 import { eventToRecord, addressToRef } from '#models/event/mapper.js'
 import { queueOps } from '#services/event/maintainer/mdb/index.js'
