@@ -28,9 +28,17 @@ function isNotFound (error) {
 }
 
 export function isNetworkError (error) {
-  return error?.name === 'MeiliSearchCommunicationError' ||
+  return error?.name === 'AbortError' ||
+    error?.name === 'MeiliSearchTaskTimeOutError' ||
+    error?.name === 'MeilisearchTaskTimeOutError' ||
+    error?.name === 'MeiliSearchCommunicationError' ||
+    error?.name === 'MeilisearchCommunicationError' ||
     ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND'].includes(error?.code) ||
     ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND'].includes(error?.cause?.code)
+}
+
+function checkpoint (signal) {
+  signal?.throwIfAborted()
 }
 
 async function getEvent (ref) {
@@ -66,14 +74,15 @@ function currentWins (current, candidate) {
   )
 }
 
-async function markCancellationAndCancel (reservationKey, reason) {
+async function markCancellationAndCancel (reservationKey, reason, { signal } = {}) {
+  checkpoint(signal)
   await prepareManifestReservation(reservationKey, {
     actualDeltaBytes: 0,
     actualDeltaCount: 0,
     state: 'cancel_required',
     reason
   })
-  await cancelManifestReservation(reservationKey)
+  await cancelManifestReservation(reservationKey, { signal })
 }
 
 async function recordManifestUpsertFailure (op, reservationKey, error) {
@@ -123,42 +132,55 @@ async function recordManifestUpsertFailure (op, reservationKey, error) {
   }
 }
 
-async function processManifestUpsert (op) {
+async function processManifestUpsert (op, { signal } = {}) {
+  checkpoint(signal)
   const { document, reservationKey } = op.data || {}
   if (!document?.ref || !document?.id || !reservationKey) {
     throw new TypeError('Invalid upsertManifestWithReservation operation')
   }
 
   const initialReservation = await mdb.index('manifestPoolReservations').getDocument(reservationKey)
+  checkpoint(signal)
   if (['committed', 'cancelled', 'rejected'].includes(initialReservation.state)) {
     await deletePendingOp(op.key)
     return
   }
   if (initialReservation.state === 'cancel_required') {
-    await cancelManifestReservation(reservationKey)
+    await cancelManifestReservation(reservationKey, { signal })
     await deletePendingOp(op.key)
     return
   }
 
   if ((op.phase || 'queued') === 'queued') {
+    checkpoint(signal)
     const current = await getEvent(document.ref)
     if (current?.id === document.id) {
-      await markCancellationAndCancel(reservationKey, 'manifest is already stored')
+      await markCancellationAndCancel(reservationKey, 'manifest is already stored', { signal })
       await deletePendingOp(op.key)
       return
     }
     if (currentWins(current, document)) {
-      await markCancellationAndCancel(reservationKey, 'a newer manifest is already stored')
+      await markCancellationAndCancel(
+        reservationKey,
+        'a newer manifest is already stored',
+        { signal }
+      )
       await deletePendingOp(op.key)
       return
     }
 
     const reservation = await mdb.index('manifestPoolReservations').getDocument(reservationKey)
+    checkpoint(signal)
     const actualDeltaBytes = (document.byteSize || 0) - (current?.byteSize || 0)
     const actualDeltaCount = current ? 0 : 1
     if (actualDeltaBytes > (reservation.reservedBytes || 0) ||
         actualDeltaCount > (reservation.reservedCount || 0)) {
-      await rejectManifestReservation(reservationKey, 'manifest capacity changed before persistence')
+      await rejectManifestReservation(
+        reservationKey,
+        'manifest capacity changed before persistence',
+        'global',
+        { signal }
+      )
       await deletePendingOp(op.key)
       return
     }
@@ -167,15 +189,22 @@ async function processManifestUpsert (op) {
   }
 
   if (op.phase === 'prepared') {
+    checkpoint(signal)
     const current = await getEvent(document.ref)
     if (current?.id !== document.id) {
       if (currentWins(current, document)) {
-        await markCancellationAndCancel(reservationKey, 'a newer manifest was stored before persistence')
+        await markCancellationAndCancel(
+          reservationKey,
+          'a newer manifest was stored before persistence',
+          { signal }
+        )
         await deletePendingOp(op.key)
         return
       }
+      checkpoint(signal)
       await mdb.index('events').addDocuments([document])
     }
+    checkpoint(signal)
     const reservation = await mdb.index('manifestPoolReservations').getDocument(reservationKey)
     await prepareManifestReservation(reservationKey, {
       actualDeltaBytes: reservation.actualDeltaBytes,
@@ -186,7 +215,8 @@ async function processManifestUpsert (op) {
   }
 
   if (op.phase === 'event_applied') {
-    await finalizeManifestReservation(reservationKey)
+    checkpoint(signal)
+    await finalizeManifestReservation(reservationKey, { signal })
     await patchPendingOp(op, 'accounting_applied')
   }
 
@@ -207,8 +237,12 @@ function deletionSnapshot (event) {
   }
 }
 
-export async function queueDeleteEventsWithAccounting (events, { pruning = false, source } = {}) {
+export async function queueDeleteEventsWithAccounting (
+  events,
+  { pruning = false, source, signal } = {}
+) {
   for (let start = 0; start < events.length; start += 100) {
+    checkpoint(signal)
     const snapshots = events.slice(start, start + 100).map(deletionSnapshot)
     await queueOps([{
       type: 'deleteEventsWithAccounting',
@@ -240,7 +274,7 @@ async function ensureStoredOwnerTokens (owner) {
   return true
 }
 
-async function applyStoredDeletionAccounting (events, operationKey) {
+async function applyStoredDeletionAccounting (events, operationKey, { signal } = {}) {
   const owners = new Map()
   for (const event of events) {
     if (!event.ownerKey || RELAY_OWNED_KINDS.has(event.kind)) continue
@@ -253,6 +287,7 @@ async function applyStoredDeletionAccounting (events, operationKey) {
     owners.set(event.ownerKey, current)
   }
   for (const owner of owners.values()) {
+    checkpoint(signal)
     if (!await ensureStoredOwnerTokens(owner)) continue
     const token = `${operationKey}:${owner.ownerKey}`
     await mdb.index('storedEventOwners').updateDocumentsByFunction({
@@ -275,11 +310,12 @@ async function applyStoredDeletionAccounting (events, operationKey) {
   }
 }
 
-async function clearStoredDeletionAccountingTokens (events, operationKey) {
+async function clearStoredDeletionAccountingTokens (events, operationKey, { signal } = {}) {
   const ownerKeys = new Set(events
     .filter(event => event.ownerKey && !RELAY_OWNED_KINDS.has(event.kind))
     .map(event => event.ownerKey))
   for (const ownerKey of ownerKeys) {
+    checkpoint(signal)
     const token = `${operationKey}:${ownerKey}`
     await mdb.index('storedEventOwners').updateDocumentsByFunction({
       function: `
@@ -296,7 +332,8 @@ async function clearStoredDeletionAccountingTokens (events, operationKey) {
   }
 }
 
-async function processDeletion (op) {
+async function processDeletion (op, { signal } = {}) {
+  checkpoint(signal)
   const requested = op.data?.events
   if (!Array.isArray(requested) || requested.length > 100) {
     throw new TypeError('Invalid deleteEventsWithAccounting operation')
@@ -305,6 +342,7 @@ async function processDeletion (op) {
   if ((op.phase || 'queued') === 'queued') {
     const selected = []
     for (const snapshot of requested) {
+      checkpoint(signal)
       if (!snapshot?.ref || !snapshot?.id) continue
       const current = await getEvent(snapshot.ref)
       if (current?.id === snapshot.id) selected.push(snapshot)
@@ -321,7 +359,8 @@ async function processDeletion (op) {
   const effectKey = op.data.effectKey || op.key
   const manifests = selected.filter(event => isManifestKind(event.kind))
   if (op.phase === 'prepared') {
-    if (manifests.length) await beginManifestMutation(effectKey)
+    checkpoint(signal)
+    if (manifests.length) await beginManifestMutation(effectKey, { signal })
     if (selected.length) {
       const filter = selected
         .map(event => `(ref = ${mdb.toMeiliValue(event.ref)} AND id = ${mdb.toMeiliValue(event.id)})`)
@@ -332,19 +371,23 @@ async function processDeletion (op) {
   }
 
   if (op.phase === 'events_deleted') {
-    if (manifests.length) await beginManifestMutation(effectKey)
-    await applyStoredDeletionAccounting(selected, effectKey)
+    checkpoint(signal)
+    if (manifests.length) await beginManifestMutation(effectKey, { signal })
+    await applyStoredDeletionAccounting(selected, effectKey, { signal })
+    checkpoint(signal)
     await applyManifestDeletionAccounting(manifests, {
       operationKey: effectKey,
-      pruning: Boolean(op.data.pruning)
+      pruning: Boolean(op.data.pruning),
+      signal
     })
     await patchPendingOp(op, 'accounting_applied')
   }
 
   if (op.phase === 'accounting_applied') {
-    await clearStoredDeletionAccountingTokens(selected, effectKey)
-    await clearManifestDeletionAccountingTokens(manifests, effectKey)
-    if (manifests.length) await finishManifestMutation(effectKey)
+    checkpoint(signal)
+    await clearStoredDeletionAccountingTokens(selected, effectKey, { signal })
+    await clearManifestDeletionAccountingTokens(manifests, effectKey, { signal })
+    if (manifests.length) await finishManifestMutation(effectKey, { signal })
     await deletePendingOp(op.key)
   }
 }
@@ -387,13 +430,18 @@ async function queueDeletionCompensation (op) {
   return true
 }
 
-export async function processPendingWorkflow (op) {
+export async function processPendingWorkflow (op, { signal } = {}) {
   try {
-    if (op.type === 'upsertManifestWithReservation') return await processManifestUpsert(op)
-    if (op.type === 'deleteEventsWithAccounting') return await processDeletion(op)
+    checkpoint(signal)
+    if (op.type === 'upsertManifestWithReservation') {
+      return await processManifestUpsert(op, { signal })
+    }
+    if (op.type === 'deleteEventsWithAccounting') {
+      return await processDeletion(op, { signal })
+    }
     throw new TypeError(`Unknown pending workflow type: ${op.type}`)
   } catch (error) {
-    if (isNetworkError(error)) throw error
+    if (signal?.aborted || isNetworkError(error)) throw error
     console.error(`Permanent workflow error ${op.key} (${op.type})`, error)
     const reservationKey = op.reservationKey || op.data?.reservationKey
     if (op.type === 'upsertManifestWithReservation' && reservationKey) {

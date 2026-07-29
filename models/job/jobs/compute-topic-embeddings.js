@@ -11,14 +11,16 @@
  */
 import mdb from '#services/db/mdb.js'
 import { embedTexts } from '#services/topic/embedder.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 
 const MAX_TOPICS_PER_LANG = 500
 const TOP_NEIGHBORS_FOR_CONTEXT = 5
 const BATCH_SIZE = 32
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running compute-topic-embeddings...')
 
+  checkpoint(signal)
   const languages = await discoverLanguages()
   if (languages.length === 0) {
     console.log('No hashtagStats languages found, skipping embeddings.')
@@ -27,8 +29,10 @@ export async function run () {
 
   for (const lang of languages) {
     try {
-      await processLanguage(lang)
+      checkpoint(signal)
+      await processLanguage(lang, { signal })
     } catch (err) {
+      rethrowAbort(err)
       console.error(`Failed to compute embeddings for lang=${lang}:`, err)
     }
   }
@@ -77,7 +81,8 @@ function simpleHash (str) {
   return hash
 }
 
-async function processLanguage (lang) {
+async function processLanguage (lang, { signal } = {}) {
+  checkpoint(signal)
   const { hits: topTopics } = await mdb.index('hashtagStats').search('', {
     filter: `lang = ${JSON.stringify(lang)}`,
     sort: ['count:desc'],
@@ -92,6 +97,7 @@ async function processLanguage (lang) {
   // Identify topics whose content has changed (or that have no embedding yet)
   const needsEmbedding = []
   for (const doc of topTopics) {
+    checkpoint(signal)
     const text = buildTopicText(doc, wordsMap)
     const hash = simpleHash('passage: ' + text)
     if (doc.embeddingHash !== hash) {
@@ -104,6 +110,7 @@ async function processLanguage (lang) {
   console.log(`Computing ${needsEmbedding.length} embeddings for lang=${lang}...`)
 
   for (let i = 0; i < needsEmbedding.length; i += BATCH_SIZE) {
+    checkpoint(signal)
     const batch = needsEmbedding.slice(i, i + BATCH_SIZE)
     const texts = batch.map(b => 'passage: ' + b.text)
     const embeddings = await embedTexts(texts)
@@ -119,6 +126,7 @@ async function processLanguage (lang) {
       embeddingHash: b.hash
     }))
 
+    checkpoint(signal)
     await mdb.index('hashtagStats').updateDocuments(documents)
   }
 }

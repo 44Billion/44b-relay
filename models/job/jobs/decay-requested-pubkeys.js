@@ -1,11 +1,13 @@
 import mdb from '#services/db/mdb.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running requested pubkeys decay...')
   const index = mdb.index('requestedPubkeys')
 
   let maxCount = 0
   try {
+    checkpoint(signal)
     const res = await index.search('', {
       limit: 1,
       sort: ['count:desc'],
@@ -13,6 +15,7 @@ export async function run () {
     })
     maxCount = res.hits[0]?.count || 0
   } catch (err) {
+    rethrowAbort(err)
     const isNotFound = err.code === 'index_not_found' || err.cause?.code === 'index_not_found'
     if (isNotFound) {
       console.log('requestedPubkeys index not found, skipping decay.')
@@ -69,6 +72,7 @@ export async function run () {
 
   try {
     console.log('Decay task enqueued...')
+    checkpoint(signal)
     const task = await index.updateDocumentsByFunction({
       function: fn,
       filter,
@@ -77,8 +81,10 @@ export async function run () {
         maxCount
       }
     })
+    checkpoint(signal)
     console.log(`Decay task ${task.uid} done with status "${task.status}"`)
   } catch (err) {
+    rethrowAbort(err)
     const isNotFound = err.code === 'index_not_found' || err.cause?.code === 'index_not_found'
     if (isNotFound) {
       console.log('requestedPubkeys index not found, skipping decay.')

@@ -12,6 +12,20 @@ export function setTimer (fn, callback, delay) {
   return maybeUnref(fn(callback, delay))
 }
 
-export function wait (ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
+export function wait (ms, { signal } = {}) {
+  if (!signal) return new Promise(resolve => setTimeout(resolve, ms))
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, ms)
+    function done () {
+      signal.removeEventListener('abort', aborted)
+      resolve()
+    }
+    function aborted () {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', aborted)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', aborted, { once: true })
+  })
 }

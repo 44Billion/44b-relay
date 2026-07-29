@@ -1,8 +1,11 @@
 import { deleteExpiredEvents } from '#models/event/dao.js'
+import { checkpoint } from '#helpers/abort.js'
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running deleteExpiredEvents job...')
-  await deleteExpiredEvents()
+  checkpoint(signal)
+  await deleteExpiredEvents({ signal })
+  checkpoint(signal)
   console.log('Done deleteExpiredEvents job.')
 }
 

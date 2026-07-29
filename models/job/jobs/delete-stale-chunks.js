@@ -3,6 +3,7 @@ import { eventKinds } from '#constants/event.js'
 import { recordToEvent } from '#models/event/mapper.js'
 import { validateIrfsChunkEvent } from '#services/event/irfs-chunk-validator.js'
 import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
+import { checkpoint } from '#helpers/abort.js'
 
 const BATCH_SIZE = 100
 const GRACE_PERIOD_SECONDS = 60 * 60 * 24 * 3
@@ -10,10 +11,11 @@ const ROOT_HASH = /^[0-9a-f]{64}$/
 
 // Loads all explicit blob references for one author in bounded pages. blobRefs
 // is derived from every r tag before the ten-tag indexing split.
-async function collectBlobRefsForPubkey (pubkey) {
+async function collectBlobRefsForPubkey (pubkey, { signal } = {}) {
   const roots = new Set()
   let offset = 0
   while (true) {
+    checkpoint(signal)
     const { results } = await mdb.index('events').getDocuments({
       filter: `pubkey = ${mdb.toMeiliValue(pubkey)} AND blobRefs EXISTS`,
       limit: BATCH_SIZE,
@@ -48,10 +50,11 @@ function isValidStoredChunk (hit) {
   }
 }
 
-async function collectChunkPubkeys () {
+async function collectChunkPubkeys ({ signal } = {}) {
   const pubkeys = new Set()
   let offset = 0
   while (true) {
+    checkpoint(signal)
     const { results } = await mdb.index('events').getDocuments({
       filter: `kind = ${eventKinds.BINARY_DATA_CHUNK}`,
       limit: BATCH_SIZE,
@@ -65,16 +68,18 @@ async function collectChunkPubkeys () {
   return pubkeys
 }
 
-async function deleteStaleChunks () {
+async function deleteStaleChunks ({ signal } = {}) {
   const receivedBefore = Math.floor(Date.now() / 1000) - GRACE_PERIOD_SECONDS
-  const pubkeys = await collectChunkPubkeys()
+  const pubkeys = await collectChunkPubkeys({ signal })
   let deletedCount = 0
 
   for (const pubkey of pubkeys) {
-    const referencedRoots = await collectBlobRefsForPubkey(pubkey)
+    checkpoint(signal)
+    const referencedRoots = await collectBlobRefsForPubkey(pubkey, { signal })
     let offset = 0
 
     while (true) {
+      checkpoint(signal)
       const { results } = await mdb.index('events').getDocuments({
         filter: `kind = ${eventKinds.BINARY_DATA_CHUNK} AND pubkey = ${mdb.toMeiliValue(pubkey)}`,
         limit: BATCH_SIZE,
@@ -89,7 +94,11 @@ async function deleteStaleChunks () {
         selected.push(hit)
       }
       if (selected.length) {
-        await queueDeleteEventsWithAccounting(selected, { source: 'deleteStaleChunks' })
+        checkpoint(signal)
+        await queueDeleteEventsWithAccounting(selected, {
+          source: 'deleteStaleChunks',
+          signal
+        })
         deletedCount += selected.length
       }
       if (results.length < BATCH_SIZE) break
@@ -99,9 +108,10 @@ async function deleteStaleChunks () {
   console.log(`Queued ${deletedCount} invalid or stale chunks for deletion`)
 }
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running deleteStaleChunks job...')
-  await deleteStaleChunks()
+  await deleteStaleChunks({ signal })
+  checkpoint(signal)
   console.log('Done deleteStaleChunks job.')
 }
 

@@ -1,7 +1,10 @@
 import { flushRequestedPubkeysToMDB } from '#services/event/tracker/mdb/requested-pubkeys.js'
+import { checkpoint } from '#helpers/abort.js'
 
-export async function run () {
+export async function run ({ signal } = {}) {
+  checkpoint(signal)
   await flushRequestedPubkeysToMDB()
+  checkpoint(signal)
 }
 
 const config = {

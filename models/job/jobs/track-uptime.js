@@ -1,6 +1,7 @@
 import mdb from '#services/db/mdb.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 
-export async function run () {
+export async function run ({ signal } = {}) {
   const now = Date.now()
   const currentHour = Math.floor(now / (1000 * 60 * 60))
   const key = `uptime-${currentHour}`
@@ -8,6 +9,7 @@ export async function run () {
 
   let doc
   try {
+    checkpoint(signal)
     doc = await index.getDocument(key)
   } catch (err) {
     if (err.code !== 'document_not_found' && err.cause?.code !== 'document_not_found') throw err
@@ -17,6 +19,7 @@ export async function run () {
   doc.count = (doc.count || 0) + 1
   doc.updatedAt = now
 
+  checkpoint(signal)
   await index.addDocuments([doc])
 
   // Pruning: run occasionally (e.g., ~1/60 chance aka once an hour on average, or just deterministically)
@@ -27,6 +30,7 @@ export async function run () {
   const cutoff = now - (26 * 60 * 60 * 1000)
 
   try {
+    checkpoint(signal)
     // Filter documents older than 26 hours
     // using filterable attribute 'createdAt'.
     // We must manually check type/key client-side to be safe.
@@ -40,9 +44,11 @@ export async function run () {
       .map(d => d.key)
 
     if (toDelete.length > 0) {
+      checkpoint(signal)
       await index.deleteDocuments(toDelete)
     }
   } catch (err) {
+    rethrowAbort(err)
     console.error('Failed to prune uptime stats:', err)
   }
 }

@@ -3,6 +3,7 @@ import { loadAndMaybeRotateSketches } from '#services/event/tracker/mdb/requeste
 import { eventKinds } from '#constants/event.js'
 import { Buffer } from 'buffer'
 import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 
 const BATCH_SIZE = 50
 
@@ -27,17 +28,22 @@ const CLEANUP_POLICIES = [
   }
 ]
 
-async function deleteUnrequestedRelayEvents () {
+async function deleteUnrequestedRelayEvents ({ signal } = {}) {
   let sketchCurrent, sketchPrevious
   try {
-    ({ sketchCurrent, sketchPrevious } = await loadAndMaybeRotateSketches())
+    checkpoint(signal)
+    const sketches = await loadAndMaybeRotateSketches()
+    sketchCurrent = sketches.sketchCurrent
+    sketchPrevious = sketches.sketchPrevious
   } catch (err) {
+    rethrowAbort(err)
     if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') return
     console.error('deleteUnrequestedRelayEvents: Failed to load sketch state', err)
     return
   }
 
   for (const policy of CLEANUP_POLICIES) {
+    checkpoint(signal)
     const receivedBefore = Math.floor(Date.now() / 1000) - policy.gracePeriodSeconds
     const kindFilter = policy.kinds.map(k => `kind = ${k}`).join(' OR ')
     const baseFilter = `(${kindFilter}) AND receivedAt <= ${receivedBefore}`
@@ -46,6 +52,7 @@ async function deleteUnrequestedRelayEvents () {
     let deletedCount = 0
 
     while (true) {
+      checkpoint(signal)
       const { results } = await mdb.index('events').getDocuments({
         filter: baseFilter,
         limit: BATCH_SIZE,
@@ -67,9 +74,11 @@ async function deleteUnrequestedRelayEvents () {
       }
 
       if (candidates.length > 0) {
+        checkpoint(signal)
         await queueDeleteEventsWithAccounting(candidates, {
           pruning: policy.name === 'site-manifests',
-          source: 'deleteUnrequestedRelayEvents'
+          source: 'deleteUnrequestedRelayEvents',
+          signal
         })
         deletedCount += candidates.length
       }
@@ -84,9 +93,10 @@ async function deleteUnrequestedRelayEvents () {
   }
 }
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running deleteUnrequestedRelayEvents job...')
-  await deleteUnrequestedRelayEvents()
+  await deleteUnrequestedRelayEvents({ signal })
+  checkpoint(signal)
   console.log('Done deleteUnrequestedRelayEvents job.')
 }
 

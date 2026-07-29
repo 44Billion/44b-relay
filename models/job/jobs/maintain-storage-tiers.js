@@ -4,13 +4,16 @@ import { loadPopularityFilters, getPopularityLevel, checkStorageLimitAndPrune, q
 import { FastBloomFilter, packFilter, unpackFilter } from '#helpers/bloom.js'
 import { base16ToBytes } from 'libp2r2p/base16'
 import { PENDING_OPS_REVERSE_SORT } from '#models/pending-op/order.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
+import { wait } from '#helpers/timer.js'
 
-async function run () {
+async function run ({ signal } = {}) {
   console.log('Running storage tiers maintenance...')
 
   // 1. Get Reference Info (last calc job)
   let calcJob
   try {
+    checkpoint(signal)
     calcJob = await mdb.index('jobs').getDocument('calcPopularPubkeys')
   } catch (err) {
     if (err.code !== 'document_not_found' && err.cause?.code !== 'document_not_found') throw err
@@ -27,6 +30,7 @@ async function run () {
   // 2. Load or Create State
   let state
   try {
+    checkpoint(signal)
     state = await mdb.index('maintenanceStates').getDocument(stateKey)
 
     if (state.createdAt !== calcJob.endedAt) {
@@ -58,6 +62,7 @@ async function run () {
   // Check for previous pending ops from this job type
   let lastOp
   try {
+    checkpoint(signal)
     const { hits } = await mdb.index('pendingOps').search('', {
       filter: 'source = "maintainStorageTiers"',
       sort: PENDING_OPS_REVERSE_SORT,
@@ -67,16 +72,18 @@ async function run () {
       lastOp = hits[0]
     }
   } catch (_e) {
+    rethrowAbort(_e)
     // ignore
   }
 
   if (lastOp) {
     console.log(`Waiting for previous ops to complete (last op: ${lastOp.key})...`)
     while (true) {
+      checkpoint(signal)
       try {
         await mdb.index('pendingOps').getDocument(lastOp.key)
         // If found, it means it's still pending
-        await new Promise(resolve => setTimeout(resolve, 5000))
+        await wait(5000, { signal })
       } catch (err) {
         if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') {
           break // Op is gone, we can proceed
@@ -87,6 +94,7 @@ async function run () {
     console.log('Previous ops completed.')
   }
 
+  checkpoint(signal)
   await loadPopularityFilters()
 
   const BATCH_SIZE = 100
@@ -100,6 +108,7 @@ async function run () {
   let maintenanceReachedUnprocessed = false
 
   while (true) {
+    checkpoint(signal)
     // Iterate storedEventOwners where entityType='pubkey'
     const { results } = await mdb.index('storedEventOwners').getDocuments({
       offset,
@@ -111,6 +120,7 @@ async function run () {
     if (results.length === 0) break
 
     for (const ownerDoc of results) {
+      checkpoint(signal)
       const pubkey = ownerDoc.key
       let { popularityLevel } = ownerDoc
 
@@ -142,11 +152,12 @@ async function run () {
           // VIP pubkeys are exempt from relegation and pruning
         } else if (popularityLevel > 5) {
           // Relegation Logic: Move 'pubkey' events to 'ip'
-          await relegateEvents(pubkey, state, popularityLevel)
+          await relegateEvents(pubkey, state, popularityLevel, { signal })
         } else {
           // Still popular (1-5)
           // Just prune
           const { ops } = await checkStorageLimitAndPrune({ pubkey, ip: null, newEventSize: 0, popularityLevel })
+          checkpoint(signal)
           await queueOps(ops)
         }
 
@@ -155,7 +166,7 @@ async function run () {
     }
 
     // Save State periodically
-    await saveState(state)
+    await saveState(state, { signal })
 
     offset += BATCH_SIZE
     processed += results.length
@@ -166,7 +177,7 @@ async function run () {
   console.log(`Maintenance job done for ${referenceDesc}.`)
 }
 
-async function relegateEvents (pubkey, state, popularityLevel) {
+async function relegateEvents (pubkey, state, popularityLevel, { signal } = {}) {
   // Find events for this pubkey with ownerType='pubkey'
   // and switch them to ownerType='ip'
   // Also need to handle 'ip' usage update.
@@ -176,6 +187,7 @@ async function relegateEvents (pubkey, state, popularityLevel) {
   let offset = 0
 
   while (true) {
+    checkpoint(signal)
     const relayOwnedExclusion = [...RELAY_OWNED_KINDS].map(kind => `kind != ${kind}`).join(' AND ')
     const filter = `pubkey = ${mdb.toMeiliValue(pubkey)} AND ownerType = "pubkey" AND ${relayOwnedExclusion}`
     // Use sort and variable offset to ensure progress through the list
@@ -200,6 +212,7 @@ async function relegateEvents (pubkey, state, popularityLevel) {
     const allOps = []
 
     for (const [ip, ipEvents] of Object.entries(eventsByIp)) {
+      checkpoint(signal)
       // Update Usage for IP
       const sizeToAdd = ipEvents.reduce((acc, ev) => acc + (ev.byteSize || 0), 0)
       const { ops } = await checkStorageLimitAndPrune({ pubkey, ip, newEventSize: sizeToAdd, popularityLevel })
@@ -227,6 +240,7 @@ async function relegateEvents (pubkey, state, popularityLevel) {
     allOps.forEach(op => { op.source = 'maintainStorageTiers' })
 
     // Flush all ops in one batch
+    checkpoint(signal)
     await queueOps(allOps)
 
     // Advance offset
@@ -237,18 +251,22 @@ async function relegateEvents (pubkey, state, popularityLevel) {
     // Optimization: Only save every 10 batches to avoid excessive DB writes and waiting
     batchCount++
     if (batchCount % 10 === 0) {
-      await saveState(state)
+      await saveState(state, { signal })
     }
   }
 }
 
-async function saveState (state) {
+async function saveState (state, { signal } = {}) {
+  checkpoint(signal)
+  const levelUpdatedFilter = await packFilter(state.levelUpdatedFilterRaw)
+  const maintenanceDoneFilter = await packFilter(state.maintenanceDoneFilterRaw)
+  checkpoint(signal)
   await mdb.index('maintenanceStates').updateDocuments([{
     key: state.key,
     jobKey: state.jobKey,
     createdAt: state.createdAt,
-    levelUpdatedFilter: await packFilter(state.levelUpdatedFilterRaw),
-    maintenanceDoneFilter: await packFilter(state.maintenanceDoneFilterRaw)
+    levelUpdatedFilter,
+    maintenanceDoneFilter
   }])
 }
 

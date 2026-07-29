@@ -1,7 +1,10 @@
 import { flushRequestedEventsToMDB } from '#services/event/tracker/mdb/requested-events.js'
+import { checkpoint } from '#helpers/abort.js'
 
-export async function run () {
+export async function run ({ signal } = {}) {
+  checkpoint(signal)
   await flushRequestedEventsToMDB()
+  checkpoint(signal)
 }
 
 const config = {

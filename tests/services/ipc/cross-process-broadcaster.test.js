@@ -128,6 +128,10 @@ describe('cross-process-broadcaster', () => {
     const receivedB = []
     const a = makeBroadcaster(socket)
     const b = makeBroadcaster(socket)
+    const leadershipA = []
+    const leadershipB = []
+    a.subscribeLeadership(value => leadershipA.push(value), { emitCurrent: false })
+    b.subscribeLeadership(value => leadershipB.push(value), { emitCurrent: false })
 
     a.init(data => receivedA.push(data))
     b.init(data => receivedB.push(data))
@@ -139,8 +143,13 @@ describe('cross-process-broadcaster', () => {
     await server.closeServerForTest()
 
     await waitFor(() => a.isReady() && b.isReady(), { timeoutMs: 3000 })
+    await waitFor(() => [a, b].filter(instance => instance.isServer()).length === 1)
     assert.equal(await b.broadcast({ id: 'after-reconnect' }, { timeoutMs: 1000 }), true)
     await waitFor(() => receivedA.length === 1 && receivedB.length === 1)
+
+    assert.equal(leadershipA.filter(Boolean).length + leadershipB.filter(Boolean).length, 2)
+    assert.equal(leadershipA.filter(value => !value).length +
+      leadershipB.filter(value => !value).length, 1)
 
     await Promise.all([a.close(), b.close()])
     cleanupPath(socket)

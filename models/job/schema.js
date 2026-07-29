@@ -7,6 +7,10 @@ export default {
     'endedAt',
     'requestedAt',
     'lockKey',
+    'revision',
+    'ownerId',
+    'ownerType',
+    'heartbeatTolerance',
     'lastError',
     'erroedAt',
     'heartbeatedAt'

@@ -19,6 +19,7 @@ describe('Job Worker (Integration)', () => {
   const jobKey = 'integration-test-job-mocked'
   let job
   let init, getJobByKey // , putJobByKey
+  let stopWorker
 
   before(async () => {
     // Import Worker via dynamic import to ensure mocks apply
@@ -100,6 +101,7 @@ describe('Job Worker (Integration)', () => {
   }
 
   beforeEach(async () => {
+    stopWorker = null
     pendingTimers = []
     virtualTime = 1000000000000
 
@@ -118,7 +120,8 @@ describe('Job Worker (Integration)', () => {
     }
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stopWorker?.()
     mock.timers.reset()
   })
 
@@ -132,7 +135,7 @@ describe('Job Worker (Integration)', () => {
   }
 
   it('should initialize and create record', async () => {
-    await init([job])
+    stopWorker = await init([job])
 
     // Real wait for DB
     await new Promise(resolve => setTimeout(resolve, 200))
@@ -156,7 +159,7 @@ describe('Job Worker (Integration)', () => {
     }])
     await new Promise(resolve => setTimeout(resolve, 200))
 
-    await init([job])
+    stopWorker = await init([job])
 
     // Trigger scheduled job
     // Jitter is max 60s. Add 1s margin.
@@ -198,7 +201,7 @@ describe('Job Worker (Integration)', () => {
     }])
     await new Promise(resolve => setTimeout(resolve, 200))
 
-    await init([job])
+    stopWorker = await init([job])
 
     // Trigger scheduled job
     await tickAndSync(60000 + 1000)
@@ -224,7 +227,7 @@ describe('Job Worker (Integration)', () => {
     }])
     await new Promise(resolve => setTimeout(resolve, 200))
 
-    await init([job])
+    stopWorker = await init([job])
 
     // Trigger scheduled job check - jitter is max 60s
     await tickAndSync(60000 + 1000)
@@ -253,7 +256,7 @@ describe('Job Worker (Integration)', () => {
     }])
     await new Promise(resolve => setTimeout(resolve, 200))
 
-    await init([job])
+    stopWorker = await init([job])
 
     // Trigger
     await tickAndSync(60000 + 1000)
@@ -270,18 +273,18 @@ describe('Job Worker (Integration)', () => {
     const nowSec = Math.floor(virtualTime / 1000)
 
     // Condition:
-    // isStalled: (now - heartbeatedAt) >= 120
+    // isStalled: (now - heartbeatedAt) >= the 240s default tolerance
 
     await mdb.index('jobs').addDocuments([{
       key: jobKey,
       startedAt: nowSec - 200,
       endedAt: nowSec - 201,
-      heartbeatedAt: nowSec - 150, // 150s ago > 120s tolerance
+      heartbeatedAt: nowSec - 250,
       lockKey: 'stalled'
     }])
     await new Promise(resolve => setTimeout(resolve, 200))
 
-    await init([job])
+    stopWorker = await init([job])
 
     await tickAndSync(60000 + 1000)
 
@@ -290,5 +293,160 @@ describe('Job Worker (Integration)', () => {
     await new Promise(resolve => setTimeout(resolve, 500))
 
     assert.equal(job.run.mock.callCount(), 1)
+  })
+
+  it('runs unlocked jobs locally but locked jobs only while IPC leader', async () => {
+    let leadershipHandler
+    let releaseBarrier
+    const barrier = new Promise(resolve => { releaseBarrier = resolve })
+    const leadership = {
+      subscribe (handler) {
+        leadershipHandler = handler
+        return () => {}
+      }
+    }
+    const unlocked = {
+      key: 'unlocked-local',
+      frequency: 60,
+      initialDelay: 0,
+      shouldUseLock: false,
+      run: mock.fn(async () => {})
+    }
+    const locked = {
+      ...job,
+      initialDelay: 0,
+      run: mock.fn(async () => {})
+    }
+
+    stopWorker = await init([locked, unlocked], {
+      leadership,
+      waitForTaskQueueBarrier: async () => barrier
+    })
+    await tickAndSync(0)
+    assert.equal(unlocked.run.mock.callCount(), 1)
+    assert.equal(locked.run.mock.callCount(), 0)
+
+    const becomingLeader = leadershipHandler(true)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await tickAndSync(0)
+    assert.equal(locked.run.mock.callCount(), 0)
+
+    releaseBarrier()
+    await becomingLeader
+    await tickAndSync(0)
+    await new Promise(resolve => setTimeout(resolve, 800))
+    assert.equal(locked.run.mock.callCount(), 1)
+
+    await leadershipHandler(false)
+    // The scheduler adds up to five seconds of jitter after each run.
+    await tickAndSync(66000)
+    assert.equal(unlocked.run.mock.callCount(), 2)
+    assert.equal(locked.run.mock.callCount(), 1)
+  })
+
+  it('does not take a running manual job during leader activation', async () => {
+    const nowSec = Math.floor(virtualTime / 1000)
+    const manualJob = {
+      ...job,
+      manual: true,
+      initialDelay: 0,
+      run: mock.fn(async () => {})
+    }
+    await mdb.index('jobs').addDocuments([{
+      key: jobKey,
+      startedAt: nowSec - 1000,
+      endedAt: nowSec - 1001,
+      heartbeatedAt: nowSec - 1000,
+      requestedAt: nowSec - 900,
+      lockKey: 'manual-lock',
+      ownerId: 'manual-runner',
+      ownerType: 'manual'
+    }])
+
+    stopWorker = await init([manualJob])
+    await tickAndSync(0)
+    await new Promise(resolve => setTimeout(resolve, 500))
+    assert.equal(manualJob.run.mock.callCount(), 0)
+  })
+
+  it('uses a new owner for each leadership term and resumes an aborted job', async () => {
+    let leadershipHandler
+    const leadership = {
+      subscribe (handler) {
+        leadershipHandler = handler
+        return () => {}
+      }
+    }
+    const ownerIds = []
+    const longJob = {
+      ...job,
+      initialDelay: 0,
+      run: mock.fn(({ signal }) => new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), {
+          once: true
+        })
+      }))
+    }
+
+    stopWorker = await init([longJob], {
+      leadership,
+      waitForTaskQueueBarrier: async () => {}
+    })
+
+    await leadershipHandler(true)
+    await tickAndSync(0)
+    await new Promise(resolve => setTimeout(resolve, 800))
+    assert.equal(longJob.run.mock.callCount(), 1)
+    ownerIds.push((await getJobByKey(jobKey)).result.ownerId)
+
+    await leadershipHandler(false)
+    await leadershipHandler(true)
+    await tickAndSync(0)
+    await new Promise(resolve => setTimeout(resolve, 800))
+    assert.equal(longJob.run.mock.callCount(), 2)
+    ownerIds.push((await getJobByKey(jobKey)).result.ownerId)
+
+    assert.notEqual(ownerIds[0], ownerIds[1])
+  })
+
+  it('retries leader activation after a transient barrier failure', async () => {
+    let leadershipHandler
+    let barrierCalls = 0
+    const leadership = {
+      subscribe (handler) {
+        leadershipHandler = handler
+        return () => {}
+      }
+    }
+    const retryJob = {
+      ...job,
+      initialDelay: 0,
+      run: mock.fn(async () => {})
+    }
+    const errorMock = mock.method(console, 'error', () => {})
+
+    try {
+      stopWorker = await init([retryJob], {
+        leadership,
+        activationRetryMs: 10,
+        waitForTaskQueueBarrier: async () => {
+          barrierCalls++
+          if (barrierCalls === 1) throw new Error('temporary barrier failure')
+        }
+      })
+
+      await leadershipHandler(true)
+      assert.equal(barrierCalls, 1)
+
+      await tickAndSync(10)
+      await new Promise(resolve => setTimeout(resolve, 800))
+      assert.equal(barrierCalls, 2)
+
+      await tickAndSync(0)
+      await new Promise(resolve => setTimeout(resolve, 800))
+      assert.equal(retryJob.run.mock.callCount(), 1)
+    } finally {
+      errorMock.mock.restore()
+    }
   })
 })

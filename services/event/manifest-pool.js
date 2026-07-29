@@ -1,6 +1,7 @@
 import mdb from '#services/db/mdb.js'
 import { MANIFEST_KINDS } from '#constants/event.js'
 import { patchJobByKey, putJobByKey } from '#models/job/dao.js'
+import { checkpoint } from '#helpers/abort.js'
 import crypto from 'node:crypto'
 
 const GIB = 1024 * 1024 * 1024
@@ -212,8 +213,10 @@ async function clearCounterToken (key, field, token) {
   })
 }
 
-export async function beginManifestMutation (operationKey) {
+export async function beginManifestMutation (operationKey, { signal } = {}) {
+  checkpoint(signal)
   await getCounter(GLOBAL_KEY)
+  checkpoint(signal)
   await mdb.index('manifestPoolUsage').updateDocumentsByFunction({
     function: `
       let seen = false;
@@ -231,8 +234,10 @@ export async function beginManifestMutation (operationKey) {
   })
 }
 
-export async function finishManifestMutation (operationKey) {
+export async function finishManifestMutation (operationKey, { signal } = {}) {
+  checkpoint(signal)
   await getCounter(GLOBAL_KEY)
+  checkpoint(signal)
   await mdb.index('manifestPoolUsage').updateDocumentsByFunction({
     function: `
       let seen = false;
@@ -285,22 +290,28 @@ async function requestCapacityPruning () {
   if (!created.success) throw created.error
 }
 
-async function countRejection (reservation, scope) {
+async function countRejection (reservation, scope, { signal } = {}) {
   const globalToken = `${reservation.key}:rejection:global`
   if (!reservation.globalRejectionCounted) {
+    checkpoint(signal)
     await incrementMetricOnce({ key: GLOBAL_KEY, field: 'rejectionCount', token: globalToken })
+    checkpoint(signal)
     reservation = await patchReservation(reservation.key, { globalRejectionCounted: true })
+    checkpoint(signal)
     await clearCounterToken(GLOBAL_KEY, 'metricTokens', globalToken)
   }
   if (scope === 'author' && !reservation.authorRejectionCounted) {
     const token = `${reservation.key}:rejection:author`
+    checkpoint(signal)
     await incrementMetricOnce({
       key: authorKey(reservation.pubkey),
       pubkey: reservation.pubkey,
       field: 'rejectionCount',
       token
     })
+    checkpoint(signal)
     await patchReservation(reservation.key, { authorRejectionCounted: true })
+    checkpoint(signal)
     await clearCounterToken(authorKey(reservation.pubkey), 'metricTokens', token)
   }
 }
@@ -399,7 +410,8 @@ export async function prepareManifestReservation (reservationKey, {
   })
 }
 
-export async function finalizeManifestReservation (reservationKey) {
+export async function finalizeManifestReservation (reservationKey, { signal } = {}) {
+  checkpoint(signal)
   let reservation = await getReservation(reservationKey)
   if (reservation.state === 'committed') return reservation
   if (!Number.isSafeInteger(reservation.actualDeltaBytes) ||
@@ -408,6 +420,7 @@ export async function finalizeManifestReservation (reservationKey) {
   }
   const settlementToken = `${reservationKey}:commit`
   if (!reservation.globalSettled) {
+    checkpoint(signal)
     const settled = await settleCounterReservation({
       key: GLOBAL_KEY,
       reservationToken: reservationKey,
@@ -419,9 +432,11 @@ export async function finalizeManifestReservation (reservationKey) {
       outcome: 'commit'
     })
     if (!settled) throw new Error('Global manifest reservation token is missing')
+    checkpoint(signal)
     reservation = await patchReservation(reservationKey, { globalSettled: true })
   }
   if (!reservation.authorSettled) {
+    checkpoint(signal)
     const settled = await settleCounterReservation({
       key: authorKey(reservation.pubkey),
       pubkey: reservation.pubkey,
@@ -434,18 +449,24 @@ export async function finalizeManifestReservation (reservationKey) {
       outcome: 'commit'
     })
     if (!settled) throw new Error('Author manifest reservation token is missing')
+    checkpoint(signal)
     reservation = await patchReservation(reservationKey, { authorSettled: true })
   }
+  checkpoint(signal)
   reservation = await patchReservation(reservationKey, { state: 'committed' })
-  await Promise.all([
-    clearCounterToken(GLOBAL_KEY, 'settlementTokens', settlementToken),
-    clearCounterToken(authorKey(reservation.pubkey), 'settlementTokens', settlementToken)
-  ])
+  checkpoint(signal)
+  await clearCounterToken(GLOBAL_KEY, 'settlementTokens', settlementToken)
+  checkpoint(signal)
+  await clearCounterToken(authorKey(reservation.pubkey), 'settlementTokens', settlementToken)
   return reservation
 }
 
-export async function cancelManifestReservation (reservationKey, { terminalState = 'cancelled' } = {}) {
+export async function cancelManifestReservation (reservationKey, {
+  terminalState = 'cancelled',
+  signal
+} = {}) {
   if (!reservationKey) return
+  checkpoint(signal)
   let reservation
   try {
     reservation = await getReservation(reservationKey)
@@ -456,6 +477,7 @@ export async function cancelManifestReservation (reservationKey, { terminalState
   if (['committed', 'cancelled', 'rejected'].includes(reservation.state)) return reservation
   const settlementToken = `${reservationKey}:cancel`
   if (!reservation.globalSettled) {
+    checkpoint(signal)
     await settleCounterReservation({
       key: GLOBAL_KEY,
       reservationToken: reservationKey,
@@ -464,9 +486,11 @@ export async function cancelManifestReservation (reservationKey, { terminalState
       reservedCount: reservation.reservedCount,
       outcome: 'cancel'
     })
+    checkpoint(signal)
     reservation = await patchReservation(reservationKey, { globalSettled: true })
   }
   if (!reservation.authorSettled) {
+    checkpoint(signal)
     await settleCounterReservation({
       key: authorKey(reservation.pubkey),
       pubkey: reservation.pubkey,
@@ -476,21 +500,31 @@ export async function cancelManifestReservation (reservationKey, { terminalState
       reservedCount: reservation.reservedCount,
       outcome: 'cancel'
     })
+    checkpoint(signal)
     reservation = await patchReservation(reservationKey, { authorSettled: true })
   }
+  checkpoint(signal)
   reservation = await patchReservation(reservationKey, { state: terminalState })
-  await Promise.all([
-    clearCounterToken(GLOBAL_KEY, 'settlementTokens', settlementToken),
-    clearCounterToken(authorKey(reservation.pubkey), 'settlementTokens', settlementToken)
-  ])
+  checkpoint(signal)
+  await clearCounterToken(GLOBAL_KEY, 'settlementTokens', settlementToken)
+  checkpoint(signal)
+  await clearCounterToken(authorKey(reservation.pubkey), 'settlementTokens', settlementToken)
   return reservation
 }
 
-export async function rejectManifestReservation (reservationKey, reason, scope = 'global') {
+export async function rejectManifestReservation (
+  reservationKey,
+  reason,
+  scope = 'global',
+  { signal } = {}
+) {
+  checkpoint(signal)
   let reservation = await patchReservation(reservationKey, { state: 'cancel_required', reason, rejectionScope: scope })
-  await cancelManifestReservation(reservationKey, { terminalState: 'rejected' })
+  await cancelManifestReservation(reservationKey, { terminalState: 'rejected', signal })
+  checkpoint(signal)
   reservation = await getReservation(reservationKey)
-  await countRejection(reservation, scope)
+  await countRejection(reservation, scope, { signal })
+  checkpoint(signal)
   return getReservation(reservationKey)
 }
 
@@ -523,12 +557,13 @@ async function applyCounterAccountingOnce ({
 }
 
 export async function applyManifestDeletionAccounting (events, {
-  operationKey, pruning = false
+  operationKey, pruning = false, signal
 }) {
   if (!events.length) return
   const byAuthor = new Map()
   let logicalBytes = 0
   for (const event of events) {
+    checkpoint(signal)
     const bytes = event.byteSize || 0
     logicalBytes += bytes
     const usage = byAuthor.get(event.pubkey) || { logicalBytes: 0, count: 0 }
@@ -536,6 +571,7 @@ export async function applyManifestDeletionAccounting (events, {
     usage.count++
     byAuthor.set(event.pubkey, usage)
   }
+  checkpoint(signal)
   await applyCounterAccountingOnce({
     key: GLOBAL_KEY,
     token: `${operationKey}:${GLOBAL_KEY}`,
@@ -544,6 +580,7 @@ export async function applyManifestDeletionAccounting (events, {
     pruningCount: pruning ? events.length : 0
   })
   for (const [pubkey, usage] of byAuthor) {
+    checkpoint(signal)
     const key = authorKey(pubkey)
     await applyCounterAccountingOnce({
       key,
@@ -556,24 +593,32 @@ export async function applyManifestDeletionAccounting (events, {
   }
 }
 
-export async function clearManifestDeletionAccountingTokens (events, operationKey) {
+export async function clearManifestDeletionAccountingTokens (
+  events,
+  operationKey,
+  { signal } = {}
+) {
   if (!events.length) return
   const pubkeys = new Set(events.map(event => event.pubkey))
+  checkpoint(signal)
   await clearCounterToken(GLOBAL_KEY, 'accountingTokens', `${operationKey}:${GLOBAL_KEY}`)
-  await Promise.all([...pubkeys].map(pubkey => {
+  for (const pubkey of pubkeys) {
+    checkpoint(signal)
     const key = authorKey(pubkey)
-    return clearCounterToken(key, 'accountingTokens', `${operationKey}:${key}`)
-  }))
+    await clearCounterToken(key, 'accountingTokens', `${operationKey}:${key}`)
+  }
 }
 
 export async function recoverManifestReservations ({
-  orphanGraceMs = ORPHAN_RESERVATION_GRACE_MS
+  orphanGraceMs = ORPHAN_RESERVATION_GRACE_MS,
+  signal
 } = {}) {
   const terminalStates = new Set(['committed', 'cancelled', 'rejected'])
   const terminalBefore = Date.now() - TERMINAL_RESERVATION_RETENTION_MS
   let offset = 0
   let recovered = 0
   while (true) {
+    checkpoint(signal)
     const { results } = await mdb.index('manifestPoolReservations').getDocuments({
       limit: 100,
       offset,
@@ -582,23 +627,28 @@ export async function recoverManifestReservations ({
     if (!results.length) break
     const terminalToDelete = []
     for (const reservation of results) {
+      checkpoint(signal)
       if (terminalStates.has(reservation.state)) {
         if (reservation.state === 'rejected' &&
             (!reservation.globalRejectionCounted ||
              (reservation.rejectionScope === 'author' && !reservation.authorRejectionCounted))) {
-          await countRejection(reservation, reservation.rejectionScope || 'global')
+          await countRejection(reservation, reservation.rejectionScope || 'global', { signal })
         }
         const outcome = reservation.state === 'committed' ? 'commit' : 'cancel'
         const settlementToken = `${reservation.key}:${outcome}`
-        await Promise.all([
-          clearCounterToken(GLOBAL_KEY, 'settlementTokens', settlementToken),
-          clearCounterToken(authorKey(reservation.pubkey), 'settlementTokens', settlementToken)
-        ])
+        checkpoint(signal)
+        await clearCounterToken(GLOBAL_KEY, 'settlementTokens', settlementToken)
+        checkpoint(signal)
+        await clearCounterToken(authorKey(reservation.pubkey), 'settlementTokens', settlementToken)
         if (reservation.state === 'rejected') {
-          await Promise.all([
-            clearCounterToken(GLOBAL_KEY, 'metricTokens', `${reservation.key}:rejection:global`),
-            clearCounterToken(authorKey(reservation.pubkey), 'metricTokens', `${reservation.key}:rejection:author`)
-          ])
+          checkpoint(signal)
+          await clearCounterToken(GLOBAL_KEY, 'metricTokens', `${reservation.key}:rejection:global`)
+          checkpoint(signal)
+          await clearCounterToken(
+            authorKey(reservation.pubkey),
+            'metricTokens',
+            `${reservation.key}:rejection:author`
+          )
         }
         if ((reservation.updatedAt || reservation.createdAt || 0) <= terminalBefore) {
           terminalToDelete.push(reservation.key)
@@ -607,9 +657,14 @@ export async function recoverManifestReservations ({
       }
       if (reservation.state === 'cancel_required') {
         const terminalState = reservation.rejectionScope ? 'rejected' : 'cancelled'
-        await cancelManifestReservation(reservation.key, { terminalState })
+        await cancelManifestReservation(reservation.key, { terminalState, signal })
         if (terminalState === 'rejected') {
-          await countRejection(await getReservation(reservation.key), reservation.rejectionScope)
+          checkpoint(signal)
+          await countRejection(
+            await getReservation(reservation.key),
+            reservation.rejectionScope,
+            { signal }
+          )
         }
         recovered++
         continue
@@ -623,7 +678,7 @@ export async function recoverManifestReservations ({
       }
       if (['prepared', 'event_applied'].includes(reservation.state) &&
           current?.id === reservation.eventId) {
-        await finalizeManifestReservation(reservation.key)
+        await finalizeManifestReservation(reservation.key, { signal })
         recovered++
         continue
       }
@@ -639,10 +694,11 @@ export async function recoverManifestReservations ({
       // cannot mistake an in-flight producer for an orphan.
       if (Date.now() - (reservation.updatedAt || reservation.createdAt || 0) < orphanGraceMs) continue
 
-      await cancelManifestReservation(reservation.key)
+      await cancelManifestReservation(reservation.key, { signal })
       recovered++
     }
     if (terminalToDelete.length) {
+      checkpoint(signal)
       await mdb.index('manifestPoolReservations').deleteDocuments(terminalToDelete)
     }
     if (results.length < 100) break
@@ -651,22 +707,26 @@ export async function recoverManifestReservations ({
   return recovered
 }
 
-export async function getManifestPoolUsage () {
+export async function getManifestPoolUsage ({ signal } = {}) {
+  checkpoint(signal)
   const global = await getCounter(GLOBAL_KEY)
   const authors = []
   let offset = 0
   while (true) {
+    checkpoint(signal)
     const { results } = await mdb.index('manifestPoolUsage').getDocuments({
       filter: 'scope = "author"',
       limit: 500,
       offset,
       sort: ['logicalBytes:desc']
     })
-    const normalized = await Promise.all(results.map(counter => {
+    const normalized = []
+    for (const counter of results) {
+      checkpoint(signal)
       const complete = COUNTER_NUMBER_FIELDS.every(field => Number.isFinite(counter[field])) &&
         COUNTER_ARRAY_FIELDS.every(field => Array.isArray(counter[field]))
-      return complete ? counter : getCounter(counter.key, counter.pubkey)
-    }))
+      normalized.push(complete ? counter : await getCounter(counter.key, counter.pubkey))
+    }
     authors.push(...normalized)
     if (results.length < 500) break
     offset += results.length
@@ -681,8 +741,9 @@ function counterHasActiveMutation (counter) {
 
 async function applyReconciledCounter ({
   key, pubkey, expectedVersion, logicalBytes, manifestCount, reconciledAt,
-  reconciliationToken, usedDatabaseSize
+  reconciliationToken, usedDatabaseSize, signal
 }) {
+  checkpoint(signal)
   await mdb.index('manifestPoolUsage').updateDocumentsByFunction({
     function: `
       let can_reconcile = doc.mutationVersion == context.expectedVersion;
@@ -713,6 +774,7 @@ async function applyReconciledCounter ({
       usedDatabaseSize
     }
   })
+  checkpoint(signal)
   const counter = await getCounter(key, pubkey)
   return counter.lastReconciliationToken === reconciliationToken
 }
@@ -721,9 +783,9 @@ async function applyReconciledCounter ({
 // truth after crashes and partial queue processing. A monotonic version makes
 // the final writes conditional: live reservations/deletions invalidate this
 // snapshot instead of being overwritten by a non-transactional scan.
-export async function reconcileManifestPoolUsage () {
-  await recoverManifestReservations()
-  const previousUsage = await getManifestPoolUsage()
+export async function reconcileManifestPoolUsage ({ signal } = {}) {
+  await recoverManifestReservations({ signal })
+  const previousUsage = await getManifestPoolUsage({ signal })
   if (counterHasActiveMutation(previousUsage.global)) {
     console.log('Manifest pool reconciliation deferred while accounting is active')
     return previousUsage
@@ -736,6 +798,7 @@ export async function reconcileManifestPoolUsage () {
   let globalCount = 0
   let offset = 0
   while (true) {
+    checkpoint(signal)
     const { results } = await mdb.index('events').getDocuments({
       filter: `(${kindFilter})`,
       fields: ['pubkey', 'byteSize'],
@@ -743,6 +806,7 @@ export async function reconcileManifestPoolUsage () {
       offset
     })
     for (const event of results) {
+      checkpoint(signal)
       const bytes = event.byteSize || 0
       globalBytes += bytes
       globalCount++
@@ -757,10 +821,12 @@ export async function reconcileManifestPoolUsage () {
 
   const now = Math.floor(Date.now() / 1000)
   let usedDatabaseSize
+  checkpoint(signal)
   try {
     const stats = await mdb.getStats()
     usedDatabaseSize = stats.usedDatabaseSize ?? stats.databaseSize
   } catch (_) {}
+  checkpoint(signal)
 
   const reconciliationToken = crypto.randomUUID()
   const globalApplied = await applyReconciledCounter({
@@ -770,15 +836,17 @@ export async function reconcileManifestPoolUsage () {
     manifestCount: globalCount,
     reconciledAt: now,
     reconciliationToken,
-    usedDatabaseSize
+    usedDatabaseSize,
+    signal
   })
   if (!globalApplied) {
     console.log('Manifest pool reconciliation invalidated by concurrent accounting')
-    return getManifestPoolUsage()
+    return getManifestPoolUsage({ signal })
   }
 
   const allPubkeys = new Set([...previousAuthors.keys(), ...byAuthor.keys()])
   for (const pubkey of allPubkeys) {
+    checkpoint(signal)
     const usage = byAuthor.get(pubkey) || { bytes: 0, count: 0 }
     let previous = previousAuthors.get(pubkey)
     if (!previous) previous = await getCounter(authorKey(pubkey), pubkey)
@@ -789,11 +857,12 @@ export async function reconcileManifestPoolUsage () {
       logicalBytes: usage.bytes,
       manifestCount: usage.count,
       reconciledAt: now,
-      reconciliationToken
+      reconciliationToken,
+      signal
     })
   }
 
-  const usage = await getManifestPoolUsage()
+  const usage = await getManifestPoolUsage({ signal })
   console.log('Manifest pool usage', {
     logicalBytes: usage.global.logicalBytes,
     manifestCount: usage.global.manifestCount,

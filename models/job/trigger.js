@@ -1,8 +1,15 @@
 import { getRandomId } from '#helpers/misc.js'
-import { getJobByKey, patchJobByKey, putJobByKey } from './dao.js'
-import { setTimer, wait } from '#helpers/timer.js'
+import {
+  getJobByKey,
+  patchJobByKey,
+  patchJobByRevision,
+  patchJobIfOwned,
+  putJobByKey
+} from './dao.js'
+import { setTimer } from '#helpers/timer.js'
 
-const HEARTBEAT_INTERVAL = 30 // seconds
+export const HEARTBEAT_INTERVAL = 60 // seconds
+export const DEFAULT_HEARTBEAT_TOLERANCE = 240 // seconds
 const DEFAULT_MAX_DURATION = 12 * 60 * 60 // 12 hours
 
 // Skip if job config has shouldUseLock=false.
@@ -15,101 +22,196 @@ const DEFAULT_MAX_DURATION = 12 * 60 * 60 // 12 hours
 export async function maybeEnsureRecordForJob (job) {
   if (!job.shouldUseLock) return
 
-  const { result: hasRecord } = await getJobByKey(job.key)
-  if (!hasRecord || hasRecord.startedAt === undefined || hasRecord.endedAt === undefined) {
-    await putJobByKey(job.key, {
-      startedAt: hasRecord?.startedAt ?? 0,
-      endedAt: hasRecord?.endedAt ?? 0
+  const heartbeatTolerance =
+    job.heartbeatTolerance ?? DEFAULT_HEARTBEAT_TOLERANCE
+  const { result: record } = await getJobByKey(job.key)
+  if (!record) {
+    const result = await putJobByKey(job.key, {
+      startedAt: 0,
+      endedAt: 0,
+      heartbeatTolerance
     })
+    if (!result.success) throw result.error
+    return
+  }
+
+  const patch = {}
+  if (record.startedAt === undefined) patch.startedAt = 0
+  if (record.endedAt === undefined) patch.endedAt = 0
+  if (record.revision === undefined) patch.revision = getRandomId()
+  if (record.heartbeatTolerance !== heartbeatTolerance) {
+    patch.heartbeatTolerance = heartbeatTolerance
+  }
+  if (Object.keys(patch).length) {
+    const result = await patchJobByKey(job.key, patch)
+    if (!result.success) throw result.error
   }
 }
 
-// For starting a job:
-// first, update both the startedAt to current time in seconds,
-// add a random lockKey value,
-// wait 2 seconds, fetch the record again to ensure lockKey matches,
-// if so, start the job, else, another worker has taken the job.
-export async function startJob (job) {
-  const now = Math.floor(Date.now() / 1000)
-  const lockKey = getRandomId()
+function abortError (message, cause) {
+  const error = new Error(message, cause ? { cause } : undefined)
+  error.name = 'AbortError'
+  return error
+}
 
-  const patchResult = await patchJobByKey(job.key, { startedAt: now, lockKey, heartbeatedAt: now })
-  if (!patchResult.success) {
-    console.error(`[worker] patchJobByKey FAILED for ${job.key}:`, patchResult.error)
+function linkAbortSignal (source, controller) {
+  if (!source) return () => {}
+  const abort = () => {
+    if (!controller.signal.aborted) {
+      const reason = source.reason
+      controller.abort(
+        reason?.name === 'AbortError'
+          ? reason
+          : abortError(reason?.message || 'Job execution aborted', reason)
+      )
+    }
+  }
+  if (source.aborted) abort()
+  else source.addEventListener('abort', abort, { once: true })
+  return () => source.removeEventListener('abort', abort)
+}
+
+// Acquires the persisted lease only if the revision read by the caller is
+// still current. Every later mutation is fenced by lockKey.
+export async function startJob (job, {
+  record: expectedRecord,
+  ownerId = `manual:${process.pid}:${getRandomId()}`,
+  ownerType = 'manual',
+  signal
+} = {}) {
+  if (!expectedRecord) {
+    const { result } = await getJobByKey(job.key)
+    expectedRecord = result
+  }
+  if (!expectedRecord?.revision) {
+    return { started: false, record: expectedRecord }
   }
 
-  await wait(2000)
+  const now = Math.floor(Date.now() / 1000)
+  const lockKey = getRandomId()
+  const previousEndedAt = Number.isFinite(expectedRecord.endedAt)
+    ? expectedRecord.endedAt
+    : 0
 
-  const { result: record } = await getJobByKey(job.key)
-  if (record.lockKey === lockKey) {
-    let heartbeatTimeout
-    let stopHeartbeat = false
-
-    const heartbeatLoop = async () => {
-      try {
-        await patchJobByKey(job.key, { heartbeatedAt: Math.floor(Date.now() / 1000) })
-      } catch (err) {
-        console.error(err)
-      }
-      if (stopHeartbeat) return
-      heartbeatTimeout = setTimer(heartbeatLoop, HEARTBEAT_INTERVAL * 1000)
+  const patchResult = await patchJobByRevision(job.key, expectedRecord.revision, {
+    startedAt: now,
+    // Keep the existing timestamp-based status contract unambiguous even when
+    // a job ends and restarts within the same second.
+    endedAt: Math.min(previousEndedAt, now - 1),
+    lockKey,
+    ownerId,
+    ownerType,
+    heartbeatedAt: now,
+    heartbeatTolerance:
+      job.heartbeatTolerance ?? DEFAULT_HEARTBEAT_TOLERANCE
+  })
+  if (!patchResult.success) {
+    if (patchResult.error) {
+      console.error(`[worker] Could not acquire ${job.key}:`, patchResult.error)
     }
+    const { result: record } = await getJobByKey(job.key)
+    return { started: false, record }
+  }
 
-    heartbeatLoop()
+  const controller = new AbortController()
+  const unlinkSignal = linkAbortSignal(signal, controller)
+  let heartbeatTimeout
+  let heartbeatPromise = Promise.resolve()
+  let stopHeartbeat = false
 
-    let error
-    try {
-      // Use Promise.race to enforce maxDuration.
-      // This doesn't kill the thread but allows the worker to release the lock and mark error.
-      //
-      // In the future, we can consider using Worker Threads (node:worker_threads)
-      // if we add CPU-bound jobs and terminate the thread here if maxDuration is reached.
-      // Note: No need to proxy mdb client by making worker thread talk to main thread
-      // instead of talking directly to MeiliSearch, because MeiliSearch client
-      // connection overhead is very low (they're HTTP agents), unless we would want
-      // to rate-limit them, e.g., 50 DB writes/second globally across all threads.
-      const maxDuration = (job.maxDuration || DEFAULT_MAX_DURATION) * 1000
-      const MAX_TIMEOUT_MS = 2147483647 // 2^31 - 1
+  const heartbeatLoop = async () => {
+    if (stopHeartbeat || controller.signal.aborted) return
+    const result = await patchJobIfOwned(job.key, lockKey, {
+      heartbeatedAt: Math.floor(Date.now() / 1000)
+    })
+    if (!result.success) {
+      if (result.error) {
+        console.error(`[worker] Heartbeat failed for ${job.key}:`, result.error)
+      }
+      if (!controller.signal.aborted) {
+        controller.abort(abortError(`Job ${job.key} lost its lock`, result.error))
+      }
+      return
+    }
+    if (!stopHeartbeat) {
+      heartbeatTimeout = setTimer(startHeartbeat, HEARTBEAT_INTERVAL * 1000)
+    }
+  }
 
-      // If maxDuration exceeds the max Node.js setTimeout delay, the worker will
-      // bypass the timeout logic and simply run the job indefinitely,
-      // which matches the intent of setting a very high job.maxDuration.
-      if (maxDuration > MAX_TIMEOUT_MS) {
-        await job.run()
-      } else {
-        let timeoutId
-        const timeoutPromise = new Promise((resolve, reject) => {
-          timeoutId = setTimer(() => reject(new Error(`Job timed out after ${maxDuration}ms`)), maxDuration)
-        })
+  const startHeartbeat = () => {
+    heartbeatPromise = heartbeatLoop()
+  }
 
-        try {
-          await Promise.race([job.run(), timeoutPromise])
-        } finally {
-          clearTimeout(timeoutId)
+  // startedAt/heartbeatedAt were written during acquisition, so an immediate
+  // heartbeat would only create an unnecessary Meilisearch task.
+  heartbeatTimeout = setTimer(startHeartbeat, HEARTBEAT_INTERVAL * 1000)
+
+  let error
+  try {
+    controller.signal.throwIfAborted()
+    const maxDuration = (job.maxDuration || DEFAULT_MAX_DURATION) * 1000
+    const MAX_TIMEOUT_MS = 2147483647 // 2^31 - 1
+    const runPromise = Promise.resolve(job.run({ signal: controller.signal }))
+
+    if (maxDuration > MAX_TIMEOUT_MS) {
+      await runPromise
+    } else {
+      let timeoutId
+      const timeoutError = new Error(`Job timed out after ${maxDuration}ms`)
+      const timeoutPromise = new Promise((resolve, reject) => {
+        timeoutId = setTimer(() => {
+          if (!controller.signal.aborted) controller.abort(timeoutError)
+          reject(timeoutError)
+        }, maxDuration)
+      })
+
+      try {
+        await Promise.race([runPromise, timeoutPromise])
+      } finally {
+        clearTimeout(timeoutId)
+        if (controller.signal.aborted) {
+          await runPromise.catch(() => {})
         }
       }
-    } catch (err) {
-      console.error(err)
-      error = err
-    } finally {
-      stopHeartbeat = true
-      clearTimeout(heartbeatTimeout)
-      const patch = { endedAt: Math.floor(Date.now() / 1000) }
+    }
+    controller.signal.throwIfAborted()
+  } catch (err) {
+    error = err
+    if (err?.name !== 'AbortError') console.error(err)
+  } finally {
+    stopHeartbeat = true
+    clearTimeout(heartbeatTimeout)
+    unlinkSignal()
+    await heartbeatPromise
+
+    // An aborted run is intentionally left as owned by the previous runner.
+    // The next IPC leader can recognize ownerId and take it immediately. Marking
+    // it as ended here would postpone that recovery until the normal frequency.
+    if (error?.name !== 'AbortError') {
+      const patch = { endedAt: Math.max(now, Math.floor(Date.now() / 1000)) }
       if (error) {
         patch.lastError = (error.stack || error.message || String(error)).slice(0, 1000)
         patch.erroedAt = Math.floor(Date.now() / 1000)
       }
-      await patchJobByKey(job.key, patch)
+      await patchJobIfOwned(job.key, lockKey, patch)
     }
-    return { started: true }
   }
-  return { started: false, record }
+  return { started: true, error }
 }
 
 // Trigger a manual job that uses the DB lock mechanism.
 // Ensures the DB record exists, then delegates to startJob.
 // Returns { started: boolean }.
-export async function triggerManualJob (jobConfig) {
+export async function triggerManualJob (jobConfig, { signal } = {}) {
+  signal?.throwIfAborted()
   await maybeEnsureRecordForJob(jobConfig)
-  return startJob(jobConfig)
+  signal?.throwIfAborted()
+  const { result: record } = await getJobByKey(jobConfig.key)
+  const now = Math.floor(Date.now() / 1000)
+  const tolerance = jobConfig.heartbeatTolerance ?? DEFAULT_HEARTBEAT_TOLERANCE
+  const isRunning = record.endedAt < record.startedAt
+  const isHealthy = isRunning &&
+    (now - (record.heartbeatedAt || record.startedAt)) < tolerance
+  if (isHealthy) return { started: false, record }
+  return startJob(jobConfig, { record, signal })
 }

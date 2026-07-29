@@ -1,6 +1,7 @@
 import mdb from '#services/db/mdb.js'
 import { eventToRecord, recordToEvent } from './mapper.js'
 import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 
 export async function getEventByRef (ref, options = {}) {
   return mdb.index('events').getDocument(ref, {
@@ -132,7 +133,7 @@ export async function deleteEventsByRef (refs) {
     .catch(error => ({ result: null, error, success: false }))
 }
 
-export async function deleteExpiredEvents () {
+export async function deleteExpiredEvents ({ signal } = {}) {
   const now = Math.floor(Date.now() / 1000)
   const filter = `expiresAt <= ${mdb.toMeiliValue(now)}`
   const BATCH_SIZE = 100
@@ -140,6 +141,7 @@ export async function deleteExpiredEvents () {
   try {
     let offset = 0
     while (true) {
+      checkpoint(signal)
       const { hits } = await mdb.index('events').search('', {
         filter,
         limit: BATCH_SIZE,
@@ -149,7 +151,11 @@ export async function deleteExpiredEvents () {
 
       if (hits.length === 0) break
 
-      await queueDeleteEventsWithAccounting(hits, { source: 'deleteExpiredEvents' })
+      checkpoint(signal)
+      await queueDeleteEventsWithAccounting(hits, {
+        source: 'deleteExpiredEvents',
+        signal
+      })
 
       // If we got fewer than BATCH_SIZE, we've exhausted the results
       if (hits.length < BATCH_SIZE) break
@@ -160,6 +166,7 @@ export async function deleteExpiredEvents () {
 
     return { result: null, error: null, success: true }
   } catch (error) {
+    rethrowAbort(error)
     console.error('Error in deleteExpiredEvents:', error)
     return { result: null, error, success: false }
   }

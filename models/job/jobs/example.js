@@ -1,5 +1,7 @@
-export async function run () {
+import { checkpoint } from '#helpers/abort.js'
 
+export async function run ({ signal } = {}) {
+  checkpoint(signal)
 }
 
 const config = {

@@ -4,12 +4,15 @@ import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
 import { base16ToBytes } from 'libp2r2p/base16'
 import { triggerManualJob } from '../trigger.js'
 import maintainStorageTiersConfig from './maintain-storage-tiers.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 
 async function snapshotAndResetLiveIndex (
   liveUid,
-  stagingUid
+  stagingUid,
+  { signal } = {}
 ) {
   try {
+    checkpoint(signal)
     let liveStats, stagingStats
     try {
       liveStats = await mdb.index(liveUid).getStats()
@@ -37,15 +40,19 @@ async function snapshotAndResetLiveIndex (
     } else {
       console.log(`Creating ${stagingUid} and swapping with ${liveUid}...`)
       // Ensure proper schema
+      checkpoint(signal)
       await mdb.createIndex(stagingUid, { primaryKey: requestedPubkeySchema.primaryKey })
+      checkpoint(signal)
       await mdb.index(stagingUid).updateSettings(requestedPubkeySchema.settings)
 
       // Swap atomically: Live(Data) <-> Staging(Empty)
       // Result: Live(Empty), Staging(Data)
+      checkpoint(signal)
       await mdb.swapIndexes([{ indexes: [liveUid, stagingUid] }])
       console.log(`Swap complete. ${liveUid} is now empty.`)
     }
   } catch (error) {
+    rethrowAbort(error)
     const isNotFound = error.code === 'index_not_found' || error.cause?.code === 'index_not_found'
     if (isNotFound) {
       console.log('Live index not found, nothing to snapshot.')
@@ -55,7 +62,7 @@ async function snapshotAndResetLiveIndex (
   }
 }
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running daily popular pubkeys calculation...')
 
   // 0. Check Server Uptime (Last 24h)
@@ -72,6 +79,7 @@ export async function run () {
   }
 
   try {
+    checkpoint(signal)
     const { results } = await mdb.index('maintenanceStates').getDocuments({
       filter: `key IN [${keysToCheck.map(k => `"${k}"`).join(',')}]`,
       limit: hoursToCheck + 5 // buffer
@@ -89,6 +97,7 @@ export async function run () {
       return
     }
   } catch (err) {
+    rethrowAbort(err)
     if (err.code !== 'index_not_found' && err.cause?.code !== 'index_not_found') {
       console.error('Failed to check uptime:', err)
       // We proceed if check fails? Or fail safe?
@@ -112,21 +121,24 @@ export async function run () {
 
   const liveUid = 'requestedPubkeys' // live index
   const stagingUid = 'metricsStagingRequestedPubkeys' // maintenance index
-  await snapshotAndResetLiveIndex(liveUid, stagingUid)
+  await snapshotAndResetLiveIndex(liveUid, stagingUid, { signal })
 
   // 1. Calculate Thresholds based on Total Count
   // We use simple stats to get the total number of docs.
   let totalPubkeys = 0
   try {
+    checkpoint(signal)
     const stats = await mdb.index(stagingUid).getStats()
     totalPubkeys = stats.numberOfDocuments
   } catch (_e) {
+    rethrowAbort(_e)
     console.log('Staging index stats failed, assuming 0')
     totalPubkeys = 0
   }
 
   if (totalPubkeys === 0) {
     console.log('No requested pubkeys found.')
+    checkpoint(signal)
     await mdb.index(stagingUid).delete()
     return
   }
@@ -151,6 +163,7 @@ export async function run () {
   // To avoid resizing we set capacity = diff between limit of this level and previous level
   let prevLimit = 0
   for (const t of thresholds) {
+    checkpoint(signal)
     const size = Math.max(t.limit - prevLimit, 100)
     filters[t.level] = await FastBloomFilter.createOptimal(size, 0.0001)
     prevLimit = t.limit
@@ -161,6 +174,7 @@ export async function run () {
   let processedCount = 0
 
   while (processedCount < maxLimit) {
+    checkpoint(signal)
     const { results } = await mdb.index(stagingUid).getDocuments({
       offset,
       limit,
@@ -170,6 +184,7 @@ export async function run () {
     if (results.length === 0) break
 
     for (const doc of results) {
+      checkpoint(signal)
       processedCount++
       const rank = processedCount
 
@@ -202,11 +217,15 @@ export async function run () {
   const oldDocs = {}
   const maxLevels = thresholds.length
   try {
+    checkpoint(signal)
     const { hits: results } = await mdb.index('popularPubkeys').search('', { limit: maxLevels })
     results.forEach(doc => { oldDocs[doc.key] = doc })
-  } catch (_e) {}
+  } catch (_e) {
+    rethrowAbort(_e)
+  }
 
   for (let level = 1; level <= maxLevels; level++) {
+    checkpoint(signal)
     const filter = filters[level]
     const packedFilter = await packFilter(filter)
 
@@ -226,9 +245,11 @@ export async function run () {
     })
   }
 
+  checkpoint(signal)
   await mdb.index('popularPubkeys').addDocuments(docsToSave)
 
   // 5. Reset metricsStagingRequestedPubkeys
+  checkpoint(signal)
   await mdb.index(stagingUid).delete()
 
   console.log('Daily calculation done.', {
@@ -238,9 +259,11 @@ export async function run () {
   // 6. Trigger Maintenance Job
   console.log('Triggering maintainStorageTiers...')
   try {
-    const { started } = await triggerManualJob(maintainStorageTiersConfig)
+    checkpoint(signal)
+    const { started } = await triggerManualJob(maintainStorageTiersConfig, { signal })
     if (!started) console.warn('maintainStorageTiers lock was taken by another worker.')
   } catch (err) {
+    rethrowAbort(err)
     console.error('Failed to trigger maintainStorageTiers:', err)
   }
 }

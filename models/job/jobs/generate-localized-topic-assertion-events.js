@@ -20,13 +20,14 @@ import { eventKinds } from '#constants/event.js'
 import { resolveIconsBatch } from '#services/topic/icon-resolver.js'
 import { patchIcons } from '#models/hashtag-stats/dao.js'
 import { toHashtagStatsKey } from '#helpers/mdb.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 
 const MAX_TOPICS_PER_LANG = 30
 const MAX_NEIGHBORS_PER_TOPIC = 20
 const MIN_TOPIC_COUNT = 3
 const ICON_STALE_MS = 7 * 24 * 60 * 60 * 1000 // Re-fetch icons older than 7 days
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running generate-localized-topic-assertion-events...')
 
   const secretKey = getRelaySelfSecretBytes()
@@ -34,6 +35,7 @@ export async function run () {
   const kind = eventKinds.I_TAG_TRUSTED_ASSERTION
 
   // 1. Discover languages with stats
+  checkpoint(signal)
   const languages = await discoverLanguages()
   if (languages.length === 0) {
     console.log('No hashtagStats languages found, skipping.')
@@ -42,8 +44,10 @@ export async function run () {
 
   for (const lang of languages) {
     try {
-      await processLanguage({ lang, pubkey, secretKey, kind })
+      checkpoint(signal)
+      await processLanguage({ lang, pubkey, secretKey, kind, signal })
     } catch (err) {
+      rethrowAbort(err)
       console.error(`Failed to process localized topic assertion events for lang=${lang}:`, err)
     }
   }
@@ -96,7 +100,8 @@ function normalizeNeighborRanks (neighbors) {
  * Persists newly resolved icons back to hashtagStats documents.
  * Returns a Map<tag, iconUrl> of the newly resolved icons.
  */
-async function resolveNewIcons (topTopics, lang) {
+async function resolveNewIcons (topTopics, lang, { signal } = {}) {
+  checkpoint(signal)
   const now = Date.now()
   const needsIcon = topTopics.filter(s => !s.icon || !s.iconCachedAt || (now - s.iconCachedAt) > ICON_STALE_MS)
   if (needsIcon.length === 0) return new Map()
@@ -105,7 +110,9 @@ async function resolveNewIcons (topTopics, lang) {
   let iconMap
   try {
     iconMap = await resolveIconsBatch(items)
+    checkpoint(signal)
   } catch (_err) {
+    rethrowAbort(_err)
     return new Map()
   }
 
@@ -118,8 +125,10 @@ async function resolveNewIcons (topTopics, lang) {
     }
 
     try {
+      checkpoint(signal)
       await patchIcons(iconByKey)
     } catch (_err) {
+      rethrowAbort(_err)
       console.error('Failed to persist icons:', _err)
     }
   }
@@ -127,8 +136,9 @@ async function resolveNewIcons (topTopics, lang) {
   return iconMap
 }
 
-async function processLanguage ({ lang, pubkey, secretKey, kind }) {
+async function processLanguage ({ lang, pubkey, secretKey, kind, signal }) {
   // 2. Fetch top topics for this language
+  checkpoint(signal)
   const { hits: topTopics } = await mdb.index('hashtagStats').search('', {
     filter: `lang = ${mdb.toMeiliValue(lang)} AND count >= ${MIN_TOPIC_COUNT}`,
     sort: ['count:desc'],
@@ -138,18 +148,20 @@ async function processLanguage ({ lang, pubkey, secretKey, kind }) {
   if (topTopics.length === 0) return
 
   // 2b. Resolve icons for tags that don't already have one cached
-  const iconMap = await resolveNewIcons(topTopics, lang)
+  const iconMap = await resolveNewIcons(topTopics, lang, { signal })
 
   // 2c. Build a tag→words map. Seed it from topTopics, then batch-fetch
   //     any neighbor tags whose stats weren't included in the top-N window.
   const wordsMap = new Map(topTopics.map(s => [s.tag, s.words]))
   const missingNeighborTags = new Set()
   for (const stat of topTopics) {
+    checkpoint(signal)
     for (const [neighborTag] of stat.neighbors || []) {
       if (!wordsMap.has(neighborTag)) missingNeighborTags.add(neighborTag)
     }
   }
   if (missingNeighborTags.size > 0) {
+    checkpoint(signal)
     const tagFilter = [...missingNeighborTags].map(t => mdb.toMeiliValue(t)).join(', ')
     const { hits: neighborStats } = await mdb.index('hashtagStats').search('', {
       filter: `lang = ${mdb.toMeiliValue(lang)} AND tag IN [${tagFilter}]`,
@@ -165,6 +177,7 @@ async function processLanguage ({ lang, pubkey, secretKey, kind }) {
 
   // 3. Generate a signed event per topic
   for (let position = 0; position < totalTopics; position++) {
+    checkpoint(signal)
     const stat = topTopics[position]
     const tag = stat.tag
     const dTag = `iso639:${lang}:#${tag}`
@@ -242,6 +255,7 @@ async function processLanguage ({ lang, pubkey, secretKey, kind }) {
   let offset = 0
   const BATCH = 100
   while (true) {
+    checkpoint(signal)
     const { hits } = await mdb.index('events').search('', {
       filter: staleFilter,
       limit: BATCH,
@@ -263,6 +277,7 @@ async function processLanguage ({ lang, pubkey, secretKey, kind }) {
 
   if (ops.length > 0) {
     console.log(`Localized topic assertion events for lang=${lang}: ${ops.length} ops (${refreshedRefs.size} upserts)`)
+    checkpoint(signal)
     await queueOps(ops)
   }
 }

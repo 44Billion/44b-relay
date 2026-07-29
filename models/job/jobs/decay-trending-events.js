@@ -1,4 +1,5 @@
 import mdb from '#services/db/mdb.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 
 // Rhai script to recalculate the count field based on age
 // Formula:
@@ -23,7 +24,7 @@ export const rhaiFunction = `
   doc
 `
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running trending events decay...')
   const index = mdb.index('events')
 
@@ -33,6 +34,7 @@ export async function run () {
 
   try {
     console.log('Trending events decay task enqueued...')
+    checkpoint(signal)
     const task = await index.updateDocumentsByFunction({
       function: rhaiFunction,
       filter,
@@ -40,8 +42,10 @@ export async function run () {
         now: Date.now()
       }
     })
+    checkpoint(signal)
     console.log(`Trending events decay task ${task.uid} done with status "${task.status}"`)
   } catch (err) {
+    rethrowAbort(err)
     const isNotFound = err.code === 'index_not_found' || err.cause?.code === 'index_not_found'
     if (isNotFound) {
       console.log('events index not found, skipping trending events decay.')

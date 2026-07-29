@@ -33,6 +33,10 @@ const MAX_NEIGHBORS = 48
 
 const KNOWN_INDEXES = Object.keys(INDEX_CONFIG)
 
+function checkpoint (signal) {
+  signal?.throwIfAborted()
+}
+
 const getPkField = (index) => {
   if (!INDEX_CONFIG[index]?.pkField) throw new Error(`Missing "pkField" config for index: ${index}`)
   return INDEX_CONFIG[index].pkField
@@ -44,7 +48,10 @@ export async function loadSystemState () {
     try {
       const doc = await mdb.index(indexName).getDocument(SYSTEM_STATE_KEY)
       state[indexName] = new Set(doc.processedOpIds || [])
-    } catch (_) {
+    } catch (error) {
+      const isNotFound = error?.code === 'document_not_found' ||
+        error?.cause?.code === 'document_not_found'
+      if (!isNotFound) throw error
       state[indexName] = new Set()
     }
   }))
@@ -52,15 +59,17 @@ export async function loadSystemState () {
 }
 
 const log = process.env.NODE_ENV === 'production' ? console.log : () => {}
-export async function run () {
+export async function run ({ signal } = {}) {
   log('Processing pending storage operations...')
 
+  checkpoint(signal)
   const systemState = await loadSystemState()
 
   let opsBuffer = []
   let fillAttempts = 0
 
   while (true) {
+    checkpoint(signal)
     if (opsBuffer.length === 0) {
       try {
         const { hits: startedWorkflows } = await mdb.index('pendingOps').search('', {
@@ -69,12 +78,13 @@ export async function run () {
           sort: ['startedAt:asc', 'createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc']
         })
         if (startedWorkflows.length) {
-          await processBatch(startedWorkflows, systemState)
+          await processBatch(startedWorkflows, systemState, { signal })
           continue
         }
       } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw error
         console.error('Error fetching started pending workflow', error)
-        await wait(FILL_WAIT_MS)
+        await wait(FILL_WAIT_MS, { signal })
         continue
       }
     }
@@ -91,8 +101,9 @@ export async function run () {
           opsBuffer = [...byKey.values()].sort(comparePendingOps).slice(0, BATCH_SIZE)
         }
       } catch (err) {
+        if (signal?.aborted || err?.name === 'AbortError') throw err
         console.error('Error fetching pending ops', err)
-        await wait(FILL_WAIT_MS)
+        await wait(FILL_WAIT_MS, { signal })
         continue
       }
     }
@@ -104,14 +115,14 @@ export async function run () {
 
     if (isEmpty) {
       fillAttempts = 0
-      await wait(FILL_WAIT_MS)
+      await wait(FILL_WAIT_MS, { signal })
       continue
     }
 
     if (isPartial) {
       if (fillAttempts < MAX_FILL_ATTEMPTS) {
         fillAttempts++
-        await wait(FILL_WAIT_MS)
+        await wait(FILL_WAIT_MS, { signal })
         continue // Loop back to fetch remainder
       }
       // Else: Max attempts reached, proceed to process
@@ -123,12 +134,13 @@ export async function run () {
     opsBuffer = []
     fillAttempts = 0
 
-    await processBatch(results, systemState)
+    checkpoint(signal)
+    await processBatch(results, systemState, { signal })
   }
   // log('Done processing pending storage operations.')
 }
 
-async function processSimpleBatch (results, systemState) {
+async function processSimpleBatch (results, systemState, { signal } = {}) {
   // Accumulators
   const docsToAddOrUpdate = {} // index -> Map<key, doc>
   const keysToDelete = {} // index -> Set<primaryKey>
@@ -162,6 +174,7 @@ async function processSimpleBatch (results, systemState) {
   }
 
   for (const op of results) {
+    checkpoint(signal)
     const data = op.data || {}
 
     const targetKey = data.key ||
@@ -442,6 +455,7 @@ async function processSimpleBatch (results, systemState) {
             } else if (opType === 'pruneCheck') {
               const limit = data.limit || 0
               if (doc.usedBytes > limit) {
+                checkpoint(signal)
                 // Side Effect: Pruning (Direct DB Deletes)
                 // Note: `pruneEvents` performs direct deletes on 'events' index.
                 // This is "out of band" of our transaction buffer.
@@ -450,7 +464,8 @@ async function processSimpleBatch (results, systemState) {
                 const cleared = await pruneEvents({
                   ownerKey: targetKey,
                   ownerType: entityType,
-                  bytesToRemove: doc.usedBytes - limit
+                  bytesToRemove: doc.usedBytes - limit,
+                  signal
                 })
                 doc.usedBytes = Math.max(0, doc.usedBytes - cleared)
               }
@@ -474,10 +489,17 @@ async function processSimpleBatch (results, systemState) {
         opsToDeleteFromQueue.push(op.key)
       }
     } catch (err) {
+      if (signal?.aborted ||
+          err?.name === 'AbortError' ||
+          err?.name === 'MeiliSearchTaskTimeOutError' ||
+          err?.name === 'MeilisearchTaskTimeOutError') {
+        throw err
+      }
       // If DB is down, we must STOP. We should not consume the op.
       // Meilisearch communication errors or networking errors.
       const isNetworkError =
         err.name === 'MeiliSearchCommunicationError' ||
+        err.name === 'MeilisearchCommunicationError' ||
         err.code === 'ECONNREFUSED' ||
         err.code === 'ETIMEDOUT' ||
         err.code === 'ENOTFOUND' ||
@@ -504,6 +526,7 @@ async function processSimpleBatch (results, systemState) {
   const commitPromises = []
 
   for (const indexName of indexesToCommit) {
+    checkpoint(signal)
     const docs = Array.from(docsToAddOrUpdate[indexName].values())
     const keysDel = Array.from(keysToDelete[indexName])
     const processedIds = Array.from(processedOpsInBatch[indexName])
@@ -522,10 +545,12 @@ async function processSimpleBatch (results, systemState) {
     // but Meilisearch queues them anyway.
     // However, parallelizing across different indices is definitely beneficial.
     commitPromises.push((async () => {
+      checkpoint(signal)
       if (keysDel.length > 0) {
         await mdb.index(indexName).deleteDocuments(keysDel)
       }
 
+      checkpoint(signal)
       if (docs.length > 0) {
         // Use addDocuments (Replace) if any operation in the batch for this index was 'insertOrReplaceDocument'.
         // Otherwise, use updateDocuments (Merge) which is safer for partial updates/patches.
@@ -543,6 +568,7 @@ async function processSimpleBatch (results, systemState) {
   }
 
   await Promise.all(commitPromises)
+  checkpoint(signal)
 
   for (const [indexName, ids] of Object.entries(processedOpsInBatch)) {
     for (const id of ids) systemState[indexName].add(id)
@@ -550,26 +576,29 @@ async function processSimpleBatch (results, systemState) {
 
   // 5. Delete Ops from Pending
   if (opsToDeleteFromQueue.length > 0) {
+    checkpoint(signal)
     await mdb.index('pendingOps').deleteDocuments(opsToDeleteFromQueue)
   }
 }
 
-export async function processBatch (results, systemState) {
+export async function processBatch (results, systemState, { signal } = {}) {
   results = [...results].sort(comparePendingOps)
   let simpleOps = []
   const flushSimpleOps = async () => {
     if (!simpleOps.length) return
-    await processSimpleBatch(simpleOps, systemState)
+    checkpoint(signal)
+    await processSimpleBatch(simpleOps, systemState, { signal })
     simpleOps = []
   }
 
   for (const op of results) {
+    checkpoint(signal)
     if (!isPendingWorkflow(op)) {
       simpleOps.push(op)
       continue
     }
     await flushSimpleOps()
-    await processPendingWorkflow(op)
+    await processPendingWorkflow(op, { signal })
   }
   await flushSimpleOps()
 }
@@ -580,16 +609,9 @@ export default {
   shouldUseLock: true,
   // Speed up first run after process restart so pending ops
   // don't pile up while waiting for the default 0-60s jitter.
-  // Each process will still get a random delay in [0, 3s),
-  // and the lock mechanism (2s wait) in trigger.js ensures
-  // only one process wins.
+  // Only the IPC leader schedules this job; the persisted lease remains a
+  // second line of defense.
   initialDelay: 3,
-  // Lower heartbeat tolerance (default 120s) so a new process
-  // detects that the previous runner died more quickly.
-  // The heartbeat interval is 30s, so 45s gives a 15s buffer
-  // for network/DB lag while cutting the stale-detection wait
-  // from ~120s down to ~45s.
-  heartbeatTolerance: 45,
   // We want this to run indefinitely within the same process
   // even when there are no ops at the moment.
   // We may in the future remove it from the job list and make

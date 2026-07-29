@@ -1,8 +1,11 @@
 import { deleteStaleIps } from '#services/event/tracker/mdb/ip-activity.js'
+import { checkpoint } from '#helpers/abort.js'
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running deleteStaleIps job...')
-  await deleteStaleIps()
+  checkpoint(signal)
+  await deleteStaleIps({ signal })
+  checkpoint(signal)
   console.log('Done deleteStaleIps job.')
 }
 

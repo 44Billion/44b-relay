@@ -9,6 +9,7 @@ import {
   recoverManifestReservations
 } from '#services/event/manifest-pool.js'
 import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
+import { checkpoint } from '#helpers/abort.js'
 
 const BATCH_SIZE = 250
 const RECONCILE_INTERVAL_SECONDS = 60 * 60
@@ -33,9 +34,10 @@ export function findBoundaryScore (bytesByScore, bytesToRemove) {
   return { score: Infinity, bytesNeededAtBoundary: Infinity }
 }
 
-async function scanEvents (filter, options, visit) {
+async function scanEvents (filter, options, visit, { signal } = {}) {
   let offset = 0
   while (true) {
+    checkpoint(signal)
     const { results } = await mdb.index('events').getDocuments({
       filter,
       fields: ['ref', 'id', 'kind', 'pubkey', 'byteSize', 'receivedAt', 'ownerType', 'ip'],
@@ -52,17 +54,18 @@ async function scanEvents (filter, options, visit) {
   }
 }
 
-async function pruneFilter ({ filter, bytesToRemove, sketches }) {
+async function pruneFilter ({ filter, bytesToRemove, sketches, signal }) {
   if (bytesToRemove <= 0) return { bytesRemoved: 0, manifestsRemoved: 0 }
 
   const bytesByScore = new Map()
   await scanEvents(filter, {}, async results => {
+    checkpoint(signal)
     for (const event of results) {
       const score = requestScore(event.ref, sketches)
       bytesByScore.set(score, (bytesByScore.get(score) || 0) + (event.byteSize || 0))
     }
     return 0
-  })
+  }, { signal })
 
   const boundary = findBoundaryScore(bytesByScore, bytesToRemove)
   let boundaryBytes = 0
@@ -72,6 +75,7 @@ async function pruneFilter ({ filter, bytesToRemove, sketches }) {
   await scanEvents(filter, {
     sort: ['receivedAt:asc', 'byteSize:desc', 'ref:asc']
   }, async results => {
+    checkpoint(signal)
     const selected = []
     for (const event of results) {
       const score = requestScore(event.ref, sketches)
@@ -83,28 +87,34 @@ async function pruneFilter ({ filter, bytesToRemove, sketches }) {
     }
 
     if (selected.length) {
+      checkpoint(signal)
       await queueDeleteEventsWithAccounting(selected, {
         pruning: true,
-        source: 'pruneManifestPool'
+        source: 'pruneManifestPool',
+        signal
       })
       bytesRemoved += selected.reduce((sum, event) => sum + (event.byteSize || 0), 0)
       manifestsRemoved += selected.length
     }
     // Deletion is asynchronous, so the result set has not shrunk yet.
     return 0
-  })
+  }, { signal })
 
   return { bytesRemoved, manifestsRemoved }
 }
 
-export async function pruneManifestPool () {
-  await recoverManifestReservations()
-  let usage = await getManifestPoolUsage()
+export async function pruneManifestPool ({ signal } = {}) {
+  checkpoint(signal)
+  await recoverManifestReservations({ signal })
+  checkpoint(signal)
+  let usage = await getManifestPoolUsage({ signal })
   const now = Math.floor(Date.now() / 1000)
   if (!usage.global.reconciledAt || now - usage.global.reconciledAt >= RECONCILE_INTERVAL_SECONDS) {
-    usage = await reconcileManifestPoolUsage()
+    checkpoint(signal)
+    usage = await reconcileManifestPoolUsage({ signal })
   }
 
+  checkpoint(signal)
   const sketches = await loadAndMaybeRotateSketches()
   let bytesRemoved = 0
   let manifestsRemoved = 0
@@ -113,11 +123,13 @@ export async function pruneManifestPool () {
   // Correct abusive authors first. This also reduces the global pool before
   // its own target is evaluated.
   for (const author of usage.authors) {
+    checkpoint(signal)
     if (author.logicalBytes <= MANIFEST_POOL_LIMITS.author.nominal) continue
     const result = await pruneFilter({
       filter: `(${KIND_FILTER}) AND pubkey = ${mdb.toMeiliValue(author.pubkey)}`,
       bytesToRemove: author.logicalBytes - MANIFEST_POOL_LIMITS.author.target,
-      sketches
+      sketches,
+      signal
     })
     bytesRemoved += result.bytesRemoved
     manifestsRemoved += result.manifestsRemoved
@@ -127,18 +139,21 @@ export async function pruneManifestPool () {
   // Let author-quota deletions settle before calculating the global deficit;
   // otherwise the same still-visible manifest could be selected twice in one
   // run. The five-minute follow-up handles the global pool if still needed.
-  usage = await getManifestPoolUsage()
+  checkpoint(signal)
+  usage = await getManifestPoolUsage({ signal })
   if (!scheduledAuthorPruning && usage.global.logicalBytes > MANIFEST_POOL_LIMITS.global.nominal) {
     const result = await pruneFilter({
       filter: `(${KIND_FILTER})`,
       bytesToRemove: usage.global.logicalBytes - MANIFEST_POOL_LIMITS.global.target,
-      sketches
+      sketches,
+      signal
     })
     bytesRemoved += result.bytesRemoved
     manifestsRemoved += result.manifestsRemoved
   }
 
-  const finalUsage = await getManifestPoolUsage()
+  checkpoint(signal)
+  const finalUsage = await getManifestPoolUsage({ signal })
   console.log('Manifest pool capacity pruning', {
     logicalBytes: finalUsage.global.logicalBytes,
     manifestCount: finalUsage.global.manifestCount,
@@ -158,9 +173,10 @@ export async function pruneManifestPool () {
   }
 }
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running pruneManifestPool job...')
-  await pruneManifestPool()
+  await pruneManifestPool({ signal })
+  checkpoint(signal)
   console.log('Done pruneManifestPool job.')
 }
 

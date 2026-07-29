@@ -83,7 +83,7 @@
 // --db-path /var/lib/meilisearch/data
 // https://www.meilisearch.com/docs/learn/update_and_migration/updating#create-the-dump
 // --dump-dir /var/opt/meilisearch/dumps
-import { MeiliSearch } from 'meilisearch'
+import { Meilisearch } from 'meilisearch'
 import eventSchema from '#models/event/schema.js'
 import jobSchema from '#models/job/schema.js'
 import storedEventOwnerSchema from '#models/stored-event-owner/schema.js'
@@ -98,18 +98,168 @@ import manifestPoolUsageSchema from '#models/manifest-pool-usage/schema.js'
 import manifestPoolReservationSchema from '#models/manifest-pool-reservation/schema.js'
 import { addToCleanup } from '#helpers/process.js'
 
+export const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'canceled'])
+export const TASK_SOFT_TIMEOUT_MS = process.env.MDB_TASK_TIMEOUT
+  ? parseInt(process.env.MDB_TASK_TIMEOUT)
+  : 60000
+
+let rawDb
+const taskWaitController = new AbortController()
+
+function abortError (message) {
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
+}
+
+function throwIfTaskWaitAborted (signal) {
+  taskWaitController.signal.throwIfAborted()
+  signal?.throwIfAborted()
+}
+
+function waitForPoll (ms, signal) {
+  throwIfTaskWaitAborted(signal)
+  const signals = [taskWaitController.signal, signal].filter(Boolean)
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, ms)
+
+    function cleanup () {
+      for (const current of signals) {
+        current.removeEventListener('abort', aborted)
+      }
+    }
+
+    function done () {
+      cleanup()
+      resolve()
+    }
+
+    function aborted (event) {
+      clearTimeout(timer)
+      cleanup()
+      reject(event.target.reason || abortError('Meilisearch task wait aborted'))
+    }
+
+    for (const current of signals) {
+      current.addEventListener('abort', aborted, { once: true })
+    }
+  })
+}
+
+function taskDescriptor (task, fallback) {
+  const type = task?.type || fallback?.type || 'unknown type'
+  const indexUid = task?.indexUid || fallback?.indexUid
+  return indexUid ? `${type} on ${indexUid}` : type
+}
+
+function taskQueueTimeMs (task, now = Date.now()) {
+  const enqueuedAt = Date.parse(task?.enqueuedAt)
+  if (!Number.isFinite(enqueuedAt)) return null
+  const startedAt = Date.parse(task?.startedAt)
+  return Math.max(0, (Number.isFinite(startedAt) ? startedAt : now) - enqueuedAt)
+}
+
+function taskFailure (task) {
+  const detail = task.error ?? task.canceledBy ?? task.status
+  const error = new Error(`Meilisearch task ${task.uid} ${task.status}: ${JSON.stringify(detail)}`)
+  error.name = 'MeiliSearchTaskFailedError'
+  error.code = task.error?.code
+  error.task = task
+  return error
+}
+
+function getTaskReader (client) {
+  if (typeof client.getTask === 'function') return client.getTask.bind(client)
+  if (typeof client.tasks?.getTask === 'function') {
+    return client.tasks.getTask.bind(client.tasks)
+  }
+  throw new TypeError('Meilisearch client does not expose getTask')
+}
+
+// A task UID is an acknowledgement that Meilisearch accepted the mutation.
+// Once it exists, a timeout is only an observability threshold: keep polling
+// that exact task so callers never accidentally submit the mutation twice.
+export async function waitForTaskTerminal (taskOrUid, {
+  signal,
+  softTimeoutMs = TASK_SOFT_TIMEOUT_MS,
+  intervalMs = process.env.NODE_ENV === 'test' ? 20 : 100,
+  maxCommunicationBackoffMs = 30000,
+  requireSuccess = false,
+  client = rawDb,
+  logger = console
+} = {}) {
+  if (!client) throw new Error('Meilisearch client is not initialized')
+
+  const submittedTask = typeof taskOrUid === 'object' ? taskOrUid : null
+  const taskUid = submittedTask?.taskUid ?? submittedTask?.uid ?? taskOrUid
+  const startedWaitingAt = Date.now()
+  let lastTask = submittedTask
+  let warnedSlow = false
+  let communicationFailures = 0
+
+  while (true) {
+    throwIfTaskWaitAborted(signal)
+    try {
+      const task = await getTaskReader(client)(taskUid)
+      lastTask = task
+      communicationFailures = 0
+
+      if (TERMINAL_TASK_STATUSES.has(task.status)) {
+        if (requireSuccess && task.status !== 'succeeded') throw taskFailure(task)
+        return task
+      }
+
+      const elapsedMs = Date.now() - startedWaitingAt
+      if (!warnedSlow && elapsedMs >= softTimeoutMs) {
+        warnedSlow = true
+        const queueTimeMs = taskQueueTimeMs(lastTask)
+        logger.warn(
+          `[MDB] Task ${taskUid} (${taskDescriptor(lastTask, submittedTask)}) ` +
+          `has not finished after ${elapsedMs}ms` +
+          `${queueTimeMs === null ? '' : `; queue time is ${queueTimeMs}ms`}. ` +
+          'Continuing to wait for this exact task.'
+        )
+      }
+    } catch (error) {
+      if (error?.name === 'AbortError' || error?.name === 'MeiliSearchTaskFailedError') {
+        throw error
+      }
+
+      communicationFailures++
+      const retryInMs = Math.min(
+        maxCommunicationBackoffMs,
+        Math.max(250, intervalMs) * (2 ** Math.min(communicationFailures - 1, 10))
+      )
+      if (communicationFailures === 1 || communicationFailures % 5 === 0) {
+        logger.warn(
+          `[MDB] Could not inspect task ${taskUid}; its outcome remains unknown. ` +
+          `Retrying the same task in ${retryInMs}ms.`,
+          error
+        )
+      }
+      await waitForPoll(retryInMs, signal)
+      continue
+    }
+
+    await waitForPoll(intervalMs, signal)
+  }
+}
+
 // Remember if deleting by filter, that filtering by <primaryKey> = xyz
 // would match XyZ xyZ too cause it is case-insensitive on strings
 //
 // const timestamp = Math.floor(timestampInMilliseconds / 1000) // UNIX timestamps must be in seconds!! -> No longer the case
 async function init () {
+  const readOnly = process.env.MDB_READ_ONLY === 'true'
   let config = {
     host: process.env.MDB_HOST || 'http://127.0.0.1:7700',
     apiKey: process.env.MDB_API_KEY || 'meilisearchmasterkey' // no underline https://github.com/meilisearch/meilisearch-migration/issues/47
   }
 
   // Only start container if we are in test/dev AND no host is explicitly provided
-  if ((process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') && !process.env.MDB_HOST) {
+  if (!readOnly &&
+      (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') &&
+      !process.env.MDB_HOST) {
     try {
       const { GenericContainer, Wait } = await import('testcontainers')
 
@@ -120,7 +270,7 @@ async function init () {
       }
 
       console.log('Starting Meilisearch Container...')
-      const container = await new GenericContainer('getmeili/meilisearch:v1.35.1')
+      const container = await new GenericContainer('getmeili/meilisearch:v1.49.0')
         .withExposedPorts(7700)
         .withEnvironment({
           MEILI_NO_ANALYTICS: 'true'
@@ -152,11 +302,32 @@ async function init () {
     }
   }
 
-  let db = new MeiliSearch(config)
+  let db = new Meilisearch(config)
+  // meilisearch-js 0.60 moved task and batch methods to subclients. Keep the
+  // relay's established DB adapter surface stable while consumers migrate.
+  for (const method of [
+    'getTask',
+    'getTasks',
+    'waitForTask',
+    'waitForTasks',
+    'cancelTasks',
+    'deleteTasks'
+  ]) {
+    db[method] = (...args) => db.tasks[method](...args)
+  }
+  for (const method of ['getBatch', 'getBatches']) {
+    db[method] = (...args) => db.batches[method](...args)
+  }
+  rawDb = db
+  addToCleanup(() => {
+    if (!taskWaitController.signal.aborted) {
+      taskWaitController.abort(abortError('Process is shutting down'))
+    }
+  })
 
   // Enable experimental features
   const features = await db.getExperimentalFeatures()
-  if (features.editDocumentsByFunction === false) { // it may not have this field
+  if (!readOnly && features.editDocumentsByFunction === false) { // it may not have this field
     if (process.env.NODE_ENV !== 'test') console.log('Enabling experimental editDocumentsByFunction feature...')
     await db.updateExperimentalFeatures({
       editDocumentsByFunction: true
@@ -176,8 +347,6 @@ async function init () {
   // Also memo db.index(uid) calls (note it is not the same as .getIndex, which just get index metadata)
   db = Object.assign(createAutoWaitProxy(db, true), { constants, toMeiliValue })
 
-  const taskWaitTimeout = process.env.MDB_TASK_TIMEOUT ? parseInt(process.env.MDB_TASK_TIMEOUT) : 60000
-  const taskWaitInterval = process.env.NODE_ENV === 'test' ? 20 : 50
   function createAutoWaitProxy (target, useCache = false) {
     const cache = useCache ? new Map() : null
 
@@ -213,22 +382,8 @@ async function init () {
           if (ret && typeof ret.then === 'function') {
             return ret.then(v => {
               if (v && typeof v === 'object' && 'taskUid' in v) {
-                const waitFn = (typeof target.waitForTask === 'function')
-                  ? target.waitForTask.bind(target)
-                  : (target.tasks && typeof target.tasks.waitForTask === 'function')
-                      ? target.tasks.waitForTask.bind(target.tasks)
-                      : null
-
-                if (!waitFn) {
-                  console.warn('Could not find waitForTask method on target', target)
-                  return v
-                }
-
-                return waitFn(v.taskUid, { timeout: taskWaitTimeout, interval: taskWaitInterval }).then(task => {
-                  if (task.status !== 'succeeded') {
-                    throw new Error(`Task ${task.status}: ${JSON.stringify(task.error ?? task.canceledBy)}`)
-                  }
-                  return task
+                return waitForTaskTerminal(v, {
+                  requireSuccess: true
                 })
               }
               return v
@@ -246,7 +401,7 @@ async function init () {
     if (process.env.MDB_DEBUG === 'false') return
     console.log('[MDB DEBUG]', ...args)
   }
-  await migrate(db, log)
+  if (!readOnly) await migrate(db, log)
   return db
 }
 

@@ -6,6 +6,7 @@ import { base16ToBytes } from 'libp2r2p/base16'
 import { getRelaySelfPubkey } from '#helpers/relay-self.js'
 import { eventKinds, RELAY_OWNED_KINDS } from '#constants/event.js'
 import { PENDING_OPS_SORT } from '#models/pending-op/order.js'
+import { checkpoint } from '#helpers/abort.js'
 
 const ONE_MB = 1024 * 1024
 const EVENT_BATCH_SIZE = 20
@@ -104,10 +105,12 @@ async function getStoredEntity ({ key, type }) {
   }
 }
 
-async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
+async function pruneEvents ({ ownerKey, ownerType, bytesToRemove, signal }) {
   if (!isValidPrimaryKey(ownerKey)) throw new Error('Invalid primary key format')
+  checkpoint(signal)
   if (ownerType === 'ip') await loadPopularityFilters()
   else if (VIP_PUBKEYS.has(ownerKey)) return 0
+  checkpoint(signal)
 
   let cleared = 0
 
@@ -120,6 +123,7 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
       : `ip = ${mdb.toMeiliValue(primaryKeyToIp(ownerKey))} AND ownerType = "ip" AND ${ORDINARY_KIND_FILTER}`
 
     while (cleared < bytesToRemove) {
+      checkpoint(signal)
       const searchRes = await mdb.index('events').search('', {
         filter: `${ownerFilter} AND kind = ${eventKinds.BINARY_DATA_CHUNK}`,
         sort: ['created_at:asc'],
@@ -139,6 +143,7 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
       }
 
       if (keysToDelete.length > 0) {
+        checkpoint(signal)
         await mdb.index('events').deleteDocuments(keysToDelete)
         cleared += bytesInBatch
       }
@@ -150,6 +155,7 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
   let offset = 0
 
   while (cleared < bytesToRemove) {
+    checkpoint(signal)
     // Fetch oldest events
     const filter = ownerType === 'pubkey'
       ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey" AND ${ORDINARY_KIND_FILTER}`
@@ -176,6 +182,7 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
       // Clear all of the batch even if cleared >= bytesToRemove
       // so to postpone a proosible next purging need for this same owner.
       bytesInBatch = hits.reduce((acc, h) => acc + (h.byteSize || 0), 0)
+      checkpoint(signal)
       await mdb.index('events').deleteDocuments(keysToDelete)
       cleared += bytesInBatch
     } else {
@@ -196,6 +203,7 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
       // Delete non-popular
       if (eventsToDelete.length > 0) {
         const keysToDelete = eventsToDelete.map(h => h.ref)
+        checkpoint(signal)
         await mdb.index('events').deleteDocuments(keysToDelete)
         const size = eventsToDelete.reduce((acc, h) => acc + (h.byteSize || 0), 0)
         cleared += size
@@ -203,6 +211,7 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
 
       // Promote popular
       for (const [pubkey, events] of Object.entries(eventsToPromote)) {
+        checkpoint(signal)
         // 1. Count as cleared for the IP
         const size = events.reduce((acc, h) => acc + (h.byteSize || 0), 0)
         cleared += size
@@ -223,6 +232,7 @@ async function pruneEvents ({ ownerKey, ownerType, bytesToRemove }) {
           })
         })
 
+        checkpoint(signal)
         await queueOps(ops)
       }
     }

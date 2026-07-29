@@ -14,6 +14,7 @@ import { rateLimitReqByIp as serverRateLimitReqByIp } from '#services/rate-limit
 import { init as initBroadcaster } from '#services/ipc/cross-process-broadcaster.js'
 import { sendToClientsWithAMatchingFilter } from '#services/relay/nostr-message-handler/event-handler.js'
 import { parseNip50PathExtensions } from '#helpers/subscription.js'
+import { addToCleanup } from '#helpers/process.js'
 
 export function handleHttpServerUpgrade (req, socket, upgradeHead) {
   logReqRes(req, socket)
@@ -71,5 +72,6 @@ initBroadcaster(({ event, eventLanguage, eventTopics }) => {
 
 const shouldStartWorker = process.env.NODE_ENV !== 'test'
 if (shouldStartWorker) {
-  await (await import('#models/job/worker.js')).init()
+  const stopWorker = await (await import('#models/job/worker.js')).init()
+  addToCleanup(stopWorker)
 }

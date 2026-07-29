@@ -4,6 +4,7 @@ import { deriveBlobRefs, recordToEvent } from '#models/event/mapper.js'
 import reconcileUsedBytesConfig from './reconcile-used-bytes.js'
 import { reconcileManifestPoolUsage } from '#services/event/manifest-pool.js'
 import { pruneManifestPool } from './prune-manifest-pool.js'
+import { checkpoint } from '#helpers/abort.js'
 
 const LEGACY_LISTING_KINDS = [37348, 37349, 37350]
 const BATCH_SIZE = 100
@@ -24,8 +25,9 @@ export function isLegacyIrfsManifest (event) {
   return hasLegacyPath || !hasV2Reference
 }
 
-export async function migrateIrfsV2 () {
+export async function migrateIrfsV2 ({ signal } = {}) {
   try {
+    checkpoint(signal)
     const completion = await mdb.index('maintenanceStates').getDocument(COMPLETION_KEY)
     if (completion.completedAt) return { alreadyCompleted: true, completedAt: completion.completedAt }
   } catch (error) {
@@ -39,6 +41,7 @@ export async function migrateIrfsV2 () {
   let backfilledBlobRefs = 0
 
   while (true) {
+    checkpoint(signal)
     const { results } = await mdb.index('events').getDocuments({
       filter: `(${KIND_FILTER})`,
       limit: BATCH_SIZE,
@@ -50,6 +53,7 @@ export async function migrateIrfsV2 () {
     const toDelete = []
     const patches = []
     for (const record of results) {
+      checkpoint(signal)
       if (LEGACY_LISTING_KINDS.includes(record.kind)) {
         toDelete.push(record.ref)
         deletedListings++
@@ -73,14 +77,21 @@ export async function migrateIrfsV2 () {
       migratedManifests++
     }
 
-    if (toDelete.length) await mdb.index('events').deleteDocuments(toDelete)
-    if (patches.length) await mdb.index('events').updateDocuments(patches)
+    if (toDelete.length) {
+      checkpoint(signal)
+      await mdb.index('events').deleteDocuments(toDelete)
+    }
+    if (patches.length) {
+      checkpoint(signal)
+      await mdb.index('events').updateDocuments(patches)
+    }
     if (results.length < BATCH_SIZE) break
     offset += results.length - toDelete.length
   }
 
   offset = 0
   while (true) {
+    checkpoint(signal)
     const { results } = await mdb.index('events').getDocuments({
       limit: BATCH_SIZE,
       offset,
@@ -89,10 +100,12 @@ export async function migrateIrfsV2 () {
     if (!results.length) break
     const patches = []
     for (const record of results) {
+      checkpoint(signal)
       if (!record.ref || !Number.isInteger(record.kind)) continue
       patches.push({ ref: record.ref, blobRefs: deriveBlobRefs(recordToEvent(record).tags) })
     }
     if (patches.length) {
+      checkpoint(signal)
       await mdb.index('events').updateDocuments(patches)
       backfilledBlobRefs += patches.length
     }
@@ -103,11 +116,15 @@ export async function migrateIrfsV2 () {
   // Existing manifests used the ordinary per-owner accounting. Rebuild it
   // after reclassifying manifests, then initialize the new subsidized pool
   // from the events index and enforce both quotas immediately.
-  await reconcileUsedBytesConfig.run()
-  await reconcileManifestPoolUsage()
-  const pruning = await pruneManifestPool()
+  checkpoint(signal)
+  await reconcileUsedBytesConfig.run({ signal })
+  checkpoint(signal)
+  await reconcileManifestPoolUsage({ signal })
+  checkpoint(signal)
+  const pruning = await pruneManifestPool({ signal })
 
   const result = { deletedListings, deletedIrfsManifests, migratedManifests, backfilledBlobRefs, pruning }
+  checkpoint(signal)
   await mdb.index('maintenanceStates').addDocuments([{
     key: COMPLETION_KEY,
     jobKey: 'migrateIrfsV2',
@@ -117,9 +134,10 @@ export async function migrateIrfsV2 () {
   return result
 }
 
-export async function run () {
+export async function run ({ signal } = {}) {
   console.log('Running migrateIrfsV2 job...')
-  await migrateIrfsV2()
+  await migrateIrfsV2({ signal })
+  checkpoint(signal)
   console.log('Done migrateIrfsV2 job.')
 }
 

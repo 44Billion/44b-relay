@@ -1,16 +1,18 @@
 import mdb from '#services/db/mdb.js'
 import { primaryKeyToIp } from '#helpers/mdb.js'
 import { RELAY_OWNED_KINDS } from '#constants/event.js'
+import { checkpoint } from '#helpers/abort.js'
 
 const BATCH_SIZE = 100
 
-async function run () {
+async function run ({ signal } = {}) {
   console.log('Running usedBytes reconciliation...')
 
   let offset = 0
   let ownersProcessed = 0
 
   while (true) {
+    checkpoint(signal)
     const { results } = await mdb.index('storedEventOwners').getDocuments({
       offset,
       limit: BATCH_SIZE,
@@ -20,6 +22,7 @@ async function run () {
     if (results.length === 0) break
 
     for (const owner of results) {
+      checkpoint(signal)
       const { key, entityType } = owner
 
       // Sum actual event sizes for this owner
@@ -27,6 +30,7 @@ async function run () {
       let evOffset = 0
 
       while (true) {
+        checkpoint(signal)
         const filterValue = entityType === 'pubkey' ? key : primaryKeyToIp(key)
         const ownerFilter = entityType === 'pubkey'
           ? `pubkey = ${mdb.toMeiliValue(filterValue)} AND ownerType = "pubkey"`
@@ -55,6 +59,7 @@ async function run () {
       const oldUsedBytes = owner.usedBytes || 0
       if (oldUsedBytes !== actualUsedBytes) {
         console.log(`Reconciling ${entityType} ${key}: ${oldUsedBytes} -> ${actualUsedBytes} (diff: ${actualUsedBytes - oldUsedBytes})`)
+        checkpoint(signal)
         await mdb.index('storedEventOwners').updateDocuments([{
           key,
           usedBytes: actualUsedBytes

@@ -17,6 +17,7 @@ import deleteStaleChunksConfig from './delete-stale-chunks.js'
 import flushRequestedEventsConfig from './flush-requested-events.js'
 import deleteUnrequestedRelayEventsConfig from './delete-unrequested-relay-events.js'
 import pruneManifestPoolConfig from './prune-manifest-pool.js'
+import cleanupMeiliTasksConfig from './cleanup-meili-tasks.js'
 
 const jobs = [
   // exampleConfig,
@@ -37,7 +38,8 @@ const jobs = [
   deleteStaleChunksConfig,
   flushRequestedEventsConfig,
   deleteUnrequestedRelayEventsConfig,
-  pruneManifestPoolConfig
+  pruneManifestPoolConfig,
+  cleanupMeiliTasksConfig
 ]
 
 export default jobs

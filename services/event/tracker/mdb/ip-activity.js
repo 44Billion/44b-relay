@@ -4,6 +4,7 @@ import mdb from '#services/db/mdb.js'
 import { pruneEvents, queueOps } from '#services/event/maintainer/mdb/index.js'
 import { ipToPrimaryKey, primaryKeyToIp } from '#helpers/mdb.js'
 import { compressAsync, decompressAsync } from '#helpers/buffer.js'
+import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 
 // Configuration for CountMinSketch
 // epsilon: error rate (e.g. 0.001 = 0.1% error)
@@ -111,10 +112,11 @@ export async function flushIpActivityToMDB () {
 
 const ONE_DAY = 1000 * 60 * 60 * 24
 
-export async function deleteStaleIps () {
+export async function deleteStaleIps ({ signal } = {}) {
   let sketchCurrent, sketchPrevious
 
   try {
+    checkpoint(signal)
     const [docCurr, docPrev, docMeta] = await Promise.all([
       mdb.index('ipActivities').getDocument('sketch-current').catch(() => null),
       mdb.index('ipActivities').getDocument('sketch-previous').catch(() => null),
@@ -142,6 +144,7 @@ export async function deleteStaleIps () {
       const newSerialized = (await compressAsync(createSketch().serialize())).toString('base64url')
 
       // Apply rotation to DB
+      checkpoint(signal)
       await Promise.all([
         mdb.index('ipActivities').addDocuments([{ key: 'sketch-previous', data: prevSerialized }]),
         mdb.index('ipActivities').addDocuments([{ key: 'sketch-current', data: newSerialized }]),
@@ -153,6 +156,7 @@ export async function deleteStaleIps () {
       sketchCurrent = createSketch()
     }
   } catch (err) {
+    rethrowAbort(err)
     if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') return // Nothing to clean
     console.error('deleteStaleIps: Failed to load Sketch state', err)
     return
@@ -170,6 +174,7 @@ export async function deleteStaleIps () {
   let hasMore = true
 
   while (hasMore) {
+    checkpoint(signal)
     const { results } = await mdb.index('storedEventOwners').getDocuments({
       filter: ['entityType = "ip"', `lastActiveAt < ${cutoff}`],
       limit: BATCH_SIZE,
@@ -184,6 +189,7 @@ export async function deleteStaleIps () {
     let deletedCount = 0
 
     for (const owner of results) {
+      checkpoint(signal)
       const encodedIp = owner.key
       // storedEventOwners keys are base64 encoded IPs (or similar).
       // We need the raw IP string to query the CMS.
@@ -207,13 +213,16 @@ export async function deleteStaleIps () {
         // Stale!
         // 1. Prune events owned by this IP
         // This will promote popular events to 'pubkey' ownerType and delete the rest
+        checkpoint(signal)
         await pruneEvents({
           ownerKey: encodedIp,
           ownerType: 'ip',
-          bytesToRemove: Number.MAX_SAFE_INTEGER
+          bytesToRemove: Number.MAX_SAFE_INTEGER,
+          signal
         })
 
         // 2. Delete the IP record itself
+        checkpoint(signal)
         await mdb.index('storedEventOwners').deleteDocuments([encodedIp])
         deletedCount++
       }

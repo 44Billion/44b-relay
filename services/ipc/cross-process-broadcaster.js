@@ -53,6 +53,7 @@ function createBroadcaster ({
   const pendingBroadcasts = []
   const readyWaiters = new Set()
   const inFlightBySocket = new Map()
+  const leadershipHandlers = new Set()
 
   function log (...args) {
     logger?.log?.(...args)
@@ -64,6 +65,24 @@ function createBroadcaster ({
 
   function error (...args) {
     ;(logger?.error || logger?.log)?.(...args)
+  }
+
+  function callLeadershipHandler (handler, value) {
+    try {
+      return Promise.resolve(handler(value)).catch(err => {
+        error('[IPC] Leadership handler failed:', err?.message ?? err)
+      })
+    } catch (err) {
+      error('[IPC] Leadership handler failed:', err?.message ?? err)
+      return Promise.resolve()
+    }
+  }
+
+  function setLeadership (value, { waitForHandlers = false } = {}) {
+    if (isServer === value) return Promise.resolve()
+    isServer = value
+    const pending = [...leadershipHandlers].map(handler => callLeadershipHandler(handler, value))
+    return waitForHandlers ? Promise.allSettled(pending) : Promise.resolve()
   }
 
   function warnUnexpected (err, message, expectedCodes = []) {
@@ -398,6 +417,13 @@ function createBroadcaster ({
       scheduleReconnect()
     })
 
+    candidate.on('close', () => {
+      if (server !== candidate) return
+      server = null
+      setLeadership(false)
+      if (!shuttingDown) scheduleReconnect()
+    })
+
     candidate.listen(socketPath, () => {
       serverStarting = false
       if (shuttingDown) {
@@ -407,7 +433,7 @@ function createBroadcaster ({
         return
       }
       server = candidate
-      isServer = true
+      setLeadership(true)
       log(`[IPC] Server listening on ${socketPath} (pid: ${process.pid})`)
       registerCleanup()
       connectToServer()
@@ -493,6 +519,19 @@ function createBroadcaster ({
     tryCreateServer()
   }
 
+  function subscribeLeadership (handler, { emitCurrent = true } = {}) {
+    if (typeof handler !== 'function') throw new TypeError('Leadership handler must be a function')
+    leadershipHandlers.add(handler)
+    if (emitCurrent) {
+      queueMicrotask(() => {
+        if (leadershipHandlers.has(handler)) {
+          callLeadershipHandler(handler, isServer)
+        }
+      })
+    }
+    return () => leadershipHandlers.delete(handler)
+  }
+
   function waitUntilReady ({ timeoutMs = broadcastTimeoutMs } = {}) {
     if (isConnectionReady()) return Promise.resolve(true)
     if (!started || shuttingDown) return Promise.resolve(false)
@@ -548,9 +587,10 @@ function createBroadcaster ({
     })
   }
 
-  function close () {
+  async function close () {
     shuttingDown = true
     started = false
+    await setLeadership(false, { waitForHandlers: true })
     clearTimeoutFn(reconnectTimer)
     reconnectTimer = null
     clearTimeoutFn(flushTimer)
@@ -577,29 +617,27 @@ function createBroadcaster ({
     const currentServer = server
     server = null
     serverStarting = false
-    const wasServer = isServer
-    isServer = false
+    const wasServer = Boolean(currentServer)
 
     if (!currentServer) {
       if (wasServer) {
         unlinkIfExists(socketPath, 'IPC socket')
       }
-      return Promise.resolve()
+      return
     }
 
     unrefHandle(currentServer, 'IPC server')
-    closeHandle(currentServer, 'IPC server')
+    await closeServer(currentServer)
     if (wasServer) {
       unlinkIfExists(socketPath, 'IPC socket')
     }
-    return Promise.resolve()
   }
 
   async function closeServerForTest () {
     const currentServer = server
     if (!currentServer) return
+    await setLeadership(false, { waitForHandlers: true })
     server = null
-    isServer = false
     destroyHandle(connection, 'IPC connection')
     connection = null
     connectionReady = false
@@ -618,6 +656,7 @@ function createBroadcaster ({
     waitUntilReady,
     isReady: isConnectionReady,
     isServer: () => isServer,
+    subscribeLeadership,
     close,
     closeServerForTest
   }
@@ -626,7 +665,8 @@ function createBroadcaster ({
 const defaultBroadcaster = createBroadcaster()
 
 function init (onMessage) {
-  if (process.env.NODE_ENV === 'test') return
+  if (process.env.NODE_ENV === 'test' &&
+      process.env.IS_INTEGRATION_TEST !== 'true') return
   defaultBroadcaster.init(onMessage)
 }
 
@@ -642,4 +682,20 @@ function isReady () {
   return defaultBroadcaster.isReady()
 }
 
-export { init, broadcast, waitUntilReady, isReady, createBroadcaster }
+function isLeader () {
+  return defaultBroadcaster.isServer()
+}
+
+function subscribeLeadership (handler, options) {
+  return defaultBroadcaster.subscribeLeadership(handler, options)
+}
+
+export {
+  init,
+  broadcast,
+  waitUntilReady,
+  isReady,
+  isLeader,
+  subscribeLeadership,
+  createBroadcaster
+}
