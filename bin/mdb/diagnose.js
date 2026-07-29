@@ -3,7 +3,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Meilisearch } from 'meilisearch'
 
-const TARGET_VERSION = '1.49.0'
+const TARGET_VERSION = '1.51.0'
 const TASK_SOFT_TIMEOUT_MS = 60_000
 const QUEUE_WARNING_MS = 30_000
 const SLOW_BATCH_WARNING_MS = 10_000

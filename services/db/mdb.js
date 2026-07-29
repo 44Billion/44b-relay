@@ -1,29 +1,27 @@
 // https://www.meilisearch.com/docs/learn/advanced/known_limitations#large-datasets-and-internal-errors
 // Use ulimit or a similar tool to increase resource consumption limits before running Meilisearch. For example, call ulimit -Sn 3000 in a UNIX environment to raise the number of allowed open file descriptors to 3000.
 //
-// Download: https://www.meilisearch.com/docs/learn/update_and_migration/updating#install-the-desired-version-of-meilisearch
+// Production upgrades are performed by the guarded helper at bin/mdb/upgrade.js:
+//   sudo -v
+//   NODE_ENV=production npm run mdb:upgrade
+//   NODE_ENV=production npm run mdb:upgrade -- --execute --version=1.51.0
+// The default strategy creates a portable dump, keeps the original database
+// intact in upgrade-backups, imports the dump into a new database, validates
+// version/health/document counts, and rolls back automatically on failure.
+// Pass --dumpless only to opt into the in-place --upgrade-db strategy, which
+// requires enough disk for a local snapshot and a complete cold data copy.
+// Never delete or replace the production data directory manually.
+// https://www.meilisearch.com/docs/resources/migration/updating
+//
+// Manual download reference:
 // curl -L https://install.meilisearch.com | sh
 // chmod +x meilisearch
 // https://www.meilisearch.com/docs/guides/running_production#step-1%3A-install-meilisearch
 // mv meilisearch /usr/local/bin/meilisearch
 //
 // SIDE NOTES:
-// For https://www.meilisearch.com/docs/learn/update_and_migration/updating#dumpless-upgrade
-// Download new version as as above, moving the executable to /usr/local/bin ($ mv meilisearch /usr/local/bin/meilisearch)
-// Then restart the service (systemctl restart meilisearch) - see below for service setup
 // However, the v1.30.1 is the last version supporting S3-streaming snapshots without
 // an Enterprise Edition license as seen here: https://github.com/meilisearch/meilisearch/releases/tag/v1.31.0
-// For classic upgrade using a dump, see https://www.meilisearch.com/docs/learn/update_and_migration/updating#using-a-dump
-// and run the following commands:
-// await mdb.createDump()
-// sudo systemctl stop meilisearch
-// - Below cmd removes data folder content including sub folders
-// sudo find /var/lib/meilisearch/data -mindepth 1 -delete
-// sudo -u meilisearch /usr/local/bin/meilisearch \
-//   --config-file-path /etc/meilisearch.toml \
-//   --import-dump /var/lib/meilisearch/dumps/20260223-042333276.dump
-// ctrl + c
-// sudo systemctl start meilisearch
 //
 // Now add a user to run Meilisearch, a non-login one
 // useradd -d /var/lib/meilisearch -s /bin/false -m -r meilisearch
@@ -77,11 +75,11 @@
 // $ meilisearch --<flags>...
 // we wouldn't use a key (local access) but migration script currently needs it - https://github.com/meilisearch/meilisearch-migration/issues/44
 // --master-key="meilisearchmasterkey"
-// https://www.meilisearch.com/docs/learn/data_backup/snapshots
+// https://www.meilisearch.com/docs/resources/self_hosting/data_backup/snapshots
 // --schedule_snapshot = 3600 // every hour, like a fast dump but work only on specific db version, not for upgrades
 // https://github.com/meilisearch/meilisearch-migration?tab=readme-ov-file#2-correct-datams-path
 // --db-path /var/lib/meilisearch/data
-// https://www.meilisearch.com/docs/learn/update_and_migration/updating#create-the-dump
+// https://www.meilisearch.com/docs/resources/self_hosting/data_backup/dumps
 // --dump-dir /var/opt/meilisearch/dumps
 import { Meilisearch } from 'meilisearch'
 import eventSchema from '#models/event/schema.js'
@@ -270,7 +268,7 @@ async function init () {
       }
 
       console.log('Starting Meilisearch Container...')
-      const container = await new GenericContainer('getmeili/meilisearch:v1.49.0')
+      const container = await new GenericContainer('getmeili/meilisearch:v1.51.0')
         .withExposedPorts(7700)
         .withEnvironment({
           MEILI_NO_ANALYTICS: 'true'

@@ -7,7 +7,7 @@
     "job:status": "node bin/job/status.js",
     "// mdb:diagnose": "Read-only diagnostics with final analysis; use -- --summary-only for routine checks",
     "mdb:diagnose": "node bin/mdb/diagnose.js",
-    "// mdb:upgrade": "Run sudo -v first if needed; dry-run unless passed -- --execute --version=1.49.0",
+    "// mdb:upgrade": "Run sudo -v first; dump dry-run by default, execute with -- --execute --version=1.51.0, or add --dumpless",
     "mdb:upgrade": "node bin/mdb/upgrade.js",
     "job:reconcile-used-bytes": "node bin/job/reconcile-used-bytes.js",
     "job:migrate-irfs-v2": "node bin/job/migrate-irfs-v2.js",

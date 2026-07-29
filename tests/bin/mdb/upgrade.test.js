@@ -5,17 +5,26 @@ import path from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   assertSudoAuthorization,
+  calculateDumpCreationRequiredFreeBytes,
+  calculateDumpImportRequiredFreeBytes,
   calculateRequiredFreeBytes,
+  checkDumpCreationDiskSpace,
+  checkDumpImportDiskSpace,
   checkUpgradeDiskSpace,
   compareDatabaseState,
   detectS3SnapshotOptions,
   dfAvailableArgs,
   downloadRelease,
+  dumpFileForTask,
   executeUpgrade,
   parseArgs,
+  prepareTargetConfig,
   RELEASES,
+  resolveConfiguredDumpPath,
+  resolveServiceTmpPath,
   rollback,
   startSudoKeepalive,
+  sumTarEntryBytes,
   validateDataPath,
   validateFilePath,
   validateLocalHost,
@@ -35,13 +44,19 @@ describe('mdb upgrade guard', () => {
   it('is a dry-run by default and requires both explicit execution flags', () => {
     assert.deepEqual(parseArgs([]), {
       execute: false,
-      version: '1.49.0',
+      strategy: 'dump',
+      version: '1.51.0',
       versionWasExplicit: false
     })
-    assert.throws(() => parseArgs(['--execute']), /requires --execute --version=1.49.0/)
+    assert.throws(() => parseArgs(['--execute']), /requires --execute --version=1.51.0/)
     assert.equal(
-      parseArgs(['--execute', '--version=1.49.0']).execute,
+      parseArgs(['--execute', '--version=1.51.0']).execute,
       true
+    )
+    assert.equal(parseArgs(['--dumpless']).strategy, 'dumpless')
+    assert.equal(
+      parseArgs(['--execute', '--version=1.51.0', '--dumpless']).strategy,
+      'dumpless'
     )
   })
 
@@ -103,6 +118,88 @@ describe('mdb upgrade guard', () => {
     ])
   })
 
+  it('removes the obsolete dumpless option from the target configuration', () => {
+    const config = [
+      '# This comment must remain.',
+      'experimental_dumpless_upgrade = true',
+      '# experimental_dumpless_upgrade = false',
+      'db_path = "/var/lib/meilisearch/data"',
+      ''
+    ].join('\n')
+    const prepared = prepareTargetConfig(config, '1.51.0')
+
+    assert.deepEqual(prepared.removedOptions, [
+      'experimental_dumpless_upgrade'
+    ])
+    assert.deepEqual(prepared.reviewRequiredOptions, [])
+    assert.equal(
+      prepared.text,
+      [
+        '# This comment must remain.',
+        '# experimental_dumpless_upgrade = false',
+        'db_path = "/var/lib/meilisearch/data"',
+        ''
+      ].join('\n')
+    )
+    assert.deepEqual(prepareTargetConfig(config, '1.50.0'), {
+      text: config,
+      removedOptions: [],
+      reviewRequiredOptions: []
+    })
+
+    const reviewRequired = prepareTargetConfig(
+      `${config}experimental_replication_parameters = true\n`,
+      '1.51.0'
+    )
+    assert.deepEqual(reviewRequired.reviewRequiredOptions, [
+      'experimental_replication_parameters'
+    ])
+    assert.match(
+      reviewRequired.text,
+      /experimental_replication_parameters = true/
+    )
+    assert.deepEqual(reviewRequired.removedOptions, [
+      'experimental_dumpless_upgrade'
+    ])
+    assert.equal(
+      reviewRequired.text.includes('experimental_dumpless_upgrade = true'),
+      false
+    )
+  })
+
+  it('resolves the effective dump and staging paths used by the service', () => {
+    assert.deepEqual(resolveConfiguredDumpPath({
+      configText: 'dump_dir = "configured-dumps"',
+      serviceEnvironment: 'MEILI_DUMP_DIR=environment-dumps',
+      execStart: '/usr/local/bin/meilisearch --dump-dir command-dumps',
+      workingDirectory: '/var/lib/meilisearch'
+    }), {
+      path: '/var/lib/meilisearch/command-dumps',
+      source: 'command:--dump-dir'
+    })
+    assert.deepEqual(resolveConfiguredDumpPath({
+      configText: 'dump_dir = "configured-dumps"',
+      workingDirectory: '/var/lib/meilisearch'
+    }), {
+      path: '/var/lib/meilisearch/configured-dumps',
+      source: 'config:dump_dir'
+    })
+    assert.equal(
+      resolveServiceTmpPath({
+        serviceEnvironment: 'TMPDIR=/var/lib/meilisearch/tmp',
+        workingDirectory: '/ignored'
+      }),
+      '/var/lib/meilisearch/tmp'
+    )
+    assert.equal(
+      resolveServiceTmpPath({
+        serviceEnvironment: 'TMPDIR=tmp',
+        workingDirectory: '/var/lib/meilisearch'
+      }),
+      '/var/lib/meilisearch/tmp'
+    )
+  })
+
   it('rechecks actual snapshot size before allowing the destructive phase', async () => {
     assert.equal(calculateRequiredFreeBytes({
       dataBytes: 1000,
@@ -128,6 +225,73 @@ describe('mdb upgrade guard', () => {
         }
       }),
       /Insufficient disk space during post-snapshot/
+    )
+  })
+
+  it('measures dump staging and import space before replacing data', async () => {
+    assert.equal(calculateDumpCreationRequiredFreeBytes({
+      dataBytes: 1000
+    }), 2_000 + 1024 ** 3)
+    assert.equal(calculateDumpImportRequiredFreeBytes({
+      dataBytes: 1000,
+      uncompressedDumpBytes: 500
+    }), 1250 + 550 + 1024 ** 3)
+    assert.equal(sumTarEntryBytes(`
+-rw-r--r-- 0/0 200 2026-07-29 00:00 indexes/events/documents.jsonl
+-rw-r--r-- 0/0 300 2026-07-29 00:00 tasks/queue.jsonl
+    `), 500)
+
+    await assert.rejects(
+      checkDumpCreationDiskSpace({
+        dataPath: '/var/lib/meilisearch/data',
+        backupRoot: '/var/lib/meilisearch/upgrade-backups',
+        backupParent: '/var/lib/meilisearch'
+      }, {
+        runSudoFn: async args => args[0] === 'du'
+          ? { stdout: '1000\t/var/lib/meilisearch/data\n' }
+          : { stdout: 'Avail\n1\n' }
+      }),
+      /Insufficient disk space/
+    )
+
+    const result = await checkDumpImportDiskSpace({
+      dataPath: '/var/lib/meilisearch/data',
+      backupRoot: '/var/lib/meilisearch/upgrade-backups',
+      backupParent: '/var/lib/meilisearch'
+    }, '/var/lib/meilisearch/dumps/source.dump', {
+      runSudoFn: async args => {
+        if (args[0] === 'du') {
+          return { stdout: '1000\t/var/lib/meilisearch/data\n' }
+        }
+        if (args[0] === 'stat') return { stdout: '100\n' }
+        if (args[0] === 'tar') {
+          return {
+            stdout:
+              '-rw-r--r-- 0/0 200 2026-07-29 00:00 documents.jsonl\n' +
+              '-rw-r--r-- 0/0 300 2026-07-29 00:00 tasks.jsonl\n'
+          }
+        }
+        if (args[0] === 'df') return { stdout: 'Avail\n3000000\n' }
+        return { stdout: '' }
+      }
+    })
+    assert.equal(result.dumpBytes, 100)
+    assert.equal(result.uncompressedDumpBytes, 500)
+  })
+
+  it('accepts only safe dump UIDs returned by Meilisearch', () => {
+    const context = { dumpPath: '/var/lib/meilisearch/dumps' }
+    assert.equal(
+      dumpFileForTask(context, {
+        details: { dumpUid: '20260729-123456789' }
+      }),
+      '/var/lib/meilisearch/dumps/20260729-123456789.dump'
+    )
+    assert.throws(
+      () => dumpFileForTask(context, {
+        details: { dumpUid: '../../etc/passwd' }
+      }),
+      /safe dump UID/
     )
   })
 
@@ -175,8 +339,8 @@ describe('mdb upgrade guard', () => {
     tempPaths.push(directory)
     await assert.rejects(
       downloadRelease(
-        RELEASES['1.49.0'].x64,
-        '1.49.0',
+        RELEASES['1.51.0'].x64,
+        '1.51.0',
         path.join(directory, 'meilisearch'),
         { fetchFn: async () => new Response('not the release binary') }
       ),
@@ -186,17 +350,17 @@ describe('mdb upgrade guard', () => {
 
   it('detects post-upgrade count changes', () => {
     const errors = compareDatabaseState({
-      targetVersion: '1.49.0',
+      targetVersion: '1.51.0',
       stats: { indexes: { events: { numberOfDocuments: 2 } } }
     }, {
-      version: { pkgVersion: '1.49.0' },
+      version: { pkgVersion: '1.51.0' },
       health: { status: 'available' },
       stats: { indexes: { events: { numberOfDocuments: 1 } } }
     })
     assert.match(errors.join(' '), /document counts changed/)
   })
 
-  it('runs the guarded phases in order and does not roll back success', async () => {
+  it('uses the guarded dump phases by default without copying old data', async () => {
     const calls = []
     const rollbackMock = mock.fn()
     const context = makeContext()
@@ -211,14 +375,54 @@ describe('mdb upgrade guard', () => {
       'pm2-stop',
       'drain',
       'baseline',
-      'snapshot',
-      'snapshot-wait',
-      'disk-recheck',
-      'mdb-stop',
+      'dump',
+      'dump-wait',
+      'dump-space',
       'backup-mkdir',
+      'backup-owner',
+      'backup-mode',
       'backup-old-binary',
       'backup-config',
       'backup-new-binary',
+      'mdb-stop',
+      'move-dump',
+      'move-data',
+      'install',
+      'dump-import',
+      'mdb-start',
+      'health',
+      'pm2-restart',
+      'remove-temp'
+    ])
+    assert.equal(rollbackMock.mock.callCount(), 0)
+    assert.equal(result.strategy, 'dump')
+    assert.equal(result.finalState.version.pkgVersion, '1.51.0')
+  })
+
+  it('keeps the snapshot and cold-copy strategy behind --dumpless', async () => {
+    const calls = []
+    const rollbackMock = mock.fn()
+    const result = await executeUpgrade(makeContext('dumpless'), {
+      logger: silentLogger,
+      operations: fakeOperations(calls, { rollback: rollbackMock })
+    })
+
+    assert.deepEqual(calls, [
+      'download',
+      'binary-version',
+      'pm2-stop',
+      'drain',
+      'baseline',
+      'snapshot',
+      'snapshot-wait',
+      'disk-recheck',
+      'backup-mkdir',
+      'backup-owner',
+      'backup-mode',
+      'backup-old-binary',
+      'backup-config',
+      'backup-new-binary',
+      'mdb-stop',
       'backup-snapshot',
       'backup-data',
       'install',
@@ -229,13 +433,45 @@ describe('mdb upgrade guard', () => {
       'remove-temp'
     ])
     assert.equal(rollbackMock.mock.callCount(), 0)
-    assert.equal(result.finalState.version.pkgVersion, '1.49.0')
+    assert.equal(result.strategy, 'dumpless')
   })
 
-  it('invokes rollback with a completed cold backup after a later phase fails', async () => {
+  it('installs a compatible target config and keeps rollback protection', async () => {
+    const calls = []
+    const rollbackMock = mock.fn()
+    const context = {
+      ...makeContext(),
+      targetConfigText: 'db_path = "/var/lib/meilisearch/data"\n',
+      configChanges: [
+        'remove obsolete experimental_dumpless_upgrade'
+      ],
+      configOwner: '0',
+      configGroup: '123',
+      configMode: '640'
+    }
+    await executeUpgrade(context, {
+      logger: silentLogger,
+      operations: fakeOperations(calls, { rollback: rollbackMock })
+    })
+
+    assert.ok(
+      calls.indexOf('prepare-config') < calls.indexOf('pm2-stop')
+    )
+    assert.ok(
+      calls.indexOf('backup-config') < calls.indexOf('install-config')
+    )
+    assert.ok(
+      calls.indexOf('install-config') < calls.indexOf('move-data')
+    )
+    assert.equal(rollbackMock.mock.callCount(), 0)
+  })
+
+  it('invokes rollback with the moved source database after import fails', async () => {
     const calls = []
     const rollbackMock = mock.fn(async (_context, state) => {
+      assert.equal(state.strategy, 'dump')
       assert.equal(state.backupReady, true)
+      assert.equal(state.dataMoveStarted, true)
       assert.equal(state.pm2Stopped, true)
       calls.push('rollback')
     })
@@ -244,68 +480,91 @@ describe('mdb upgrade guard', () => {
         logger: silentLogger,
         operations: fakeOperations(calls, {
           rollback: rollbackMock,
-          runDumplessUpgrade: async () => {
-            calls.push('dumpless')
-            throw new Error('upgrade task failed')
+          runDumpImport: async () => {
+            calls.push('dump-import')
+            throw new Error('dump import failed')
           }
         })
       }),
-      /upgrade task failed/
+      /dump import failed/
     )
     assert.deepEqual(calls.slice(-2), ['rollback', 'remove-temp'])
   })
 
-  it('invokes rollback when any guarded execution phase fails', async () => {
-    const phases = [
-      'download',
-      'binary-version',
-      'pm2-stop',
-      'drain',
-      'baseline',
-      'snapshot',
-      'snapshot-wait',
-      'disk-recheck',
-      'mdb-stop',
-      'backup-mkdir',
-      'backup-old-binary',
-      'backup-config',
-      'backup-new-binary',
-      'backup-snapshot',
-      'backup-data',
-      'install',
-      'dumpless',
-      'mdb-start',
-      'health',
-      'pm2-restart'
-    ]
+  it('invokes rollback when any guarded strategy phase fails', async () => {
+    const strategyPhases = {
+      dump: [
+        'download',
+        'binary-version',
+        'pm2-stop',
+        'drain',
+        'baseline',
+        'dump',
+        'dump-wait',
+        'dump-space',
+        'backup-mkdir',
+        'backup-owner',
+        'backup-mode',
+        'backup-old-binary',
+        'backup-config',
+        'backup-new-binary',
+        'mdb-stop',
+        'move-dump',
+        'move-data',
+        'install',
+        'dump-import',
+        'mdb-start',
+        'health',
+        'pm2-restart'
+      ],
+      dumpless: [
+        'snapshot',
+        'snapshot-wait',
+        'disk-recheck',
+        'backup-snapshot',
+        'backup-data',
+        'dumpless'
+      ]
+    }
 
-    for (const phase of phases) {
-      const calls = []
-      const rollbackMock = mock.fn(async () => calls.push('rollback'))
-      await assert.rejects(
-        executeUpgrade(makeContext(), {
-          logger: silentLogger,
-          operations: fakeOperations(calls, {
-            failAt: phase,
-            rollback: rollbackMock
-          })
-        }),
-        new RegExp(`failed at ${phase}`)
-      )
-      assert.equal(rollbackMock.mock.callCount(), 1, phase)
-      assert.deepEqual(calls.slice(-2), ['rollback', 'remove-temp'], phase)
+    for (const [strategy, phases] of Object.entries(strategyPhases)) {
+      for (const phase of phases) {
+        const calls = []
+        const rollbackMock = mock.fn(async () => calls.push('rollback'))
+        await assert.rejects(
+          executeUpgrade(makeContext(strategy), {
+            logger: silentLogger,
+            operations: fakeOperations(calls, {
+              failAt: phase,
+              rollback: rollbackMock
+            })
+          }),
+          new RegExp(`failed at ${phase}`)
+        )
+        assert.equal(rollbackMock.mock.callCount(), 1, `${strategy}:${phase}`)
+        assert.deepEqual(
+          calls.slice(-2),
+          ['rollback', 'remove-temp'],
+          `${strategy}:${phase}`
+        )
+      }
     }
   })
 
-  it('moves failed data aside and restores the intact cold copy', async () => {
+  it('restores the moved source database and removes generated failed data', async () => {
     const sudoCalls = []
     const commandCalls = []
     await rollback(makeContext(), {
+      strategy: 'dump',
       transientUnit: 'upgrade-unit',
       mdbStopped: true,
       normalMdbStarted: false,
       backupReady: true,
+      dataMoveStarted: true,
+      binaryInstallStarted: true,
       backupDir: '/var/lib/meilisearch/upgrade-backups/run',
+      oldDataPath: '/var/lib/meilisearch/upgrade-backups/run/data.old',
+      importTempPath: '/var/lib/meilisearch/upgrade-backups/run/import-tmp',
       pm2Stopped: true
     }, silentLogger, {
       runSudo: async args => {
@@ -321,12 +580,67 @@ describe('mdb upgrade guard', () => {
 
     assert.ok(sudoCalls.some(args => args[0] === 'mv' &&
       args.at(-1).endsWith('/data.failed')))
-    assert.ok(sudoCalls.some(args => args[0] === 'cp' &&
-      args.includes('/var/lib/meilisearch/upgrade-backups/run/data.cold')))
+    assert.ok(sudoCalls.some(args => args[0] === 'mv' &&
+      args[1].endsWith('/data.old') &&
+      args.at(-1) === '/var/lib/meilisearch/data'))
+    assert.ok(sudoCalls.some(args => args[0] === 'rm' &&
+      args.at(-1).endsWith('/data.failed')))
     assert.deepEqual(commandCalls.at(-1), [
       'pm2',
       ['restart', 'web.social-server']
     ])
+  })
+
+  it('restores the intact cold copy for a failed dumpless upgrade', async () => {
+    const sudoCalls = []
+    await rollback(makeContext('dumpless'), {
+      strategy: 'dumpless',
+      transientUnit: 'upgrade-unit',
+      mdbStopped: true,
+      normalMdbStarted: false,
+      backupReady: true,
+      dataMoveStarted: false,
+      binaryInstallStarted: true,
+      backupDir: '/var/lib/meilisearch/upgrade-backups/run',
+      pm2Stopped: false
+    }, silentLogger, {
+      runSudo: async args => {
+        sudoCalls.push(args)
+        return { stdout: '' }
+      },
+      waitForHealth: async () => makeFinalState()
+    })
+
+    assert.ok(sudoCalls.some(args => args[0] === 'cp' &&
+      args.includes('/var/lib/meilisearch/upgrade-backups/run/data.cold')))
+  })
+
+  it('restores the old config when target config installation fails first', async () => {
+    const sudoCalls = []
+    await rollback(makeContext(), {
+      strategy: 'dump',
+      transientUnit: null,
+      mdbStopped: true,
+      normalMdbStarted: false,
+      backupReady: false,
+      dataMoveStarted: false,
+      configInstallStarted: true,
+      binaryInstallStarted: false,
+      backupDir: '/var/lib/meilisearch/upgrade-backups/run',
+      pm2Stopped: false
+    }, silentLogger, {
+      runSudo: async args => {
+        sudoCalls.push(args)
+        return { stdout: '' }
+      },
+      waitForHealth: async () => makeFinalState()
+    })
+
+    assert.ok(sudoCalls.some(args => args[0] === 'cp' &&
+      args.at(-2).endsWith('/meilisearch.toml.old') &&
+      args.at(-1) === '/etc/meilisearch.toml'))
+    assert.equal(sudoCalls.some(args => args[0] === 'cp' &&
+      args.at(-2).endsWith('/meilisearch.old')), false)
   })
 })
 
@@ -334,28 +648,37 @@ const silentLogger = { log () {}, warn () {}, error () {} }
 
 function makeFinalState () {
   return {
-    version: { pkgVersion: '1.49.0' },
+    version: { pkgVersion: '1.51.0' },
     health: { status: 'available' },
     stats: { indexes: { events: { numberOfDocuments: 2 } } }
   }
 }
 
-function makeContext () {
+function makeContext (strategy = 'dump') {
   let stateCalls = 0
   return {
-    version: '1.49.0',
+    strategy,
+    version: '1.51.0',
     currentVersion: '1.35.1',
-    release: RELEASES['1.49.0'].x64,
+    release: RELEASES['1.51.0'].x64,
     serviceName: 'meilisearch',
     pm2App: 'web.social-server',
     binaryPath: '/usr/local/bin/meilisearch',
     configPath: '/etc/meilisearch.toml',
     dataPath: '/var/lib/meilisearch/data',
     snapshotPath: '/var/lib/meilisearch/snapshots',
+    dumpPath: '/var/lib/meilisearch/dumps',
     backupRoot: '/var/lib/meilisearch/upgrade-backups',
+    serviceUser: 'meilisearch',
+    serviceGroup: 'meilisearch',
+    workingDirectory: '/var/lib/meilisearch',
     binaryOwner: 0,
     binaryGroup: 0,
     binaryMode: '755',
+    configOwner: '0',
+    configGroup: '0',
+    configMode: '644',
+    configChanges: [],
     api: {
       async state () {
         stateCalls++
@@ -368,6 +691,9 @@ function makeContext () {
       },
       async createSnapshot () {
         return { taskUid: 7 }
+      },
+      async createDump () {
+        return { taskUid: 8 }
       }
     }
   }
@@ -382,11 +708,15 @@ function fakeOperations (calls, overrides = {}) {
   }
   return {
     mkdtemp: async () => '/tmp/fake-upgrade',
+    writeTargetConfiguration: async () => {
+      recordCall('prepare-config')
+      return '/tmp/fake-upgrade/meilisearch.target.toml'
+    },
     downloadRelease: async () => recordCall('download'),
     runCommand: async (file, args) => {
       if (args[0] === '--version') {
         recordCall('binary-version')
-        return { stdout: 'meilisearch 1.49.0' }
+        return { stdout: 'meilisearch 1.51.0' }
       }
       recordCall(args[0] === 'stop' ? 'pm2-stop' : 'pm2-restart')
       return { stdout: '' }
@@ -400,6 +730,7 @@ function fakeOperations (calls, overrides = {}) {
       recordCall('drain')
       const original = context.api.state
       const originalSnapshot = context.api.createSnapshot
+      const originalDump = context.api.createDump
       context.api.state = async () => {
         recordCall('baseline')
         return original()
@@ -408,10 +739,23 @@ function fakeOperations (calls, overrides = {}) {
         recordCall('snapshot')
         return originalSnapshot()
       }
+      context.api.createDump = async () => {
+        recordCall('dump')
+        return originalDump()
+      }
     },
-    waitForTask: async () => recordCall('snapshot-wait'),
+    waitForTask: async (_api, _uid, options) => {
+      if (options.label.startsWith('dump task')) {
+        recordCall('dump-wait')
+        return { details: { dumpUid: '20260729-123456789' } }
+      }
+      recordCall('snapshot-wait')
+      return {}
+    },
     checkUpgradeDiskSpace: async () => recordCall('disk-recheck'),
+    checkDumpImportDiskSpace: async () => recordCall('dump-space'),
     runDumplessUpgrade: async () => recordCall('dumpless'),
+    runDumpImport: async () => recordCall('dump-import'),
     waitForHealth: async () => {
       recordCall('health')
       return finalState
@@ -427,7 +771,21 @@ function sudoCallName (args) {
     return args[1] === 'stop' ? 'mdb-stop' : 'mdb-start'
   }
   if (args[0] === 'mkdir') return 'backup-mkdir'
-  if (args[0] === 'install') return 'install'
+  if (args[0] === 'chown' && args.at(-1).includes('/upgrade-backups/')) {
+    return 'backup-owner'
+  }
+  if (args[0] === 'chmod' && args.at(-1).includes('/upgrade-backups/')) {
+    return 'backup-mode'
+  }
+  if (args[0] === 'install') {
+    return args.at(-1) === '/etc/meilisearch.toml'
+      ? 'install-config'
+      : 'install'
+  }
+  if (args[0] === 'mv') {
+    if (args[1]?.endsWith('.dump')) return 'move-dump'
+    if (args[1] === '/var/lib/meilisearch/data') return 'move-data'
+  }
   const source = args.at(-2)
   if (source === '/usr/local/bin/meilisearch') return 'backup-old-binary'
   if (source === '/etc/meilisearch.toml') return 'backup-config'

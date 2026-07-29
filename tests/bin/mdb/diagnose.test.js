@@ -108,7 +108,7 @@ describe('mdb diagnostics analysis', () => {
     const printed = JSON.parse(output[0])
     assert.equal(printed.status, 'ok')
     assert.equal(printed.version, undefined)
-    assert.equal(result.version.pkgVersion, '1.49.0')
+    assert.equal(result.version.pkgVersion, '1.51.0')
     assert.equal(result.taskHistory.total, 42)
     assert.ok(result.analysis)
   })
@@ -116,7 +116,7 @@ describe('mdb diagnostics analysis', () => {
 
 function makeDiagnostics (overrides = {}) {
   const {
-    version = '1.49.0',
+    version = '1.51.0',
     ...diagnosticOverrides
   } = overrides
   return {
@@ -172,7 +172,7 @@ class FakeClient {
   }
 
   async getVersion () {
-    return { pkgVersion: '1.49.0' }
+    return { pkgVersion: '1.51.0' }
   }
 
   async health () {
