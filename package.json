@@ -5,6 +5,8 @@
   "scripts": {
     "start": "NODE_ENV=development node index.js",
     "job:status": "node bin/job/status.js",
+    "// pending-ops:status": "Read-only snapshot; add -- --watch=120 --interval=10 to detect growth or a stuck queue head",
+    "pending-ops:status": "node bin/job/pending-ops-status.js",
     "// mdb:diagnose": "Read-only diagnostics with final analysis; use -- --summary-only for routine checks",
     "mdb:diagnose": "node bin/mdb/diagnose.js",
     "// mdb:upgrade": "Run sudo -v first; dump dry-run by default, execute with -- --execute --version=1.51.0, or add --dumpless",
