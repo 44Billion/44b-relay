@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, after, before, mock } from 'node:test'
+import { describe, it, beforeEach, before } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
@@ -9,22 +9,9 @@ import { sha256 } from '@noble/hashes/sha2.js'
 
 describe('Job: Process Pending Ops', () => {
   let processPendingOps
-  let pruneEventsMock
   let runSingleBatch
 
   before(async () => {
-    // Mock pruneEvents to avoid complex interactions for now, unless we want full integration
-    pruneEventsMock = mock.fn(async () => 0)
-
-    mock.module('#services/event/maintainer/mdb/index.js', {
-      namedExports: {
-        pruneEvents: pruneEventsMock,
-        // other exports if needed
-        checkStorageLimitAndPrune: async () => {},
-        queueOps: async () => {}
-      }
-    })
-
     processPendingOps = await import('#models/job/jobs/process-pending-ops/index.js')
 
     runSingleBatch = async () => {
@@ -34,12 +21,7 @@ describe('Job: Process Pending Ops', () => {
     }
   })
 
-  after(() => {
-    mock.restoreAll()
-  })
-
   beforeEach(async () => {
-    pruneEventsMock.mock.resetCalls()
     // Clear relevant indexes
     const indexes = ['pendingOps', 'storedEventOwners', 'events', 'ipActivities', 'requestedPubkeys']
     for (const idx of indexes) {
@@ -289,23 +271,26 @@ describe('Job: Process Pending Ops', () => {
         popularityLevel: 1
       }])
 
-      // Setup mock to simulate removing 500 bytes
-      pruneEventsMock.mock.mockImplementation(async ({ bytesToRemove }) => {
-        return bytesToRemove // simulate we removed exactly what was asked
-      })
+      await mdb.index('events').addDocuments([{
+        ref: 'pruned-event',
+        id: 'pruned-event-id',
+        pubkey: ownerKey,
+        ownerType: 'pubkey',
+        kind: 1,
+        byteSize: 500,
+        created_at: 1
+      }])
+      op.data.workflowVersion = 1
+      op.data.step = 0
 
       await mdb.index('pendingOps').addDocuments([op])
       await runSingleBatch()
 
-      // Verify pruneEvents called
-      assert.equal(pruneEventsMock.mock.calls.length, 1)
-      const callArgs = pruneEventsMock.mock.calls[0].arguments[0]
-      assert.equal(callArgs.ownerKey, ownerKey)
-      assert.equal(callArgs.bytesToRemove, 500) // 1500 - 1000
-
-      // Verify storedEventOwner usage updated
+      await assert.rejects(mdb.index('events').getDocument('pruned-event'))
       const doc = await mdb.index('storedEventOwners').getDocument(ownerKey)
-      assert.equal(doc.usedBytes, 1000) // 1500 - 500
+      assert.equal(doc.usedBytes, 1000)
+      assert.deepEqual(doc.accountingTokens, [])
+      await assert.rejects(mdb.index('pendingOps').getDocument(op.key))
     })
   })
 })

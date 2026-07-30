@@ -244,6 +244,55 @@ describe('Job Worker (Integration)', () => {
     assert.equal(job.run.mock.callCount(), 0)
   })
 
+  it('does not steal a healthy lease merely because its owner differs', async () => {
+    const nowSec = Math.floor(virtualTime / 1000)
+    await mdb.index('jobs').addDocuments([{
+      key: jobKey,
+      startedAt: nowSec - 10,
+      endedAt: nowSec - 20,
+      heartbeatedAt: nowSec - 10,
+      lockKey: 'healthy-foreign-lock',
+      ownerId: '4242:foreign-term',
+      ownerPid: 4242,
+      ownerType: 'worker'
+    }])
+
+    stopWorker = await init([job], {
+      isProcessAlive: () => true
+    })
+    await tickAndSync(61000)
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    assert.equal(job.run.mock.callCount(), 0)
+    const { result } = await getJobByKey(jobKey)
+    assert.equal(result.lockKey, 'healthy-foreign-lock')
+  })
+
+  it('recovers a healthy-looking lease when its local owner PID died', async () => {
+    const nowSec = Math.floor(virtualTime / 1000)
+    await mdb.index('jobs').addDocuments([{
+      key: jobKey,
+      startedAt: nowSec - 10,
+      endedAt: nowSec - 20,
+      heartbeatedAt: nowSec - 1,
+      lockKey: 'dead-owner-lock',
+      ownerId: '4343:dead-term',
+      ownerPid: 4343,
+      ownerType: 'worker'
+    }])
+
+    stopWorker = await init([job], {
+      isProcessAlive: pid => pid !== 4343
+    })
+    await tickAndSync(61000)
+    await new Promise(resolve => setTimeout(resolve, 800))
+
+    assert.equal(job.run.mock.callCount(), 1)
+    const { result } = await getJobByKey(jobKey)
+    assert.equal(result.ownerPid, process.pid)
+    assert.notEqual(result.lockKey, 'dead-owner-lock')
+  })
+
   it('should handle maxDuration overflow (effectively no limit)', async () => {
     job.maxDuration = Number.MAX_SAFE_INTEGER
 

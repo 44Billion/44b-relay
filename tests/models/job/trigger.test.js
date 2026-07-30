@@ -69,7 +69,7 @@ describe('persisted job leases', () => {
     assert.equal(final.endedAt, 1)
   })
 
-  it('leaves an aborted lease recoverable immediately by the next owner', async () => {
+  it('ends an aborted worker lease and requests immediate continuation', async () => {
     await putJobByKey('lease-handoff', { startedAt: 0, endedAt: 0 })
     const { result: initial } = await getJobByKey('lease-handoff')
     const controller = new AbortController()
@@ -103,8 +103,10 @@ describe('persisted job leases', () => {
     assert.equal(oldResult.error, handoff)
 
     const { result: abandonedLease } = await getJobByKey('lease-handoff')
-    assert.ok(abandonedLease.endedAt < abandonedLease.startedAt)
+    assert.ok(abandonedLease.endedAt >= abandonedLease.startedAt)
     assert.equal(abandonedLease.ownerId, 'runner-old')
+    assert.equal(abandonedLease.ownerPid, process.pid)
+    assert.equal(abandonedLease.continuationRequested, true)
 
     const nextRun = mock.fn(async () => {})
     const nextResult = await startJob({
@@ -121,6 +123,7 @@ describe('persisted job leases', () => {
     const { result: completedLease } = await getJobByKey('lease-handoff')
     assert.equal(completedLease.ownerId, 'runner-new')
     assert.ok(completedLease.endedAt >= completedLease.startedAt)
+    assert.equal(completedLease.continuationRequested, false)
   })
 
   it('marks a same-second restart as running until it finishes', async () => {

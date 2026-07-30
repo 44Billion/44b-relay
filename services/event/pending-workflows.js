@@ -13,10 +13,15 @@ import {
 } from '#services/event/manifest-pool.js'
 import { RELAY_OWNED_KINDS } from '#constants/event.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
+import {
+  applyStoredUsageDeltasOnce,
+  clearStoredUsageDeltaTokens
+} from '#services/event/stored-owner-accounting.js'
 
 export const PENDING_WORKFLOW_TYPES = new Set([
   'upsertManifestWithReservation',
-  'deleteEventsWithAccounting'
+  'deleteEventsWithAccounting',
+  'pruneCheck'
 ])
 
 export function isPendingWorkflow (op) {
@@ -252,84 +257,26 @@ export async function queueDeleteEventsWithAccounting (
   }
 }
 
-async function ensureStoredOwnerTokens (owner) {
-  let doc
-  try {
-    doc = await mdb.index('storedEventOwners').getDocument(owner.ownerKey)
-  } catch (error) {
-    if (isNotFound(error)) return false
-    throw error
-  }
-  if (!Array.isArray(doc.accountingTokens)) {
-    // Initialize only if the field is still missing. A normal partial patch
-    // with [] could erase a token concurrently written by another workflow.
-    await mdb.index('storedEventOwners').updateDocumentsByFunction({
-      function: `
-        if doc.accountingTokens == () { doc.accountingTokens = []; }
-        doc
-      `,
-      filter: `key = ${mdb.toMeiliValue(owner.ownerKey)}`
-    })
-  }
-  return true
-}
-
 async function applyStoredDeletionAccounting (events, operationKey, { signal } = {}) {
-  const owners = new Map()
-  for (const event of events) {
-    if (!event.ownerKey || RELAY_OWNED_KINDS.has(event.kind)) continue
-    const current = owners.get(event.ownerKey) || {
+  const deltas = events
+    .filter(event => event.ownerKey && !RELAY_OWNED_KINDS.has(event.kind))
+    .map(event => ({
       ownerKey: event.ownerKey,
       ownerType: event.ownerType,
-      bytes: 0
-    }
-    current.bytes += event.byteSize || 0
-    owners.set(event.ownerKey, current)
-  }
-  for (const owner of owners.values()) {
-    checkpoint(signal)
-    if (!await ensureStoredOwnerTokens(owner)) continue
-    const token = `${operationKey}:${owner.ownerKey}`
-    await mdb.index('storedEventOwners').updateDocumentsByFunction({
-      function: `
-        let seen = false;
-        for existing in doc.accountingTokens {
-          if existing == context.token { seen = true; }
-        }
-        if !seen {
-          let next_bytes = doc.usedBytes - context.bytes;
-          if next_bytes < 0 { next_bytes = 0; }
-          doc.usedBytes = next_bytes;
-          doc.accountingTokens.push(context.token);
-        }
-        doc
-      `,
-      filter: `key = ${mdb.toMeiliValue(owner.ownerKey)}`,
-      context: { token, bytes: owner.bytes }
-    })
-  }
+      delta: -(event.byteSize || 0)
+    }))
+  await applyStoredUsageDeltasOnce(deltas, operationKey, { signal })
 }
 
 async function clearStoredDeletionAccountingTokens (events, operationKey, { signal } = {}) {
-  const ownerKeys = new Set(events
+  const deltas = events
     .filter(event => event.ownerKey && !RELAY_OWNED_KINDS.has(event.kind))
-    .map(event => event.ownerKey))
-  for (const ownerKey of ownerKeys) {
-    checkpoint(signal)
-    const token = `${operationKey}:${ownerKey}`
-    await mdb.index('storedEventOwners').updateDocumentsByFunction({
-      function: `
-        let remaining = [];
-        for existing in doc.accountingTokens {
-          if existing != context.token { remaining.push(existing); }
-        }
-        doc.accountingTokens = remaining;
-        doc
-      `,
-      filter: `key = ${mdb.toMeiliValue(ownerKey)}`,
-      context: { token }
-    })
-  }
+    .map(event => ({
+      ownerKey: event.ownerKey,
+      ownerType: event.ownerType,
+      delta: -(event.byteSize || 0)
+    }))
+  await clearStoredUsageDeltaTokens(deltas, operationKey, { signal })
 }
 
 async function processDeletion (op, { signal } = {}) {
@@ -439,6 +386,11 @@ export async function processPendingWorkflow (op, { signal } = {}) {
     if (op.type === 'deleteEventsWithAccounting') {
       return await processDeletion(op, { signal })
     }
+    if (op.type === 'pruneCheck') {
+      const { processPruneCheck } =
+        await import('#services/event/prune-workflow.js')
+      return await processPruneCheck(op, { signal })
+    }
     throw new TypeError(`Unknown pending workflow type: ${op.type}`)
   } catch (error) {
     if (signal?.aborted || isNetworkError(error)) throw error
@@ -459,6 +411,10 @@ export async function processPendingWorkflow (op, { signal } = {}) {
         }
       }
     }
+    // A prune workflow that reached `prepared` owns durable destructive
+    // intent. Never consume it after an unexpected error; retrying its
+    // idempotent phase is the only safe response.
+    if (op.type === 'pruneCheck' && op.phase !== 'queued') throw error
     // Preserve the queue's existing policy: malformed/non-transient operations
     // are consumed so one bad item cannot block all later work.
     await deletePendingOp(op.key)

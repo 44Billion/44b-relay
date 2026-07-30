@@ -54,6 +54,10 @@ async function run () {
     console.log(`\nJob: ${job.key}`)
     console.log(`  isRunning: ${isRunning}`)
     if (job.ownerId) console.log(`  owner: ${job.ownerType || 'unknown'}:${job.ownerId}`)
+    if (job.ownerPid) console.log(`  ownerPid: ${job.ownerPid}`)
+    if (job.continuationRequested) {
+      console.log('  continuationRequested: true')
+    }
     if (isRunning) {
       console.log(`  timeSinceHeartbeat: ${timeSinceHeartbeat}s`)
       console.log(`  heartbeatTolerance: ${heartbeatTolerance}s`)

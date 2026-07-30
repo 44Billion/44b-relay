@@ -1,7 +1,8 @@
 import { Buffer } from 'buffer'
 import { ConservativeCountMin } from 'sketch-oxide-node'
 import mdb from '#services/db/mdb.js'
-import { pruneEvents, queueOps } from '#services/event/maintainer/mdb/index.js'
+import { queueOps } from '#services/event/maintainer/mdb/index.js'
+import { queuePruneCheckOnce } from '#services/event/prune-workflow.js'
 import { ipToPrimaryKey, primaryKeyToIp } from '#helpers/mdb.js'
 import { compressAsync, decompressAsync } from '#helpers/buffer.js'
 import { checkpoint, rethrowAbort } from '#helpers/abort.js'
@@ -186,8 +187,6 @@ export async function deleteStaleIps ({ signal } = {}) {
       break
     }
 
-    let deletedCount = 0
-
     for (const owner of results) {
       checkpoint(signal)
       const encodedIp = owner.key
@@ -210,30 +209,26 @@ export async function deleteStaleIps ({ signal } = {}) {
       const expirationTime = lastActive + (retentionDays * ONE_DAY)
 
       if (now > expirationTime) {
-        // Stale!
-        // 1. Prune events owned by this IP
-        // This will promote popular events to 'pubkey' ownerType and delete the rest
+        // Persist a recoverable request. The workflow rechecks lastActiveAt,
+        // promotes popular authors, deletes the rest with durable accounting,
+        // and only then removes the empty IP owner document.
         checkpoint(signal)
-        await pruneEvents({
+        await queuePruneCheckOnce({
           ownerKey: encodedIp,
           ownerType: 'ip',
-          bytesToRemove: Number.MAX_SAFE_INTEGER,
+          limit: 0,
+          deleteOwnerWhenEmpty: true,
+          staleIfLastActiveAtLte: lastActive,
+          source: 'deleteStaleIps',
+          dedupeScope: 'delete-stale-ip',
           signal
         })
-
-        // 2. Delete the IP record itself
-        checkpoint(signal)
-        await mdb.index('storedEventOwners').deleteDocuments([encodedIp])
-        deletedCount++
       }
     }
 
-    // Pagination logic
-    if (deletedCount === 0) {
-      offset += results.length
-    } else {
-      offset += (results.length - deletedCount)
-    }
+    // Owner records now remain in place until their workflows complete, so
+    // ordinary stable pagination is sufficient.
+    offset += results.length
   }
 }
 

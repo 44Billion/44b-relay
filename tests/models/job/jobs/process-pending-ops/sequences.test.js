@@ -1,23 +1,12 @@
-import { describe, it, beforeEach, after, before, mock } from 'node:test'
+import { describe, it, beforeEach, before } from 'node:test'
 import assert from 'node:assert/strict'
 import mdb from '#services/db/mdb.js'
 
 describe('Job: Process Pending Ops - Sequences', () => {
   let processPendingOps
-  let pruneEventsMock
   let runSingleBatch
 
   before(async () => {
-    pruneEventsMock = mock.fn(async () => 0)
-
-    mock.module('#services/event/maintainer/mdb/index.js', {
-      namedExports: {
-        pruneEvents: pruneEventsMock,
-        checkStorageLimitAndPrune: async () => {},
-        queueOps: async () => {}
-      }
-    })
-
     processPendingOps = await import('#models/job/jobs/process-pending-ops/index.js')
 
     runSingleBatch = async () => {
@@ -27,12 +16,7 @@ describe('Job: Process Pending Ops - Sequences', () => {
     }
   })
 
-  after(() => {
-    mock.restoreAll()
-  })
-
   beforeEach(async () => {
-    pruneEventsMock.mock.resetCalls()
     const indexes = ['pendingOps', 'events', 'storedEventOwners']
     for (const idx of indexes) {
       await mdb.index(idx).deleteAllDocuments()

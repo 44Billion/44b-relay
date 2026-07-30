@@ -11,7 +11,8 @@ const MAX_WATCH_SECONDS = 24 * 60 * 60
 const WORKFLOW_FILTER =
   'phase != "queued" AND ' +
   '(type = "upsertManifestWithReservation" OR ' +
-  'type = "deleteEventsWithAccounting")'
+  'type = "deleteEventsWithAccounting" OR ' +
+  'type = "pruneCheck")'
 const ATTRIBUTES = [
   'key',
   'type',

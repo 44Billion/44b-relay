@@ -22,11 +22,41 @@ function abortError (message) {
   return error
 }
 
-function makeRuntime ({ signal, leader = false } = {}) {
+export function getWorkerOwnerPid (record) {
+  if (Number.isSafeInteger(record?.ownerPid) && record.ownerPid > 0) {
+    return record.ownerPid
+  }
+  if (record?.ownerType !== 'worker' || typeof record.ownerId !== 'string') {
+    return null
+  }
+  const legacyPid = Number(record.ownerId.split(':', 1)[0])
+  return Number.isSafeInteger(legacyPid) && legacyPid > 0 ? legacyPid : null
+}
+
+export function isLocalProcessAlive (pid, kill = process.kill.bind(process)) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null
+  try {
+    kill(pid, 0)
+    return true
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false
+    // EPERM proves the process exists. Unknown inspection failures must fail
+    // closed and leave heartbeat expiry as the takeover mechanism.
+    return true
+  }
+}
+
+function makeRuntime ({
+  signal,
+  leader = false,
+  isProcessAlive = isLocalProcessAlive
+} = {}) {
   return {
     active: true,
     leader,
     ownerId: leader ? `${process.pid}:${getRandomId()}` : null,
+    ownerPid: leader ? process.pid : null,
+    isProcessAlive,
     signal,
     timers: new Set(),
     runs: new Set()
@@ -106,7 +136,8 @@ export async function init (jobConfigs = jobs, options = {}) {
     const runtimeController = new AbortController()
     const runtime = makeRuntime({
       signal: runtimeController.signal,
-      leader: true
+      leader: true,
+      isProcessAlive: options.isProcessAlive
     })
     runtime.controller = runtimeController
     leaderRuntime = runtime
@@ -209,26 +240,35 @@ async function maybeTriggerJob (job, runtime) {
   const isRequested = !isRunning &&
     record.requestedAt &&
     record.requestedAt > record.endedAt
+  const isContinuationRequested = !isRunning &&
+    record.continuationRequested === true
   const isRunningTooLong = isRunning && (now - record.startedAt) >= maxDuration
   const heartbeatTolerance = job.heartbeatTolerance ?? DEFAULT_HEARTBEAT_TOLERANCE
   const isStalled = isRunning &&
     (now - (record.heartbeatedAt || record.startedAt)) >= heartbeatTolerance
-  const belongsToPreviousWorker = runtime.leader &&
+  const workerOwnerPid = runtime.leader &&
     !job.manual &&
     isRunning &&
     record.ownerType === 'worker' &&
-    record.ownerId &&
-    record.ownerId !== runtime.ownerId
+    getWorkerOwnerPid(record)
+  const ownerProcessDied = Boolean(
+    workerOwnerPid &&
+    runtime.isProcessAlive(workerOwnerPid) === false
+  )
 
   let started = false
   let freshRecord = record
   const shouldRecoverRunningJob = !job.manual &&
-    (isRunningTooLong || isStalled || belongsToPreviousWorker)
-  if (isExpired || isRequested || shouldRecoverRunningJob) {
+    (isRunningTooLong || isStalled || ownerProcessDied)
+  if (isExpired ||
+      isRequested ||
+      isContinuationRequested ||
+      shouldRecoverRunningJob) {
     const result = await startJob(job, {
       record,
       ownerId: runtime.ownerId,
       ownerType: 'worker',
+      ownerPid: runtime.ownerPid,
       signal: runtime.signal
     })
     started = result.started

@@ -6,15 +6,23 @@ import mdb from '#services/db/mdb.js'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
 import { compressAsync } from '#helpers/buffer.js'
 import * as deleteStaleIpsJob from '#models/job/jobs/delete-stale-ips.js'
+import {
+  loadSystemState,
+  processBatch
+} from '#models/job/jobs/process-pending-ops/index.js'
+import { PENDING_OPS_SORT } from '#models/pending-op/order.js'
 
 describe('Job: Delete Stale IPs', () => {
   beforeEach(async () => {
-    await mdb.index('ipActivities').deleteAllDocuments()
-    await mdb.index('storedEventOwners').deleteAllDocuments()
-    // Also clear jobs queue related things if needed? events?
+    await Promise.all([
+      mdb.index('ipActivities').deleteAllDocuments(),
+      mdb.index('storedEventOwners').deleteAllDocuments(),
+      mdb.index('pendingOps').deleteAllDocuments(),
+      mdb.index('events').deleteAllDocuments()
+    ])
   })
 
-  it('should delete stale IPs and keep retained ones', async () => {
+  it('should queue durable stale-IP pruning and keep retained owners', async () => {
     const ONE_DAY = 1000 * 60 * 60 * 24
     const now = Date.now()
 
@@ -39,9 +47,9 @@ describe('Job: Delete Stale IPs', () => {
     const retainedIp = highScoreIp // Score 150 -> retention 30 days. Active 4 days ago.
 
     const docs = [
-      { key: ipToPrimaryKey(staleIp), entityType: 'ip', lastActiveAt: now - (4 * ONE_DAY) },
-      { key: ipToPrimaryKey(freshIp), entityType: 'ip', lastActiveAt: now - (1 * ONE_DAY) },
-      { key: ipToPrimaryKey(retainedIp), entityType: 'ip', lastActiveAt: now - (4 * ONE_DAY) }
+      { key: ipToPrimaryKey(staleIp), entityType: 'ip', usedBytes: 0, lastActiveAt: now - (4 * ONE_DAY) },
+      { key: ipToPrimaryKey(freshIp), entityType: 'ip', usedBytes: 0, lastActiveAt: now - (1 * ONE_DAY) },
+      { key: ipToPrimaryKey(retainedIp), entityType: 'ip', usedBytes: 0, lastActiveAt: now - (4 * ONE_DAY) }
     ]
 
     await mdb.index('storedEventOwners').addDocuments(docs)
@@ -52,9 +60,25 @@ describe('Job: Delete Stale IPs', () => {
     await deleteStaleIpsJob.run()
     await new Promise(resolve => setTimeout(resolve, 100))
 
-    // Assert
-    const { results } = await mdb.index('storedEventOwners').getDocuments()
+    // Discovery is non-destructive. Only the stale, low-activity IP gets a
+    // durable request, while all owner records remain until that workflow is
+    // processed.
+    let { results } = await mdb.index('storedEventOwners').getDocuments()
+    assert.equal(results.length, 3)
+    const { hits } = await mdb.index('pendingOps').search('', {
+      limit: 100,
+      sort: PENDING_OPS_SORT
+    })
+    assert.equal(hits.length, 1)
+    assert.equal(hits[0].type, 'pruneCheck')
+    assert.equal(hits[0].data.key, ipToPrimaryKey(staleIp))
+    assert.equal(hits[0].data.deleteOwnerWhenEmpty, true)
+    assert.equal(hits[0].data.limit, 0)
 
+    // The regular pending-op consumer completes the recoverable workflow and
+    // removes the still-inactive, empty owner atomically.
+    await processBatch(hits, await loadSystemState())
+    ;({ results } = await mdb.index('storedEventOwners').getDocuments())
     const stale = results.find(d => d.key === ipToPrimaryKey(staleIp))
     const fresh = results.find(d => d.key === ipToPrimaryKey(freshIp))
     const retained = results.find(d => d.key === ipToPrimaryKey(retainedIp))

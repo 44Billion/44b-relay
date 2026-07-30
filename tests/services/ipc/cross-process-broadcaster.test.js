@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
+import readline from 'node:readline'
 
 mock.module('#helpers/process.js', {
   namedExports: {
@@ -198,5 +200,71 @@ describe('cross-process-broadcaster', () => {
     assert.equal(await capped.broadcast({ id: 'overflow' }, { timeoutMs: 100 }), false)
     await capped.close()
     cleanupPath(overflowSocket)
+  })
+
+  it('elects exactly one leader and fails over in a real node cluster', async () => {
+    const socket = socketPath('node-cluster')
+    cleanupPath(socket)
+    const fixture = new URL('../../fixtures/ipc-cluster.js', import.meta.url)
+    const protectedJobKey = `ipcClusterJob-${process.pid}-${Date.now()}`
+    const child = spawn(process.execPath, [
+      fixture.pathname,
+      socket,
+      protectedJobKey
+    ], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_ENV: 'test' }
+    })
+    const stderr = []
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', chunk => stderr.push(chunk))
+    const lines = readline.createInterface({ input: child.stdout })
+
+    const phases = new Map()
+    const waitForPhase = phase => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(
+          `timed out waiting for cluster ${phase}: ${stderr.join('')}`
+        ))
+      }, 5000)
+      const onLine = line => {
+        let message
+        try { message = JSON.parse(line) } catch { return }
+        phases.set(message.phase, message)
+        if (message.phase !== phase) return
+        clearTimeout(timer)
+        lines.off('line', onLine)
+        resolve(message)
+      }
+      lines.on('line', onLine)
+      if (phases.has(phase)) {
+        clearTimeout(timer)
+        lines.off('line', onLine)
+        resolve(phases.get(phase))
+      }
+    })
+
+    try {
+      const initial = await waitForPhase('initial')
+      assert.equal(initial.workers.length, 2)
+      assert.equal(initial.leaders.length, 1)
+      assert.deepEqual(initial.protectedJobPids, initial.leaders)
+      child.stdin.write('failover\n')
+      const failover = await waitForPhase('failover')
+      assert.equal(failover.leaders.length, 1)
+      assert.notEqual(failover.leaders[0], initial.leaders[0])
+      assert.deepEqual(
+        new Set(failover.protectedJobPids),
+        new Set([initial.leaders[0], failover.leaders[0]])
+      )
+    } finally {
+      lines.close()
+      child.kill('SIGTERM')
+      await new Promise(resolve => {
+        if (child.exitCode !== null) resolve()
+        else child.once('exit', resolve)
+      })
+      cleanupPath(socket)
+    }
   })
 })

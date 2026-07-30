@@ -10,6 +10,8 @@ export default {
     'revision',
     'ownerId',
     'ownerType',
+    'ownerPid',
+    'continuationRequested',
     'heartbeatTolerance',
     'lastError',
     'erroedAt',

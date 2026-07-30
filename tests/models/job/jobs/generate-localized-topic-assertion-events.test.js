@@ -18,7 +18,6 @@ describe('Job: Generate Localized Topic Assertion Events', () => {
     mock.module('#services/event/maintainer/mdb/index.js', {
       namedExports: {
         queueOps: queueOpsMock,
-        pruneEvents: async () => 0,
         checkStorageLimitAndPrune: async () => ({})
       }
     })

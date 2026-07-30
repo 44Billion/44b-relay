@@ -39,6 +39,9 @@ export async function maybeEnsureRecordForJob (job) {
   if (record.startedAt === undefined) patch.startedAt = 0
   if (record.endedAt === undefined) patch.endedAt = 0
   if (record.revision === undefined) patch.revision = getRandomId()
+  if (record.continuationRequested === undefined) {
+    patch.continuationRequested = false
+  }
   if (record.heartbeatTolerance !== heartbeatTolerance) {
     patch.heartbeatTolerance = heartbeatTolerance
   }
@@ -77,6 +80,7 @@ export async function startJob (job, {
   record: expectedRecord,
   ownerId = `manual:${process.pid}:${getRandomId()}`,
   ownerType = 'manual',
+  ownerPid = process.pid,
   signal
 } = {}) {
   if (!expectedRecord) {
@@ -101,6 +105,8 @@ export async function startJob (job, {
     lockKey,
     ownerId,
     ownerType,
+    ownerPid,
+    continuationRequested: false,
     heartbeatedAt: now,
     heartbeatTolerance:
       job.heartbeatTolerance ?? DEFAULT_HEARTBEAT_TOLERANCE
@@ -184,17 +190,20 @@ export async function startJob (job, {
     unlinkSignal()
     await heartbeatPromise
 
-    // An aborted run is intentionally left as owned by the previous runner.
-    // The next IPC leader can recognize ownerId and take it immediately. Marking
-    // it as ended here would postpone that recovery until the normal frequency.
-    if (error?.name !== 'AbortError') {
-      const patch = { endedAt: Math.max(now, Math.floor(Date.now() / 1000)) }
-      if (error) {
-        patch.lastError = (error.stack || error.message || String(error)).slice(0, 1000)
-        patch.erroedAt = Math.floor(Date.now() / 1000)
-      }
-      await patchJobIfOwned(job.key, lockKey, patch)
+    const finishedAt = Math.max(now, Math.floor(Date.now() / 1000))
+    const patch = {
+      endedAt: finishedAt,
+      // A worker aborted during a graceful leadership handoff must resume
+      // immediately in the successor. Manual jobs end without being retried.
+      continuationRequested:
+        error?.name === 'AbortError' && ownerType === 'worker'
     }
+    if (error && error.name !== 'AbortError') {
+      patch.lastError = (error.stack || error.message || String(error)).slice(0, 1000)
+      patch.erroedAt = Math.floor(Date.now() / 1000)
+    }
+    // Fencing by lockKey ensures an old runner cannot finish over a successor.
+    await patchJobIfOwned(job.key, lockKey, patch)
   }
   return { started: true, error }
 }

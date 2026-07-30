@@ -1,16 +1,13 @@
 import { unpackFilter } from '#helpers/bloom.js'
 import mdb from '#services/db/mdb.js'
 import crypto from 'node:crypto'
-import { primaryKeyToIp, ipToPrimaryKey, isValidPrimaryKey } from '#helpers/mdb.js'
+import { ipToPrimaryKey, isValidPrimaryKey } from '#helpers/mdb.js'
 import { base16ToBytes } from 'libp2r2p/base16'
 import { getRelaySelfPubkey } from '#helpers/relay-self.js'
-import { eventKinds, RELAY_OWNED_KINDS } from '#constants/event.js'
+import { RELAY_OWNED_KINDS } from '#constants/event.js'
 import { PENDING_OPS_SORT } from '#models/pending-op/order.js'
-import { checkpoint } from '#helpers/abort.js'
 
 const ONE_MB = 1024 * 1024
-const EVENT_BATCH_SIZE = 20
-const ORDINARY_KIND_FILTER = [...RELAY_OWNED_KINDS].map(kind => `kind != ${kind}`).join(' AND ')
 
 export const VIP_PUBKEYS = new Set([
   getRelaySelfPubkey(),
@@ -45,12 +42,20 @@ const popularFilters = {
 let lastFilterUpdate = 0
 const FILTER_UPDATE_INTERVAL = 10 * 60 * 1000 // 10 minutes cache
 
-async function loadPopularityFilters () {
-  if (Date.now() - lastFilterUpdate < FILTER_UPDATE_INTERVAL && popularFilters[1].normal) {
+async function loadPopularityFilters ({ force = false } = {}) {
+  if (!force &&
+      Date.now() - lastFilterUpdate < FILTER_UPDATE_INTERVAL &&
+      popularFilters[1].normal) {
     return
   }
 
   try {
+    if (force) {
+      for (let level = 1; level <= 6; level++) {
+        popularFilters[level].normal = null
+        popularFilters[level].relegated = null
+      }
+    }
     const { results } = await mdb.index('popularPubkeys').getDocuments({ limit: 6 })
     if (results.length === 0) return
 
@@ -105,150 +110,21 @@ async function getStoredEntity ({ key, type }) {
   }
 }
 
-async function pruneEvents ({ ownerKey, ownerType, bytesToRemove, signal }) {
-  if (!isValidPrimaryKey(ownerKey)) throw new Error('Invalid primary key format')
-  checkpoint(signal)
-  if (ownerType === 'ip') await loadPopularityFilters()
-  else if (VIP_PUBKEYS.has(ownerKey)) return 0
-  checkpoint(signal)
-
-  let cleared = 0
-
-  // First pass: prefer deleting large IRFS chunk events. A v2 chunk belongs to
-  // exactly one root/index coordinate, so there is no legacy multi-c heuristic.
-  {
-    let chunkOffset = 0
-    const ownerFilter = ownerType === 'pubkey'
-      ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey" AND ${ORDINARY_KIND_FILTER}`
-      : `ip = ${mdb.toMeiliValue(primaryKeyToIp(ownerKey))} AND ownerType = "ip" AND ${ORDINARY_KIND_FILTER}`
-
-    while (cleared < bytesToRemove) {
-      checkpoint(signal)
-      const searchRes = await mdb.index('events').search('', {
-        filter: `${ownerFilter} AND kind = ${eventKinds.BINARY_DATA_CHUNK}`,
-        sort: ['created_at:asc'],
-        limit: EVENT_BATCH_SIZE,
-        offset: chunkOffset
-      })
-
-      if (searchRes.hits.length === 0) break
-      chunkOffset += searchRes.hits.length
-
-      const keysToDelete = []
-      let bytesInBatch = 0
-
-      for (const hit of searchRes.hits) {
-        keysToDelete.push(hit.ref)
-        bytesInBatch += (hit.byteSize || 0)
-      }
-
-      if (keysToDelete.length > 0) {
-        checkpoint(signal)
-        await mdb.index('events').deleteDocuments(keysToDelete)
-        cleared += bytesInBatch
-      }
-    }
-  }
-
-  if (cleared >= bytesToRemove) return cleared
-
-  let offset = 0
-
-  while (cleared < bytesToRemove) {
-    checkpoint(signal)
-    // Fetch oldest events
-    const filter = ownerType === 'pubkey'
-      ? `pubkey = ${mdb.toMeiliValue(ownerKey)} AND ownerType = "pubkey" AND ${ORDINARY_KIND_FILTER}`
-      : `ip = ${mdb.toMeiliValue(primaryKeyToIp(ownerKey))} AND ownerType = "ip" AND ${ORDINARY_KIND_FILTER}`
-
-    const searchRes = await mdb.index('events').search('', {
-      filter,
-      sort: ['created_at:asc'], // Delete oldest
-      limit: EVENT_BATCH_SIZE,
-      offset
-    })
-
-    if (searchRes.hits.length === 0) break
-
-    // We increase offset for the next iteration to skip the docs we are about to delete/move.
-    // This assumes Meilisearch might not reflect the changes immediately in the next search query.
-    offset += searchRes.hits.length
-
-    const hits = searchRes.hits
-    let bytesInBatch = 0
-
-    if (ownerType === 'pubkey') {
-      const keysToDelete = hits.map(h => h.ref)
-      // Clear all of the batch even if cleared >= bytesToRemove
-      // so to postpone a proosible next purging need for this same owner.
-      bytesInBatch = hits.reduce((acc, h) => acc + (h.byteSize || 0), 0)
-      checkpoint(signal)
-      await mdb.index('events').deleteDocuments(keysToDelete)
-      cleared += bytesInBatch
-    } else {
-      // Owner is IP: Check for popular pubkeys to promote/restore
-      const eventsToDelete = []
-      const eventsToPromote = {} // pubkey -> events[]
-
-      for (const event of hits) {
-        const level = getPopularityLevel(event.pubkey)
-        if (level <= 5) {
-          if (!eventsToPromote[event.pubkey]) eventsToPromote[event.pubkey] = []
-          eventsToPromote[event.pubkey].push(event)
-        } else {
-          eventsToDelete.push(event)
-        }
-      }
-
-      // Delete non-popular
-      if (eventsToDelete.length > 0) {
-        const keysToDelete = eventsToDelete.map(h => h.ref)
-        checkpoint(signal)
-        await mdb.index('events').deleteDocuments(keysToDelete)
-        const size = eventsToDelete.reduce((acc, h) => acc + (h.byteSize || 0), 0)
-        cleared += size
-      }
-
-      // Promote popular
-      for (const [pubkey, events] of Object.entries(eventsToPromote)) {
-        checkpoint(signal)
-        // 1. Count as cleared for the IP
-        const size = events.reduce((acc, h) => acc + (h.byteSize || 0), 0)
-        cleared += size
-
-        // 2. Prepare usage update for the new PK owner
-        const { ops } = await checkStorageLimitAndPrune({
-          pubkey,
-          ip: null,
-          newEventSize: size,
-          popularityLevel: getPopularityLevel(pubkey)
-        })
-
-        // 3. Queue event updates (changing ownerType to 'pubkey') atomically with usage update
-        events.forEach(ev => {
-          ops.push({
-            type: 'patchDocumentIfExists',
-            data: { index: 'events', document: { ref: ev.ref, ownerType: 'pubkey' } }
-          })
-        })
-
-        checkpoint(signal)
-        await queueOps(ops)
-      }
-    }
-  }
-  return cleared
-}
-
 const queueOps = (() => {
   async function queueOps (ops) {
     if (!ops || ops.length === 0) return
     const now = Date.now()
     const batchId = crypto.randomUUID()
-    const documents = ops.map((op, position) => {
+    // A prune reads the writes represented by its logical batch. Keep all
+    // other relative ordering intact while placing quota enforcement last.
+    const orderedOps = [
+      ...ops.filter(op => op.type !== 'pruneCheck'),
+      ...ops.filter(op => op.type === 'pruneCheck')
+    ]
+    const documents = orderedOps.map((op, position) => {
       const phase = op.phase ?? 'queued'
       return {
-        key: crypto.randomUUID(),
+        key: op.key || crypto.randomUUID(),
         type: op.type,
         data: op.data,
         batchId,
@@ -314,7 +190,14 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
     if (currentUsage + newEventSize > limit * 0.9) {
       ops.push({
         type: 'pruneCheck',
-        data: { key: ownerKey, limit, entityType: ownerType, popularityLevel }
+        data: {
+          key: ownerKey,
+          limit,
+          entityType: ownerType,
+          popularityLevel,
+          workflowVersion: 1,
+          step: 0
+        }
       })
     }
   } catch (err) {
@@ -327,7 +210,7 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
 export {
   loadPopularityFilters,
   getPopularityLevel,
-  pruneEvents,
+  getStorageLimit,
   getStoredEntity,
   queueOps
 }

@@ -7,12 +7,17 @@ import { ipToPrimaryKey } from '#helpers/mdb.js'
 import { compressAsync } from '#helpers/buffer.js'
 
 const queueOpsMock = mock.fn()
-const pruneEventsMock = mock.fn()
+const queuePruneCheckOnceMock = mock.fn()
 
 mock.module('#services/event/maintainer/mdb/index.js', {
   namedExports: {
-    queueOps: queueOpsMock,
-    pruneEvents: pruneEventsMock
+    queueOps: queueOpsMock
+  }
+})
+
+mock.module('#services/event/prune-workflow.js', {
+  namedExports: {
+    queuePruneCheckOnce: queuePruneCheckOnceMock
   }
 })
 
@@ -25,7 +30,7 @@ const {
 describe('IP Activity Tracker', () => {
   beforeEach(async () => {
     queueOpsMock.mock.resetCalls()
-    pruneEventsMock.mock.resetCalls()
+    queuePruneCheckOnceMock.mock.resetCalls()
     // Flush to clear internal state
     await flushIpActivityToMDB()
     queueOpsMock.mock.resetCalls()
@@ -67,7 +72,7 @@ describe('IP Activity Tracker', () => {
   }
 
   describe('deleteStaleIps', () => {
-    it('should delete stale IPs and call pruneEvents', async () => {
+    it('should queue recoverable pruning for stale IPs', async () => {
       const NOW = Date.now()
       const ONE_DAY = 1000 * 60 * 60 * 24
 
@@ -109,17 +114,18 @@ describe('IP Activity Tracker', () => {
       // Run
       await deleteStaleIps()
 
-      // Assert: pruneEvents called for staleIp
-      assert.equal(pruneEventsMock.mock.callCount(), 1)
-      const pruneCall = pruneEventsMock.mock.calls[0].arguments[0]
+      assert.equal(queuePruneCheckOnceMock.mock.callCount(), 1)
+      const pruneCall =
+        queuePruneCheckOnceMock.mock.calls[0].arguments[0]
       assert.equal(pruneCall.ownerKey, ipToPrimaryKey(staleIp))
       assert.equal(pruneCall.ownerType, 'ip')
+      assert.equal(pruneCall.limit, 0)
+      assert.equal(pruneCall.deleteOwnerWhenEmpty, true)
+      assert.equal(pruneCall.staleIfLastActiveAtLte, staleIpLastActive)
 
-      // Assert: staleIp document deleted
-      await assert.rejects(
-        async () => await mdb.index('storedEventOwners').getDocument(ipToPrimaryKey(staleIp)),
-        (err) => err.code === 'document_not_found' || err.cause?.code === 'document_not_found'
-      )
+      // The durable workflow, not this scanner, deletes the owner.
+      assert.ok(await mdb.index('storedEventOwners')
+        .getDocument(ipToPrimaryKey(staleIp)))
 
       // Assert: activeIp document exists
       const activeDoc = await mdb.index('storedEventOwners').getDocument(ipToPrimaryKey(activeIp))

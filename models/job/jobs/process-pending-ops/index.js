@@ -1,7 +1,6 @@
 import { Buffer } from 'buffer'
 import { ConservativeCountMin } from 'sketch-oxide-node'
 import mdb from '#services/db/mdb.js'
-import { pruneEvents } from '#services/event/maintainer/mdb/index.js'
 import { comparePendingOps, PENDING_OPS_SORT } from '#models/pending-op/order.js'
 import { HyperLogLog as HLL } from 'nostr-hll/hyperloglog.js'
 import { base16ToBytes, bytesToBase16 } from 'libp2r2p/base16'
@@ -73,7 +72,7 @@ export async function run ({ signal } = {}) {
     if (opsBuffer.length === 0) {
       try {
         const { hits: startedWorkflows } = await mdb.index('pendingOps').search('', {
-          filter: 'phase != "queued" AND (type = "upsertManifestWithReservation" OR type = "deleteEventsWithAccounting")',
+          filter: 'phase != "queued" AND (type = "upsertManifestWithReservation" OR type = "deleteEventsWithAccounting" OR type = "pruneCheck")',
           limit: 1,
           sort: ['startedAt:asc', 'createdAt:asc', 'batchId:asc', 'position:asc', 'key:asc']
         })
@@ -433,7 +432,7 @@ async function processSimpleBatch (results, systemState, { signal } = {}) {
             docsToAddOrUpdate[targetIndex].set(targetKey, doc)
           }
         }
-      } else if (opType === 'deltaUsage' || opType === 'pruneCheck') {
+      } else if (opType === 'deltaUsage') {
         targetIndex = 'storedEventOwners'
         ensureIndexInit(targetIndex)
 
@@ -450,26 +449,7 @@ async function processSimpleBatch (results, systemState, { signal } = {}) {
             doc.entityType = entityType
             if (data.popularityLevel !== undefined) doc.popularityLevel = data.popularityLevel
 
-            if (opType === 'deltaUsage') {
-              doc.usedBytes = (doc.usedBytes || 0) + (data.delta || 0)
-            } else if (opType === 'pruneCheck') {
-              const limit = data.limit || 0
-              if (doc.usedBytes > limit) {
-                checkpoint(signal)
-                // Side Effect: Pruning (Direct DB Deletes)
-                // Note: `pruneEvents` performs direct deletes on 'events' index.
-                // This is "out of band" of our transaction buffer.
-                // But since `events` index deletes happen immediately, it's fine.
-                // We just assume they succeed.
-                const cleared = await pruneEvents({
-                  ownerKey: targetKey,
-                  ownerType: entityType,
-                  bytesToRemove: doc.usedBytes - limit,
-                  signal
-                })
-                doc.usedBytes = Math.max(0, doc.usedBytes - cleared)
-              }
-            }
+            doc.usedBytes = (doc.usedBytes || 0) + (data.delta || 0)
             docsToAddOrUpdate[targetIndex].set(targetKey, doc)
           }
         }

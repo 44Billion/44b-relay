@@ -424,7 +424,10 @@ function createBroadcaster ({
       if (!shuttingDown) scheduleReconnect()
     })
 
-    candidate.listen(socketPath, () => {
+    // PM2 cluster mode uses node:cluster. Without `exclusive`, Node may hand
+    // the same listening handle to multiple workers and every one of them
+    // would believe it owns the Unix socket (and therefore job leadership).
+    candidate.listen({ path: socketPath, exclusive: true }, () => {
       serverStarting = false
       if (shuttingDown) {
         unrefHandle(candidate, 'candidate IPC server')
