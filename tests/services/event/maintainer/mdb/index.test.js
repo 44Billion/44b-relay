@@ -174,6 +174,8 @@ describe('Event Maintainer (MDB)', () => {
       const pruneOp = result.ops.find(o => o.type === 'pruneCheck')
       assert.ok(pruneOp, 'Should generate pruneCheck op')
       assert.equal(pruneOp.data.limit, limit)
+      assert.equal(pruneOp.data.targetBytes, Math.floor(limit * 0.9))
+      assert.equal(pruneOp.data.workflowVersion, 2)
       assert.equal(pruneOp.data.key, pubkey)
     })
 

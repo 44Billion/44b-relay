@@ -418,5 +418,6 @@ export async function processPendingWorkflow (op, { signal } = {}) {
     // Preserve the queue's existing policy: malformed/non-transient operations
     // are consumed so one bad item cannot block all later work.
     await deletePendingOp(op.key)
+    return { consumedAfterError: true }
   }
 }

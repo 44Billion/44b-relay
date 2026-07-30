@@ -6,6 +6,10 @@ import { base16ToBytes } from 'libp2r2p/base16'
 import { getRelaySelfPubkey } from '#helpers/relay-self.js'
 import { RELAY_OWNED_KINDS } from '#constants/event.js'
 import { PENDING_OPS_SORT } from '#models/pending-op/order.js'
+import {
+  getPruneTargetBytes,
+  PRUNE_WORKFLOW_VERSION
+} from '#services/event/prune-policy.js'
 
 const ONE_MB = 1024 * 1024
 
@@ -193,9 +197,10 @@ export async function checkStorageLimitAndPrune ({ pubkey, ip, newEventSize, pop
         data: {
           key: ownerKey,
           limit,
+          targetBytes: getPruneTargetBytes(limit),
           entityType: ownerType,
           popularityLevel,
-          workflowVersion: 1,
+          workflowVersion: PRUNE_WORKFLOW_VERSION,
           step: 0
         }
       })

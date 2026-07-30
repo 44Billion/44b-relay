@@ -10,9 +10,11 @@ import {
   queueOps
 } from '#services/event/maintainer/mdb/index.js'
 import {
+  getPruneCheckCoalescingKey,
   PRUNE_WORKFLOW_VERSION,
   queuePruneCheckOnce
 } from '#services/event/prune-workflow.js'
+import { getPruneTargetBytes } from '#services/event/prune-policy.js'
 import { FastBloomFilter, packFilter } from '#helpers/bloom.js'
 import { base16ToBytes } from 'libp2r2p/base16'
 import { ipToPrimaryKey } from '#helpers/mdb.js'
@@ -53,6 +55,7 @@ function pruneOp ({
       key: ownerKey,
       entityType: ownerType,
       limit,
+      targetBytes: getPruneTargetBytes(limit),
       workflowVersion: PRUNE_WORKFLOW_VERSION,
       step: 0,
       ...data
@@ -80,6 +83,16 @@ async function seedOwner ({
 async function markPopular (author, level = 1) {
   const filter = await FastBloomFilter.createOptimal(10, 0.001)
   filter.add(base16ToBytes(author))
+  await mdb.index('popularPubkeys').addDocuments([{
+    key: String(level),
+    filter: await packFilter(filter)
+  }])
+  await loadPopularityFilters({ force: true })
+}
+
+async function markPopularMany (authors, level = 1) {
+  const filter = await FastBloomFilter.createOptimal(authors.length * 2, 0.001)
+  for (const author of authors) filter.add(base16ToBytes(author))
   await mdb.index('popularPubkeys').addDocuments([{
     key: String(level),
     filter: await packFilter(filter)
@@ -116,8 +129,65 @@ describe('durable owner pruning', () => {
 
     await assert.rejects(mdb.index('events').getDocument('ordinary'))
     const owner = await mdb.index('storedEventOwners').getDocument(pubkey)
-    assert.equal(owner.usedBytes, 300)
+    assert.equal(owner.usedBytes, 0)
     assert.deepEqual(owner.accountingTokens, [])
+  })
+
+  it('does not start destructive pruning from a preventive 90% marker', async () => {
+    await seedOwner({ usedBytes: 950 })
+    await mdb.index('events').addDocuments([{
+      ref: 'preventive-marker',
+      id: 'preventive-marker-id',
+      pubkey,
+      ownerType: 'pubkey',
+      kind: 1,
+      byteSize: 950,
+      created_at: 1
+    }])
+    await mdb.index('pendingOps').addDocuments([
+      pruneOp({ key: 'preventive-prune', limit: 1000 })
+    ])
+
+    await processAllPending()
+
+    assert.equal(
+      (await mdb.index('events').getDocument('preventive-marker')).id,
+      'preventive-marker-id'
+    )
+    assert.equal(
+      (await mdb.index('storedEventOwners').getDocument(pubkey)).usedBytes,
+      950
+    )
+  })
+
+  it('uses the 90% target for a v1 check without targetBytes', async () => {
+    const events = Array.from({ length: 101 }, (_, index) => ({
+      ref: `v1-target-${index}`,
+      id: `v1-target-id-${index}`,
+      pubkey,
+      ownerType: 'pubkey',
+      kind: 1,
+      byteSize: 1,
+      created_at: index
+    }))
+    await seedOwner({ usedBytes: events.length })
+    await mdb.index('events').addDocuments(events)
+    const legacyV1 = pruneOp({ key: 'v1-target-prune', limit: 100 })
+    legacyV1.data.workflowVersion = 1
+    delete legacyV1.data.targetBytes
+    await mdb.index('pendingOps').addDocuments([legacyV1])
+
+    await processAllPending()
+
+    await assert.rejects(mdb.index('events').getDocument('v1-target-0'))
+    assert.equal(
+      (await mdb.index('events').getDocument('v1-target-100')).id,
+      'v1-target-id-100'
+    )
+    assert.equal(
+      (await mdb.index('storedEventOwners').getDocument(pubkey)).usedBytes,
+      1
+    )
   })
 
   it('deletes binary chunks before older ordinary events', async () => {
@@ -153,7 +223,7 @@ describe('durable owner pruning', () => {
       }
     ])
     await mdb.index('pendingOps').addDocuments([
-      pruneOp({ limit: 100 })
+      pruneOp({ limit: 112 })
     ])
 
     await processAllPending()
@@ -180,7 +250,7 @@ describe('durable owner pruning', () => {
     await seedOwner({ usedBytes: events.length })
     await mdb.index('events').addDocuments(events)
     await mdb.index('pendingOps').addDocuments([
-      pruneOp({ key: 'ordered-prune', limit: 1 })
+      pruneOp({ key: 'ordered-prune', limit: 2 })
     ])
 
     await processAllPending()
@@ -243,7 +313,7 @@ describe('durable owner pruning', () => {
     await processAllPending()
     assert.equal(
       (await mdb.index('storedEventOwners').getDocument(pubkey)).usedBytes,
-      300
+      0
     )
   })
 
@@ -271,7 +341,9 @@ describe('durable owner pruning', () => {
       'updateDocumentsByFunction',
       async options => {
         const result = await originalEdit(options)
-        if (!failed && options.context?.token) {
+        if (!failed &&
+            options.context?.entries &&
+            options.function.includes('next_bytes')) {
           failed = true
           throw new TypeError('simulated accounting acknowledgement loss')
         }
@@ -299,7 +371,7 @@ describe('durable owner pruning', () => {
 
     await processAllPending()
     owner = await ownerIndex.getDocument(pubkey)
-    assert.equal(owner.usedBytes, 300)
+    assert.equal(owner.usedBytes, 0)
     assert.deepEqual(owner.accountingTokens, [])
   })
 
@@ -349,7 +421,7 @@ describe('durable owner pruning', () => {
     assert.deepEqual(destination.accountingTokens, [])
   })
 
-  it('resumes a promotion after only the source accounting was applied', async () => {
+  it('does not repeat grouped promotion accounting after acknowledgement loss', async () => {
     const author = '6'.repeat(64)
     const ip = '198.51.100.11'
     const ownerKey = ipToPrimaryKey(ip)
@@ -396,7 +468,8 @@ describe('durable owner pruning', () => {
       async options => {
         const result = await originalEdit(options)
         if (!interrupted &&
-            options.context?.token?.endsWith(`:${ownerKey}`)) {
+            options.context?.entries &&
+            options.function.includes('next_bytes')) {
           interrupted = true
           throw new TypeError('simulated source accounting interruption')
         }
@@ -418,7 +491,7 @@ describe('durable owner pruning', () => {
       (await ownerIndex.getDocument(ownerKey)).usedBytes,
       0
     )
-    assert.equal((await ownerIndex.getDocument(author)).usedBytes, 0)
+    assert.equal((await ownerIndex.getDocument(author)).usedBytes, 200)
     assert.equal(
       (await mdb.index('pendingOps').getDocument(op.key)).phase,
       'events_applied'
@@ -434,6 +507,150 @@ describe('durable owner pruning', () => {
     )
     assert.deepEqual(
       (await ownerIndex.getDocument(author)).accountingTokens,
+      []
+    )
+  })
+
+  it('resumes a partially applied v1 owner transfer without double subtraction', async () => {
+    const author = '8'.repeat(64)
+    const ip = '198.51.100.13'
+    const ownerKey = ipToPrimaryKey(ip)
+    const effectKey = 'partial-v1-transfer:0'
+    await seedOwner({
+      key: ownerKey,
+      entityType: 'ip',
+      usedBytes: 0,
+      lastActiveAt: 1
+    })
+    await mdb.index('storedEventOwners').updateDocuments([{
+      key: ownerKey,
+      accountingTokens: [`${effectKey}:${ownerKey}`]
+    }])
+    await mdb.index('events').addDocuments([{
+      ref: 'partial-v1-event',
+      id: 'partial-v1-event-id',
+      pubkey: author,
+      ip,
+      ownerType: 'pubkey',
+      popularityLevel: 1,
+      kind: 1,
+      byteSize: 200,
+      created_at: 1
+    }])
+    const action = {
+      ref: 'partial-v1-event',
+      id: 'partial-v1-event-id',
+      kind: 1,
+      pubkey: author,
+      byteSize: 200,
+      ownerKey,
+      ownerType: 'ip',
+      action: 'promote',
+      destinationOwnerKey: author,
+      destinationPopularityLevel: 1
+    }
+    await mdb.index('pendingOps').addDocuments([{
+      ...pruneOp({
+        key: 'partial-v1-transfer',
+        ownerKey,
+        ownerType: 'ip',
+        limit: 0,
+        data: {
+          workflowVersion: 1,
+          effectKey,
+          actions: [action],
+          applied: [action]
+        }
+      }),
+      phase: 'events_applied',
+      startedAt: 1
+    }])
+
+    await processAllPending()
+
+    const source = await mdb.index('storedEventOwners').getDocument(ownerKey)
+    const destination =
+      await mdb.index('storedEventOwners').getDocument(author)
+    assert.equal(source.usedBytes, 0)
+    assert.deepEqual(source.accountingTokens, [])
+    assert.equal(destination.usedBytes, 200)
+    assert.deepEqual(destination.accountingTokens, [])
+  })
+
+  it('reuses the destination check after token-cleanup acknowledgement loss', async () => {
+    const author = 'a'.repeat(64)
+    const ip = '198.51.100.16'
+    const ownerKey = ipToPrimaryKey(ip)
+    await markPopular(author)
+    await seedOwner({
+      key: ownerKey,
+      entityType: 'ip',
+      usedBytes: 200,
+      lastActiveAt: 1
+    })
+    await mdb.index('events').addDocuments([{
+      ref: 'cleanup-ack-promotion',
+      id: 'cleanup-ack-promotion-id',
+      pubkey: author,
+      ip,
+      ownerType: 'ip',
+      kind: 1,
+      byteSize: 200,
+      created_at: 1
+    }])
+    const op = pruneOp({
+      key: 'cleanup-ack-prune',
+      ownerKey,
+      ownerType: 'ip',
+      limit: 0
+    })
+    await mdb.index('pendingOps').addDocuments([op])
+
+    const ownerIndex = mdb.index('storedEventOwners')
+    const originalEdit =
+      ownerIndex.updateDocumentsByFunction.bind(ownerIndex)
+    let interrupted = false
+    const editMock = mock.method(
+      ownerIndex,
+      'updateDocumentsByFunction',
+      async options => {
+        const result = await originalEdit(options)
+        if (!interrupted && options.function.includes('let remaining')) {
+          interrupted = true
+          throw new TypeError('simulated cleanup acknowledgement loss')
+        }
+        return result
+      }
+    )
+    const errorMock = mock.method(console, 'error', () => {})
+    try {
+      await assert.rejects(
+        processBatch([op], await loadSystemState()),
+        /simulated cleanup acknowledgement loss/
+      )
+    } finally {
+      editMock.mock.restore()
+      errorMock.mock.restore()
+    }
+
+    const afterFailure = await pendingOps()
+    assert.equal(afterFailure.filter(pending =>
+      pending.source === 'prunePromotion'
+    ).length, 1)
+    assert.equal(
+      (await mdb.index('pendingOps').getDocument(op.key)).phase,
+      'accounting_applied'
+    )
+
+    await processAllPending()
+
+    assert.equal(
+      (await mdb.index('storedEventOwners').getDocument(author)).usedBytes,
+      200
+    )
+    assert.deepEqual(
+      (await mdb.index('storedEventOwners').getDocument(author))
+        .accountingTokens,
       []
     )
   })
@@ -485,6 +702,102 @@ describe('durable owner pruning', () => {
     assert.equal(remaining[0].data.key, author)
     assert.equal(remaining[0].data.entityType, 'pubkey')
     assert.equal(remaining[0].data.limit, 500 * ONE_MB)
+    assert.equal(remaining[0].data.resolveLimitFromOwner, true)
+    assert.equal(remaining[0].data.targetBytes, 450 * ONE_MB)
+  })
+
+  it('resolves a promoted destination limit from its current popularity', async () => {
+    const ONE_MB = 1024 * 1024
+    const author = '9'.repeat(64)
+    await seedOwner({
+      key: author,
+      entityType: 'pubkey',
+      usedBytes: 30 * ONE_MB,
+      popularityLevel: 5
+    })
+    await mdb.index('events').addDocuments([{
+      ref: 'changed-popularity',
+      id: 'changed-popularity-id',
+      pubkey: author,
+      ownerType: 'pubkey',
+      popularityLevel: 5,
+      kind: 1,
+      byteSize: 30 * ONE_MB,
+      created_at: 1
+    }])
+    await queuePruneCheckOnce({
+      ownerKey: author,
+      ownerType: 'pubkey',
+      limit: 500 * ONE_MB,
+      popularityLevel: 1,
+      source: 'prunePromotion',
+      dedupeScope: 'prune-promotion-destination',
+      resolveLimitFromOwner: true
+    })
+
+    await processAllPending()
+
+    await assert.rejects(
+      mdb.index('events').getDocument('changed-popularity')
+    )
+    assert.equal(
+      (await mdb.index('storedEventOwners').getDocument(author)).usedBytes,
+      0
+    )
+  })
+
+  it('promotes 100 events and queues all distinct destinations in one step', async () => {
+    const ip = '198.51.100.15'
+    const ownerKey = ipToPrimaryKey(ip)
+    const authors = Array.from(
+      { length: 100 },
+      (_, index) => (index + 100).toString(16).padStart(64, '0')
+    )
+    await markPopularMany(authors)
+    await seedOwner({
+      key: ownerKey,
+      entityType: 'ip',
+      usedBytes: authors.length,
+      lastActiveAt: 1
+    })
+    await mdb.index('events').addDocuments(
+      authors.map((author, index) => ({
+        ref: `hundred-promotions-${index}`,
+        id: `hundred-promotions-id-${index}`,
+        pubkey: author,
+        ip,
+        ownerType: 'ip',
+        kind: 1,
+        byteSize: 1,
+        created_at: index
+      }))
+    )
+    const op = pruneOp({
+      key: 'hundred-promotions-prune',
+      ownerKey,
+      ownerType: 'ip',
+      limit: 0
+    })
+    await mdb.index('pendingOps').addDocuments([op])
+
+    await processBatch([op], await loadSystemState())
+
+    assert.equal(
+      (await mdb.index('events').getDocument('hundred-promotions-0'))
+        .ownerType,
+      'pubkey'
+    )
+    assert.equal(
+      (await mdb.index('events').getDocument('hundred-promotions-99'))
+        .ownerType,
+      'pubkey'
+    )
+    assert.equal(
+      (await pendingOps()).filter(pending =>
+        pending.source === 'prunePromotion'
+      ).length,
+      authors.length
+    )
   })
 
   it('handles multiple prune checks for the same owner without double accounting', async () => {
@@ -516,7 +829,133 @@ describe('durable owner pruning', () => {
     assert.deepEqual(owner.accountingTokens, [])
   })
 
-  it('defers a legacy check once so its later event write can land', async () => {
+  it('coalesces only queued prune checks with identical semantics', () => {
+    const first = pruneOp({ key: 'coalesce-a', limit: 100 })
+    const duplicate = pruneOp({ key: 'coalesce-b', limit: 100 })
+    const differentLimit = pruneOp({ key: 'coalesce-c', limit: 101 })
+    const active = {
+      ...pruneOp({ key: 'coalesce-d', limit: 100 }),
+      phase: 'prepared'
+    }
+
+    assert.equal(
+      getPruneCheckCoalescingKey(first),
+      getPruneCheckCoalescingKey(duplicate)
+    )
+    assert.notEqual(
+      getPruneCheckCoalescingKey(first),
+      getPruneCheckCoalescingKey(differentLimit)
+    )
+    assert.equal(getPruneCheckCoalescingKey(active), null)
+  })
+
+  it('processes at most one prune step per owner in a batch', async () => {
+    await seedOwner({ usedBytes: 100 })
+    await mdb.index('events').addDocuments([{
+      ref: 'single-owner-step',
+      id: 'single-owner-step-id',
+      pubkey,
+      ownerType: 'pubkey',
+      kind: 1,
+      byteSize: 100,
+      created_at: 1
+    }])
+    const first = pruneOp({ key: 'single-owner-first', limit: 0 })
+    const second = {
+      ...pruneOp({ key: 'single-owner-second', limit: 1 }),
+      position: 1
+    }
+    await mdb.index('pendingOps').addDocuments([first, second])
+
+    await processBatch(await pendingOps(), await loadSystemState())
+
+    await assert.rejects(mdb.index('pendingOps').getDocument(first.key))
+    assert.equal(
+      (await mdb.index('pendingOps').getDocument(second.key)).phase,
+      'queued'
+    )
+  })
+
+  it('uses at most 12 Meilisearch mutations for a mixed 100-event step', async () => {
+    const ip = '198.51.100.14'
+    const ownerKey = ipToPrimaryKey(ip)
+    const popularAuthors = Array.from(
+      { length: 50 },
+      (_, index) => (index + 10).toString(16).padStart(64, '0')
+    )
+    await markPopularMany(popularAuthors)
+    await seedOwner({
+      key: ownerKey,
+      entityType: 'ip',
+      usedBytes: 100,
+      lastActiveAt: 1
+    })
+    await mdb.index('events').addDocuments([
+      ...popularAuthors.map((author, index) => ({
+        ref: `batched-promotion-${index}`,
+        id: `batched-promotion-id-${index}`,
+        pubkey: author,
+        ip,
+        ownerType: 'ip',
+        kind: 1,
+        byteSize: 1,
+        created_at: index
+      })),
+      ...Array.from({ length: 50 }, (_, index) => ({
+        ref: `batched-deletion-${index}`,
+        id: `batched-deletion-id-${index}`,
+        pubkey: 'f'.repeat(64),
+        ip,
+        ownerType: 'ip',
+        kind: 1,
+        byteSize: 1,
+        created_at: index + 50
+      }))
+    ])
+    const op = pruneOp({
+      key: 'batched-mixed-prune',
+      ownerKey,
+      ownerType: 'ip',
+      limit: 0
+    })
+    await mdb.index('pendingOps').addDocuments([op])
+
+    let mutationCount = 0
+    const mutationMocks = []
+    for (const indexName of ['events', 'storedEventOwners', 'pendingOps']) {
+      const index = mdb.index(indexName)
+      for (const method of [
+        'addDocuments',
+        'updateDocuments',
+        'deleteDocuments',
+        'deleteDocument',
+        'updateDocumentsByFunction'
+      ]) {
+        const original = index[method].bind(index)
+        mutationMocks.push(mock.method(index, method, (...args) => {
+          mutationCount++
+          return original(...args)
+        }))
+      }
+    }
+    try {
+      await processBatch([op], await loadSystemState())
+    } finally {
+      for (const mutationMock of mutationMocks) mutationMock.mock.restore()
+    }
+
+    assert.ok(
+      mutationCount <= 12,
+      `expected at most 12 mutations, received ${mutationCount}`
+    )
+    const remaining = await pendingOps()
+    assert.equal(
+      remaining.filter(pending => pending.source === 'prunePromotion').length,
+      popularAuthors.length
+    )
+  })
+
+  it('applies simple writes before a legacy check in the same segment', async () => {
     const ownerKey = 'legacy-owner'
     await seedOwner({ key: ownerKey, usedBytes: 100 })
     const legacy = pruneOp({
@@ -551,17 +990,7 @@ describe('durable owner pruning', () => {
 
     await processBatch(await pendingOps(), await loadSystemState())
 
-    assert.equal(
-      (await mdb.index('pendingOps').getDocument(legacy.key))
-        .data.legacyDeferred,
-      true
-    )
-    assert.equal(
-      (await mdb.index('events').getDocument('legacy-event')).id,
-      'legacy-event-id'
-    )
-
-    await processAllPending()
+    await assert.rejects(mdb.index('pendingOps').getDocument(legacy.key))
     await assert.rejects(mdb.index('events').getDocument('legacy-event'))
     assert.equal(
       (await mdb.index('storedEventOwners').getDocument(ownerKey)).usedBytes,

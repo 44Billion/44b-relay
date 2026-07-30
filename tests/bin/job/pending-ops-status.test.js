@@ -29,13 +29,14 @@ describe('pendingOps status', () => {
     )
   })
 
-  it('collects exact depth, phases and oldest operations without data', async () => {
+  it('collects exact depth, phases and workflow step without full data', async () => {
     const calls = []
     const client = makeClient([{
       count: 3,
       phases: { queued: 2, prepared: 1 },
       oldest: makeOp({
         key: 'oldest',
+        step: 7,
         createdAt: Date.parse('2026-07-30T12:00:00.000Z')
       }),
       workflow: makeOp({
@@ -54,12 +55,16 @@ describe('pendingOps status', () => {
     assert.equal(snapshot.count, 3)
     assert.deepEqual(snapshot.phases, { prepared: 1, queued: 2 })
     assert.equal(snapshot.oldest.key, 'oldest')
+    assert.equal(snapshot.oldest.step, 7)
     assert.equal(snapshot.oldest.queuedForMs, 60_000)
     assert.equal(snapshot.oldestStartedWorkflow.key, 'workflow')
     assert.equal(snapshot.oldestStartedWorkflow.startedForMs, 40_000)
     assert.equal(calls.some(call =>
       call.options.attributesToRetrieve.includes('data')
     ), false)
+    assert.equal(calls.every(call =>
+      call.options.attributesToRetrieve.includes('data.step')
+    ), true)
     assert.ok(calls.some(call => call.options.filter))
   })
 
@@ -112,6 +117,47 @@ describe('pendingOps status', () => {
     assert.ok(analysis.nextSteps.some(step =>
       step.includes('blocked') && step.includes('before resetting')
     ))
+  })
+
+  it('recognizes phase or step changes as progress for the same head', () => {
+    const analysis = analyzeSnapshots([
+      makeSnapshot({
+        checkedAt: '2026-07-30T12:00:00.000Z',
+        count: 8,
+        oldest: operationSummary('advancing', 120_000, {
+          type: 'pruneCheck',
+          step: 6
+        })
+      }),
+      makeSnapshot({
+        checkedAt: '2026-07-30T12:02:00.000Z',
+        count: 12,
+        oldest: operationSummary('advancing', 240_000, {
+          type: 'pruneCheck',
+          phase: 'prepared',
+          step: 7
+        }),
+        oldestStartedWorkflow: {
+          ...operationSummary('advancing', 240_000, {
+            type: 'pruneCheck',
+            phase: 'prepared',
+            step: 7
+          }),
+          startedForMs: 360_000
+        }
+      })
+    ])
+
+    assert.equal(analysis.status, 'warning')
+    assert.equal(analysis.trend.sameOldestThroughout, true)
+    assert.equal(analysis.trend.headProgressChanges, 1)
+    assert.ok(analysis.findings.some(finding =>
+      finding.code === 'trend' &&
+      finding.message.includes('advanced phase or step')
+    ))
+    assert.equal(analysis.nextSteps.some(step =>
+      step.includes('before resetting')
+    ), false)
   })
 
   it('flags an old started workflow because it is processed with priority', () => {
@@ -214,22 +260,29 @@ function makeOp ({
   type = 'patchDocumentIfExists',
   phase = 'queued',
   createdAt = 0,
-  startedAt
+  startedAt,
+  step
 } = {}) {
   return {
     key,
     type,
     phase,
     createdAt,
+    ...(step === undefined ? {} : { data: { step } }),
     ...(startedAt === undefined ? {} : { startedAt })
   }
 }
 
-function operationSummary (key, queuedForMs) {
+function operationSummary (key, queuedForMs, {
+  type = 'patchDocumentIfExists',
+  phase = 'queued',
+  step = null
+} = {}) {
   return {
     key,
-    type: 'patchDocumentIfExists',
-    phase: 'queued',
+    type,
+    phase,
+    step,
     queuedForMs,
     startedForMs: null
   }

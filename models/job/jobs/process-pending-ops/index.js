@@ -10,6 +10,7 @@ import { wait } from '#helpers/timer.js'
 import { compressAsync, decompressAsync } from '#helpers/buffer.js'
 import { eventKinds } from '#constants/event.js'
 import { isPendingWorkflow, processPendingWorkflow } from '#services/event/pending-workflows.js'
+import { getPruneCheckCoalescingKey } from '#services/event/prune-workflow.js'
 
 const BATCH_SIZE = 100
 const MAX_FILL_ATTEMPTS = 2
@@ -563,24 +564,66 @@ async function processSimpleBatch (results, systemState, { signal } = {}) {
 
 export async function processBatch (results, systemState, { signal } = {}) {
   results = [...results].sort(comparePendingOps)
-  let simpleOps = []
-  const flushSimpleOps = async () => {
-    if (!simpleOps.length) return
+  let segment = []
+  const processedPruneOwners = new Set()
+  const flushSegment = async () => {
+    if (!segment.length) return
     checkpoint(signal)
-    await processSimpleBatch(simpleOps, systemState, { signal })
-    simpleOps = []
+    const simpleOps = segment.filter(op =>
+      !(op.type === 'pruneCheck' && (op.phase || 'queued') === 'queued')
+    )
+    if (simpleOps.length) {
+      await processSimpleBatch(simpleOps, systemState, { signal })
+    }
+
+    const groups = new Map()
+    for (const op of segment) {
+      if (op.type !== 'pruneCheck' ||
+          (op.phase || 'queued') !== 'queued') {
+        continue
+      }
+      const semanticKey = getPruneCheckCoalescingKey(op)
+      const groupKey = semanticKey || Symbol(op.key)
+      const group = groups.get(groupKey) || []
+      group.push(op)
+      groups.set(groupKey, group)
+    }
+
+    const redundantKeys = []
+    for (const group of groups.values()) {
+      checkpoint(signal)
+      const ownerKey = group[0].data?.key
+      if (ownerKey && processedPruneOwners.has(ownerKey)) continue
+      if (ownerKey) processedPruneOwners.add(ownerKey)
+      const result = await processPendingWorkflow(group[0], { signal })
+      if (!result?.consumedAfterError && group.length > 1) {
+        redundantKeys.push(...group.slice(1).map(op => op.key))
+      }
+    }
+    if (redundantKeys.length) {
+      checkpoint(signal)
+      await mdb.index('pendingOps').deleteDocuments(redundantKeys)
+    }
+    segment = []
   }
 
   for (const op of results) {
     checkpoint(signal)
-    if (!isPendingWorkflow(op)) {
-      simpleOps.push(op)
+    const isQueuedPrune = op.type === 'pruneCheck' &&
+      (op.phase || 'queued') === 'queued'
+    if (!isPendingWorkflow(op) || isQueuedPrune) {
+      segment.push(op)
       continue
     }
-    await flushSimpleOps()
+    await flushSegment()
+    if (op.type === 'pruneCheck') {
+      const ownerKey = op.data?.key
+      if (ownerKey && processedPruneOwners.has(ownerKey)) continue
+      if (ownerKey) processedPruneOwners.add(ownerKey)
+    }
     await processPendingWorkflow(op, { signal })
   }
-  await flushSimpleOps()
+  await flushSegment()
 }
 
 export default {

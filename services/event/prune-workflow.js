@@ -17,9 +17,15 @@ import {
   applyStoredUsageDeltasOnce,
   clearStoredUsageDeltaTokens
 } from '#services/event/stored-owner-accounting.js'
+import {
+  getPruneTargetBytes,
+  PRUNE_WORKFLOW_VERSION
+} from '#services/event/prune-policy.js'
 
-export const PRUNE_WORKFLOW_VERSION = 1
+export { PRUNE_WORKFLOW_VERSION }
 export const PRUNE_BATCH_SIZE = 100
+const LEGACY_ORDERING_VERSION = 1
+const DESTINATION_LOOKUP_CONCURRENCY = 16
 
 const ORDINARY_KIND_FILTER = [...RELAY_OWNED_KINDS]
   .map(kind => `kind != ${kind}`)
@@ -33,15 +39,6 @@ function isNotFound (error) {
 async function getOwner (ownerKey) {
   try {
     return await mdb.index('storedEventOwners').getDocument(ownerKey)
-  } catch (error) {
-    if (isNotFound(error)) return null
-    throw error
-  }
-}
-
-async function getEvent (ref) {
-  try {
-    return await mdb.index('events').getDocument(ref)
   } catch (error) {
     if (isNotFound(error)) return null
     throw error
@@ -79,6 +76,60 @@ function workflowBaseData (data) {
     ...base
   } = data || {}
   return base
+}
+
+function normalizeTargetBytes (data, limit) {
+  if (data?.targetBytes === undefined) return getPruneTargetBytes(limit)
+  if (!Number.isFinite(data.targetBytes) || data.targetBytes < 0) {
+    throw new TypeError('Invalid pruneCheck targetBytes')
+  }
+  return Math.min(limit, data.targetBytes)
+}
+
+function resolvePrunePolicy (data, owner) {
+  const dynamicLimit = data.resolveLimitFromOwner === true
+  const limit = dynamicLimit
+    ? getStorageLimit(owner?.popularityLevel)
+    : Math.max(0, data.limit)
+  return {
+    limit,
+    targetBytes: dynamicLimit
+      ? getPruneTargetBytes(limit)
+      : normalizeTargetBytes(data, limit),
+    pruningStarted: data.pruningStarted === true ||
+      (Number.isSafeInteger(data.step) && data.step > 0)
+  }
+}
+
+export function getPruneCheckCoalescingKey (op) {
+  const data = op?.data
+  if (op?.type !== 'pruneCheck' ||
+      (op.phase || 'queued') !== 'queued' ||
+      !isValidPrimaryKey(data?.key) ||
+      !['ip', 'pubkey'].includes(data?.entityType) ||
+      !Number.isFinite(data?.limit) ||
+      data.limit < 0 ||
+      (data.targetBytes !== undefined &&
+        (!Number.isFinite(data.targetBytes) || data.targetBytes < 0))) {
+    return null
+  }
+
+  const limit = Math.max(0, data.limit)
+  const targetBytes = data.resolveLimitFromOwner === true
+    ? 'current'
+    : normalizeTargetBytes(data, limit)
+  const staleCutoff = Number.isFinite(data.staleIfLastActiveAtLte)
+    ? data.staleIfLastActiveAtLte
+    : null
+  return JSON.stringify([
+    data.key,
+    data.entityType,
+    limit,
+    targetBytes,
+    data.resolveLimitFromOwner === true,
+    data.deleteOwnerWhenEmpty === true,
+    staleCutoff
+  ])
 }
 
 function isStillStale (owner, data) {
@@ -168,40 +219,61 @@ async function selectActions ({ ownerKey, ownerType, signal }) {
   })
 }
 
+function actionIdentityFilter (actions, extra = '') {
+  return actions
+    .map(action => (
+      `(ref = ${mdb.toMeiliValue(action.ref)} AND ` +
+      `id = ${mdb.toMeiliValue(action.id)}${extra})`
+    ))
+    .join(' OR ')
+}
+
 async function applyActions (actions, { signal } = {}) {
   const deletions = actions.filter(action => action.action === 'delete')
+  const promotions = actions.filter(action => action.action === 'promote')
+  const mutations = []
+  checkpoint(signal)
   if (deletions.length) {
-    checkpoint(signal)
-    const filter = deletions
-      .map(event => (
-        `(ref = ${mdb.toMeiliValue(event.ref)} AND ` +
-        `id = ${mdb.toMeiliValue(event.id)})`
-      ))
-      .join(' OR ')
-    await mdb.index('events').deleteDocuments({ filter })
-  }
-
-  const promotions = []
-  for (const action of actions.filter(action => action.action === 'promote')) {
-    checkpoint(signal)
-    const current = await getEvent(action.ref)
-    if (current?.id === action.id && current.ownerType === 'ip') {
-      promotions.push({
-        ref: action.ref,
-        ownerType: 'pubkey',
-        popularityLevel: action.destinationPopularityLevel
-      })
-    }
+    mutations.push(mdb.index('events').deleteDocuments({
+      filter: actionIdentityFilter(deletions)
+    }))
   }
   if (promotions.length) {
-    checkpoint(signal)
-    await mdb.index('events').updateDocuments(promotions)
+    mutations.push(mdb.index('events').updateDocumentsByFunction({
+      function: `
+        for action in context.actions {
+          if doc.ref == action.ref &&
+             doc.id == action.id &&
+             doc.ownerType == "ip" {
+            doc.ownerType = "pubkey";
+            doc.popularityLevel = action.popularityLevel;
+          }
+        }
+        doc
+      `,
+      filter: actionIdentityFilter(promotions, ' AND ownerType = "ip"'),
+      context: {
+        actions: promotions.map(action => ({
+          ref: action.ref,
+          id: action.id,
+          popularityLevel: action.destinationPopularityLevel
+        }))
+      }
+    }))
   }
+  await Promise.all(mutations)
 
+  checkpoint(signal)
+  const refs = [...new Set(actions.map(action => action.ref))]
+  const { results } = await mdb.index('events').getDocuments({
+    filter: `ref IN [${refs.map(ref => mdb.toMeiliValue(ref)).join(', ')}]`,
+    fields: ['ref', 'id', 'ownerType', 'popularityLevel'],
+    limit: refs.length
+  })
+  const currentByRef = new Map(results.map(event => [event.ref, event]))
   const applied = []
   for (const action of actions) {
-    checkpoint(signal)
-    const current = await getEvent(action.ref)
+    const current = currentByRef.get(action.ref)
     if (action.action === 'delete') {
       if (current?.id === action.id) {
         throw new Error(`Prune deletion was not applied for ${action.ref}`)
@@ -216,7 +288,8 @@ async function applyActions (actions, { signal } = {}) {
       applied.push({ ...action, action: 'delete' })
       continue
     }
-    if (current.ownerType !== 'pubkey') {
+    if (current.ownerType !== 'pubkey' ||
+        current.popularityLevel !== action.destinationPopularityLevel) {
       throw new Error(`Prune promotion was not applied for ${action.ref}`)
     }
     applied.push(action)
@@ -253,47 +326,87 @@ function deterministicPruneKey (scope, ownerKey) {
     .digest('hex')}`
 }
 
-export async function queuePruneCheckOnce ({
-  ownerKey,
-  ownerType,
-  limit,
-  popularityLevel,
-  deleteOwnerWhenEmpty = false,
-  staleIfLastActiveAtLte,
-  source,
-  dedupeScope = source || 'owner-limit',
-  signal
-}) {
-  checkpoint(signal)
-  const key = deterministicPruneKey(dedupeScope, ownerKey)
-  try {
-    await mdb.index('pendingOps').getDocument(key)
-    return { key, queued: false }
-  } catch (error) {
-    if (!isNotFound(error)) throw error
-  }
-
-  await queueOps([{
-    key,
-    type: 'pruneCheck',
-    source,
-    data: {
-      key: ownerKey,
-      entityType: ownerType,
-      limit,
-      popularityLevel,
-      workflowVersion: PRUNE_WORKFLOW_VERSION,
-      step: 0,
-      deleteOwnerWhenEmpty,
-      ...(Number.isFinite(staleIfLastActiveAtLte)
-        ? { staleIfLastActiveAtLte }
-        : {})
+async function mapWithConcurrency (values, concurrency, mapper) {
+  const results = new Array(values.length)
+  let nextIndex = 0
+  async function worker () {
+    while (nextIndex < values.length) {
+      const index = nextIndex++
+      results[index] = await mapper(values[index], index)
     }
-  }])
-  return { key, queued: true }
+  }
+  await Promise.all(
+    Array.from(
+      { length: Math.min(concurrency, values.length) },
+      () => worker()
+    )
+  )
+  return results
 }
 
-async function queueDestinationChecks (applied, effectKey, { signal } = {}) {
+export async function queuePruneChecksOnce (requests, { signal } = {}) {
+  const byKey = new Map()
+  for (const request of requests) {
+    const dedupeScope = request.dedupeScope || request.source || 'owner-limit'
+    const key = deterministicPruneKey(dedupeScope, request.ownerKey)
+    if (!byKey.has(key)) byKey.set(key, { ...request, key })
+  }
+  const candidates = [...byKey.values()]
+  const existence = await mapWithConcurrency(
+    candidates,
+    DESTINATION_LOOKUP_CONCURRENCY,
+    async candidate => {
+      checkpoint(signal)
+      try {
+        await mdb.index('pendingOps').getDocument(candidate.key)
+        return true
+      } catch (error) {
+        if (isNotFound(error)) return false
+        throw error
+      }
+    }
+  )
+
+  const missing = candidates.filter((_, index) => !existence[index])
+  if (missing.length) {
+    checkpoint(signal)
+    await queueOps(missing.map(request => ({
+      key: request.key,
+      type: 'pruneCheck',
+      source: request.source,
+      data: {
+        key: request.ownerKey,
+        entityType: request.ownerType,
+        limit: request.limit,
+        targetBytes: request.targetBytes ??
+          getPruneTargetBytes(request.limit),
+        popularityLevel: request.popularityLevel,
+        workflowVersion: PRUNE_WORKFLOW_VERSION,
+        step: 0,
+        deleteOwnerWhenEmpty: request.deleteOwnerWhenEmpty === true,
+        resolveLimitFromOwner: request.resolveLimitFromOwner === true,
+        ...(Number.isFinite(request.staleIfLastActiveAtLte)
+          ? { staleIfLastActiveAtLte: request.staleIfLastActiveAtLte }
+          : {})
+      }
+    })))
+  }
+
+  const queuedKeys = new Set(missing.map(request => request.key))
+  return candidates.map(request => ({
+    key: request.key,
+    queued: queuedKeys.has(request.key)
+  }))
+}
+
+export async function queuePruneCheckOnce (request) {
+  const [result] = await queuePruneChecksOnce([request], {
+    signal: request.signal
+  })
+  return result
+}
+
+async function queueDestinationChecks (applied, { signal } = {}) {
   const destinations = new Map()
   for (const action of applied) {
     if (action.action !== 'promote') continue
@@ -303,19 +416,21 @@ async function queueDestinationChecks (applied, effectKey, { signal } = {}) {
     })
   }
 
-  for (const destination of destinations.values()) {
-    checkpoint(signal)
-    if (VIP_PUBKEYS.has(destination.ownerKey)) continue
-    const limit = getStorageLimit(destination.popularityLevel)
-    await queuePruneCheckOnce({
+  const requests = [...destinations.values()]
+    .filter(destination => !VIP_PUBKEYS.has(destination.ownerKey))
+    .map(destination => ({
       ownerKey: destination.ownerKey,
       ownerType: 'pubkey',
-      limit,
+      limit: getStorageLimit(destination.popularityLevel),
       popularityLevel: destination.popularityLevel,
       source: 'prunePromotion',
-      dedupeScope: `${effectKey}:destination`,
-      signal
-    })
+      dedupeScope: 'prune-promotion-destination',
+      resolveLimitFromOwner: true
+    }))
+  const results = await queuePruneChecksOnce(requests, { signal })
+  return {
+    destinations: requests.length,
+    queuedDestinations: results.filter(result => result.queued).length
   }
 }
 
@@ -393,31 +508,35 @@ async function finishOrContinue (op, data, { signal } = {}) {
   const owner = await getOwner(data.key)
   if (!owner) {
     await deletePendingOp(op.key)
-    return
+    return 'finished'
   }
   if (!isStillStale(owner, data)) {
     await deletePendingOp(op.key)
-    return
+    return 'finished'
   }
 
-  const limit = Number.isFinite(data.limit) ? Math.max(0, data.limit) : 0
-  if ((owner.usedBytes || 0) > limit) {
+  const { limit, targetBytes } = resolvePrunePolicy(data, owner)
+  if ((owner.usedBytes || 0) > targetBytes) {
     const base = workflowBaseData(data)
     await patchPendingOp(op, 'queued', {
       ...base,
+      limit,
+      targetBytes,
       workflowVersion: PRUNE_WORKFLOW_VERSION,
+      pruningStarted: true,
       step: (data.step || 0) + 1
     })
-    return
+    return 'continued'
   }
 
   await maybeDeleteEmptyOwner(data.key, data, { signal })
   checkpoint(signal)
   await deletePendingOp(op.key)
+  return 'finished'
 }
 
 async function handleNoActions (op, data, owner, { signal } = {}) {
-  if ((data.workflowVersion || 0) < PRUNE_WORKFLOW_VERSION &&
+  if ((data.workflowVersion || 0) < LEGACY_ORDERING_VERSION &&
       !data.legacyDeferred) {
     // Legacy event-save batches placed pruneCheck before the event write.
     // Moving this same operation to the tail gives those writes a chance to
@@ -452,12 +571,21 @@ async function handleNoActions (op, data, owner, { signal } = {}) {
 }
 
 export async function processPruneCheck (op, { signal } = {}) {
+  const startedProcessingAt = Date.now()
+  const timings = {
+    selectionMs: 0,
+    mutationMs: 0,
+    accountingMs: 0,
+    destinationMs: 0
+  }
   checkpoint(signal)
   const data = op.data || {}
   if (!isValidPrimaryKey(data.key) ||
       !['ip', 'pubkey'].includes(data.entityType) ||
       !Number.isFinite(data.limit) ||
-      data.limit < 0) {
+      data.limit < 0 ||
+      (data.targetBytes !== undefined &&
+        (!Number.isFinite(data.targetBytes) || data.targetBytes < 0))) {
     throw new TypeError('Invalid pruneCheck operation')
   }
 
@@ -471,26 +599,41 @@ export async function processPruneCheck (op, { signal } = {}) {
       await deletePendingOp(op.key)
       return
     }
-    if ((owner.usedBytes || 0) <= data.limit) {
+    const policy = resolvePrunePolicy(data, owner)
+    const normalizedData = {
+      ...data,
+      limit: policy.limit,
+      targetBytes: policy.targetBytes,
+      workflowVersion: PRUNE_WORKFLOW_VERSION,
+      pruningStarted: policy.pruningStarted,
+      resolveLimitFromOwner: false
+    }
+    const stopAtBytes = policy.pruningStarted
+      ? policy.targetBytes
+      : policy.limit
+    if ((owner.usedBytes || 0) <= stopAtBytes) {
       await maybeDeleteEmptyOwner(data.key, data, { signal })
       await deletePendingOp(op.key)
       return
     }
 
+    const selectingAt = Date.now()
     const actions = await selectActions({
       ownerKey: data.key,
       ownerType: data.entityType,
       signal
     })
+    timings.selectionMs += Date.now() - selectingAt
     if (!actions.length) {
-      await handleNoActions(op, data, owner, { signal })
+      await handleNoActions(op, normalizedData, owner, { signal })
       return
     }
 
     const step = Number.isSafeInteger(data.step) ? data.step : 0
     await patchPendingOp(op, 'prepared', {
-      ...workflowBaseData(data),
+      ...workflowBaseData(normalizedData),
       workflowVersion: PRUNE_WORKFLOW_VERSION,
+      pruningStarted: true,
       step,
       effectKey: `${op.key}:${step}`,
       actions
@@ -502,7 +645,9 @@ export async function processPruneCheck (op, { signal } = {}) {
       return
     }
     checkpoint(signal)
+    const mutatingAt = Date.now()
     const applied = await applyActions(op.data.actions || [], { signal })
+    timings.mutationMs += Date.now() - mutatingAt
     await patchPendingOp(op, 'events_applied', {
       ...op.data,
       applied
@@ -512,25 +657,47 @@ export async function processPruneCheck (op, { signal } = {}) {
   if (op.phase === 'events_applied') {
     const deltas = usageDeltas(op.data.applied || [])
     checkpoint(signal)
+    const accountingAt = Date.now()
     await applyStoredUsageDeltasOnce(deltas, op.data.effectKey, { signal })
     await patchPendingOp(op, 'accounting_applied', {
       ...op.data,
       deltas
     })
+    timings.accountingMs += Date.now() - accountingAt
   }
 
   if (op.phase === 'accounting_applied') {
     checkpoint(signal)
-    await queueDestinationChecks(
+    const destinationAt = Date.now()
+    const destinationResult = await queueDestinationChecks(
       op.data.applied || [],
-      op.data.effectKey,
       { signal }
     )
+    timings.destinationMs += Date.now() - destinationAt
+    const accountingAt = Date.now()
     await clearStoredUsageDeltaTokens(
       op.data.deltas || [],
       op.data.effectKey,
       { signal }
     )
-    await finishOrContinue(op, op.data, { signal })
+    const result = await finishOrContinue(op, op.data, { signal })
+    timings.accountingMs += Date.now() - accountingAt
+
+    if (process.env.NODE_ENV === 'production' &&
+        (op.data.applied || []).length) {
+      const applied = op.data.applied || []
+      console.log('[pending-ops][prune]', JSON.stringify({
+        key: op.key,
+        step: op.data.step || 0,
+        actions: applied.length,
+        deletions: applied.filter(action => action.action === 'delete').length,
+        promotions: applied.filter(action => action.action === 'promote').length,
+        destinations: destinationResult.destinations,
+        queuedDestinations: destinationResult.queuedDestinations,
+        result,
+        ...timings,
+        totalMs: Date.now() - startedProcessingAt
+      }))
+    }
   }
 }

@@ -21,7 +21,8 @@ const ATTRIBUTES = [
   'startedAt',
   'batchId',
   'position',
-  'source'
+  'source',
+  'data.step'
 ]
 const SEVERITY = Object.freeze({
   ok: 0,
@@ -89,6 +90,9 @@ function summarizeOperation (operation, checkedAtMs) {
     batchId: operation.batchId,
     position: operation.position,
     source: operation.source,
+    step: Number.isSafeInteger(operation.data?.step)
+      ? operation.data.step
+      : null,
     queuedForMs: ageMs(operation.createdAt, checkedAtMs),
     startedForMs: operation.startedAt === undefined
       ? null
@@ -173,9 +177,19 @@ function calculateTrend (snapshots) {
   if (!Number.isFinite(observedForMs) || observedForMs <= 0) return null
 
   const oldestKeys = snapshots.map(snapshot => snapshot.oldest?.key || null)
+  const oldestProgress = snapshots.map(snapshot => {
+    const oldest = snapshot.oldest
+    return oldest
+      ? `${oldest.key}\0${oldest.phase || 'queued'}\0${oldest.step ?? ''}`
+      : null
+  })
   let headChanges = 0
+  let headProgressChanges = 0
   for (let index = 1; index < oldestKeys.length; index++) {
     if (oldestKeys[index] !== oldestKeys[index - 1]) headChanges++
+    if (oldestProgress[index] !== oldestProgress[index - 1]) {
+      headProgressChanges++
+    }
   }
   const nonNullOldestKeys = oldestKeys.filter(Boolean)
   const sameOldestThroughout = nonNullOldestKeys.length === snapshots.length &&
@@ -203,6 +217,7 @@ function calculateTrend (snapshots) {
     queuedNetChangePerMinute:
       queuedCountDelta / (observedForMs / 60_000),
     headChanges,
+    headProgressChanges,
     distinctHeadKeys: new Set(nonNullOldestKeys).size,
     sameOldestThroughout,
     oldestAgeDeltaMs
@@ -214,6 +229,7 @@ export function analyzeSnapshots (snapshots) {
   const last = snapshots.at(-1)
   const findings = []
   const nextSteps = []
+  const trend = calculateTrend(snapshots)
   const addFinding = (level, code, message) => {
     findings.push({ level, code, message })
   }
@@ -228,16 +244,21 @@ export function analyzeSnapshots (snapshots) {
     )
   } else {
     const queuedForMs = last.oldest.queuedForMs
+    const headIsProgressing = trend?.sameOldestThroughout &&
+      trend.headProgressChanges > 0
     const level = queuedForMs >= CRITICAL_AGE_MS
-      ? 'critical'
+      ? (headIsProgressing ? 'warning' : 'critical')
       : queuedForMs >= WARNING_AGE_MS
-        ? 'warning'
+        ? (headIsProgressing ? 'info' : 'warning')
         : 'info'
     addFinding(
       level,
       'depth',
       `${last.count} pending operation(s); oldest is ${last.oldest.key} ` +
-      `(${last.oldest.type}, ${last.oldest.phase}) at ` +
+      `(${last.oldest.type}, ${last.oldest.phase}` +
+      `${Number.isSafeInteger(last.oldest.step)
+        ? `, step ${last.oldest.step}`
+        : ''}) at ` +
       `${formatDuration(queuedForMs)}.`
     )
   }
@@ -245,10 +266,13 @@ export function analyzeSnapshots (snapshots) {
   const workflow = last.oldestStartedWorkflow
   if (workflow) {
     const startedForMs = workflow.startedForMs
+    const workflowIsProgressing = trend?.sameOldestThroughout &&
+      trend.headProgressChanges > 0 &&
+      workflow.key === last.oldest?.key
     const level = startedForMs >= CRITICAL_AGE_MS
-      ? 'critical'
+      ? (workflowIsProgressing ? 'warning' : 'critical')
       : startedForMs >= WARNING_AGE_MS
-        ? 'warning'
+        ? (workflowIsProgressing ? 'info' : 'warning')
         : 'info'
     addFinding(
       level,
@@ -266,7 +290,6 @@ export function analyzeSnapshots (snapshots) {
     addFinding('ok', 'started-workflow', 'No in-progress pending workflow was found.')
   }
 
-  const trend = calculateTrend(snapshots)
   if (trend) {
     if (trend.observedForMs < MIN_TREND_WINDOW_MS) {
       addFinding(
@@ -283,6 +306,7 @@ export function analyzeSnapshots (snapshots) {
         `(${formatRate(trend.netChangePerMinute)} net).`
       )
     } else if (trend.sameOldestThroughout &&
+        trend.headProgressChanges === 0 &&
         (trend.oldestAgeDeltaMs === null ||
           trend.oldestAgeDeltaMs >= trend.observedForMs * 0.75)) {
       const level = trend.observedForMs >= WARNING_AGE_MS ||
@@ -300,6 +324,24 @@ export function analyzeSnapshots (snapshots) {
         `Inspect operation ${last.oldest.key} and its related terminal logs ` +
         'before resetting or deleting any queue item.'
       )
+    } else if (trend.sameOldestThroughout &&
+        trend.headProgressChanges > 0) {
+      const level = trend.countDelta > 0 || trend.queuedCountDelta > 0
+        ? 'warning'
+        : 'info'
+      addFinding(
+        level,
+        'trend',
+        `The same workflow ${last.oldest.key} remained at the head but ` +
+        `advanced phase or step ${trend.headProgressChanges} time(s) over ` +
+        `${formatDuration(trend.observedForMs)}. The queue changed by ` +
+        `${trend.countDelta} (${formatRate(trend.netChangePerMinute)}).`
+      )
+      if (level === 'warning') {
+        nextSteps.push(
+          'Continue monitoring: the head is progressing, but incoming work still exceeds the net drain rate.'
+        )
+      }
     } else if (trend.countDelta > 0 || trend.queuedCountDelta > 0) {
       addFinding(
         'warning',
@@ -367,7 +409,11 @@ export function analyzeSnapshots (snapshots) {
 
 function progressLine (snapshot) {
   const oldest = snapshot.oldest
-    ? `${snapshot.oldest.key}:${formatDuration(snapshot.oldest.queuedForMs)}`
+    ? `${snapshot.oldest.key}:${snapshot.oldest.phase}` +
+      `${Number.isSafeInteger(snapshot.oldest.step)
+        ? `:step-${snapshot.oldest.step}`
+        : ''}` +
+      `:${formatDuration(snapshot.oldest.queuedForMs)}`
     : 'none'
   return `[pending-ops] ${snapshot.checkedAt} count=${snapshot.count} oldest=${oldest}`
 }
