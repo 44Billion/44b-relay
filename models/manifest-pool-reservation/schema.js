@@ -25,6 +25,7 @@ export default {
   ],
   settings: {
     displayedAttributes: ['*'],
+    searchableAttributes: [],
     filterableAttributes: ['key', 'eventId', 'ref', 'pubkey', 'state'],
     sortableAttributes: ['createdAt', 'updatedAt', 'key']
   }

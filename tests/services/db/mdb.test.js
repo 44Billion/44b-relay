@@ -9,6 +9,8 @@ import requestedPubkeySchema from '#models/requested-pubkey/schema.js'
 import popularPubkeySchema from '#models/popular-pubkey/schema.js'
 import ipActivitySchema from '#models/ip-activity/schema.js'
 import maintenanceStateSchema from '#models/maintenance-state/schema.js'
+import hashtagStatsSchema from '#models/hashtag-stats/schema.js'
+import iconProviderHealthSchema from '#models/icon-provider-health/schema.js'
 import manifestPoolUsageSchema from '#models/manifest-pool-usage/schema.js'
 import manifestPoolReservationSchema from '#models/manifest-pool-reservation/schema.js'
 
@@ -21,10 +23,26 @@ describe('Meilisearch Client', () => {
     popularPubkeySchema,
     ipActivitySchema,
     maintenanceStateSchema,
+    hashtagStatsSchema,
+    iconProviderHealthSchema,
     jobSchema,
     manifestPoolUsageSchema,
     manifestPoolReservationSchema
   ]
+
+  it('enables full-text indexing only for the public events index', () => {
+    assert.deepEqual(eventSchema.settings.searchableAttributes, [
+      'ftsContent',
+      'fts'
+    ])
+    for (const schema of schemas.filter(schema => schema.uid !== 'events')) {
+      assert.deepEqual(
+        schema.settings.searchableAttributes,
+        [],
+        `${schema.uid} should not build a full-text index`
+      )
+    }
+  })
 
   it('should have initialized database with correct indexes and settings', async () => {
     // getIndexes returns { results: [], offset: 0, limit: 20, total: 0 }
@@ -118,5 +136,45 @@ describe('Meilisearch Client', () => {
     assert.equal(operation.position, 0)
     assert.equal(operation.phase, 'queued')
     await db.index('pendingOps').deleteDocument(key)
+  })
+
+  it('migrates pendingOps away from full-text indexing without affecting queue access', async () => {
+    const index = db.index('pendingOps')
+    const key = 'pending-op-searchable-attributes-migration'
+    const marker = 'payload-must-not-be-full-text-indexed'
+
+    await index.updateSearchableAttributes(['*'])
+    await index.addDocuments([{
+      key,
+      type: 'searchableAttributesTest',
+      data: { marker },
+      createdAt: 1,
+      batchId: 'searchable-attributes-test',
+      position: 0,
+      phase: 'queued',
+      source: 'mdb-test'
+    }])
+
+    const searchableBefore = await index.search(marker)
+    assert.equal(searchableBefore.estimatedTotalHits, 1)
+
+    await migrate(db, () => {})
+
+    const settings = await index.getSettings()
+    assert.deepEqual(settings.searchableAttributes, [])
+
+    const document = await index.getDocument(key)
+    assert.equal(document.data.marker, marker)
+
+    const queueResults = await index.search('', {
+      filter: 'type = "searchableAttributesTest"',
+      sort: ['createdAt:asc']
+    })
+    assert.deepEqual(queueResults.hits.map(hit => hit.key), [key])
+
+    const searchableAfter = await index.search(marker)
+    assert.equal(searchableAfter.estimatedTotalHits, 0)
+
+    await index.deleteDocument(key)
   })
 })

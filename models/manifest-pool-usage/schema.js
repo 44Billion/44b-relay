@@ -21,6 +21,7 @@ export default {
   ],
   settings: {
     displayedAttributes: ['*'],
+    searchableAttributes: [],
     filterableAttributes: ['key', 'scope', 'pubkey'],
     sortableAttributes: ['logicalBytes']
   }

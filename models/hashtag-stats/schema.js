@@ -17,7 +17,7 @@ export default {
   ],
   settings: {
     displayedAttributes: ['*'],
-    searchableAttributes: ['key'],
+    searchableAttributes: [],
     filterableAttributes: [
       'key',
       'lang',

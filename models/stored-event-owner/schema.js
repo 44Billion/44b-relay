@@ -11,6 +11,7 @@ export default {
     'accountingTokens'
   ],
   settings: {
+    searchableAttributes: [],
     filterableAttributes: [
       'key',
       'entityType', // 'pubkey' or 'ip'

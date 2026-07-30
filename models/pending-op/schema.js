@@ -14,6 +14,11 @@ export default {
     'source'
   ],
   settings: {
+    // pendingOps is an internal queue. Consumers use document ids, filters and
+    // sorting, never full-text queries. Indexing data (including compressed
+    // sketches/HLLs) as words makes queue writes increasingly expensive as a
+    // backlog grows.
+    searchableAttributes: [],
     filterableAttributes: [
       'type',
       'phase',

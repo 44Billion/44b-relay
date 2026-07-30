@@ -7,6 +7,7 @@ export default {
     'count'
   ],
   settings: {
+    searchableAttributes: [],
     filterableAttributes: [
       'firstSeenAt'
     ],

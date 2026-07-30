@@ -21,9 +21,7 @@ export default {
     displayedAttributes: [
       '*'
     ],
-    searchableAttributes: [
-      'key'
-    ],
+    searchableAttributes: [],
     filterableAttributes: [
       'key'
     ],

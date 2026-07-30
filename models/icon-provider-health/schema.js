@@ -22,7 +22,7 @@ export default {
   ],
   settings: {
     displayedAttributes: ['*'],
-    searchableAttributes: ['name'],
+    searchableAttributes: [],
     filterableAttributes: [
       'name',
       'backoffUntil'

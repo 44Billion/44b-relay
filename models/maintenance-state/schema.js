@@ -9,6 +9,7 @@ export default {
     'maintenanceDoneFilter'
   ],
   settings: {
+    searchableAttributes: [],
     filterableAttributes: [
       'key',
       'jobKey',
