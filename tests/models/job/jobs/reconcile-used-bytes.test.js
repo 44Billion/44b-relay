@@ -32,11 +32,7 @@ describe('Job: Reconcile Used Bytes', () => {
       kind: 1, created_at: 100, content: '', sig: 'sig'
     }])
 
-    await new Promise(resolve => setTimeout(resolve, 100))
-
     await reconcileJob.run()
-
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     const owner = await mdb.index('storedEventOwners').getDocument(pubkey)
     assert.equal(owner.usedBytes, 200, 'usedBytes should be corrected to actual sum (200)')
@@ -53,11 +49,7 @@ describe('Job: Reconcile Used Bytes', () => {
       popularityLevel: 1
     }])
 
-    await new Promise(resolve => setTimeout(resolve, 100))
-
     await reconcileJob.run()
-
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     const owner = await mdb.index('storedEventOwners').getDocument(pubkey)
     assert.equal(owner.usedBytes, 0, 'usedBytes should be corrected to 0 when no events exist')
@@ -85,11 +77,7 @@ describe('Job: Reconcile Used Bytes', () => {
       kind: 1, created_at: 100, content: '', sig: 'sig'
     }])
 
-    await new Promise(resolve => setTimeout(resolve, 100))
-
     await reconcileJob.run()
-
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     const owner = await mdb.index('storedEventOwners').getDocument(ipKey)
     assert.equal(owner.usedBytes, 100, 'IP usedBytes should be corrected to actual sum (100)')
@@ -110,11 +98,7 @@ describe('Job: Reconcile Used Bytes', () => {
       { ref: 'ev2', id: 'ev2', pubkey, byteSize: 200, ownerType: 'pubkey', kind: 1, created_at: 200, content: '', sig: 'sig' }
     ])
 
-    await new Promise(resolve => setTimeout(resolve, 100))
-
     await reconcileJob.run()
-
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     const owner = await mdb.index('storedEventOwners').getDocument(pubkey)
     assert.equal(owner.usedBytes, 300, 'usedBytes should remain 300 (already correct)')

@@ -107,7 +107,7 @@ export async function init (jobConfigs = jobs, options = {}) {
     if (!desiredLeadership || leaderRuntime || activationRetryTimer) return
     activationRetryTimer = setTimer(() => {
       activationRetryTimer = null
-      if (desiredLeadership && !leaderRuntime) leadershipChanged(true)
+      if (desiredLeadership && !leaderRuntime) return leadershipChanged(true)
     }, options.activationRetryMs ?? DEFAULT_ACTIVATION_RETRY_MS)
   }
 

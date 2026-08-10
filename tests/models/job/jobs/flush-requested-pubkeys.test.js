@@ -15,7 +15,6 @@ describe('Job: Flush Requested Pubkeys', () => {
 
     // 2. Run
     await flushRequestedPubkeysJob.run()
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // 3. Assert
     const { results } = await mdb.index('pendingOps').getDocuments()

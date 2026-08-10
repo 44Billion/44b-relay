@@ -7,7 +7,7 @@ import { PENDING_OPS_REVERSE_SORT } from '#models/pending-op/order.js'
 import { checkpoint, rethrowAbort } from '#helpers/abort.js'
 import { wait } from '#helpers/timer.js'
 
-async function run ({ signal } = {}) {
+async function run ({ signal, waitForPendingOps = wait } = {}) {
   console.log('Running storage tiers maintenance...')
 
   // 1. Get Reference Info (last calc job)
@@ -83,7 +83,7 @@ async function run ({ signal } = {}) {
       try {
         await mdb.index('pendingOps').getDocument(lastOp.key)
         // If found, it means it's still pending
-        await wait(5000, { signal })
+        await waitForPendingOps(5000, { signal })
       } catch (err) {
         if (err.code === 'document_not_found' || err.cause?.code === 'document_not_found') {
           break // Op is gone, we can proceed

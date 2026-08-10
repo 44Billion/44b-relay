@@ -16,7 +16,6 @@ describe('Job: Flush IP Activity', () => {
 
     // 2. Run Job
     await flushIpActivityJob.run()
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // 3. Assert
     const { results } = await mdb.index('pendingOps').getDocuments()
@@ -34,7 +33,6 @@ describe('Job: Flush IP Activity', () => {
   it('should do nothing if no activity', async () => {
     // run again (previous run cleared state)
     await flushIpActivityJob.run()
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Should be no NEW ops.
     // But we didn't clear pendingOps between runs in this test block.

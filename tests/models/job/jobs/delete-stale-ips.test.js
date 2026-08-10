@@ -54,11 +54,9 @@ describe('Job: Delete Stale IPs', () => {
 
     await mdb.index('storedEventOwners').addDocuments(docs)
     // Wait
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Run
     await deleteStaleIpsJob.run()
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Discovery is non-destructive. Only the stale, low-activity IP gets a
     // durable request, while all owner records remain until that workflow is

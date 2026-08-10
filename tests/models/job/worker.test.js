@@ -33,7 +33,31 @@ describe('Job Worker (Integration)', () => {
 
   // Virtual Timer System
   let pendingTimers = []
+  let activeCallbacks = new Set()
+  let schedulerWaiters = new Set()
   let virtualTime = 1000000000000 // Start at fixed large timestamp
+
+  function notifySchedulerChange () {
+    const waiters = schedulerWaiters
+    schedulerWaiters = new Set()
+    for (const resolve of waiters) resolve()
+  }
+
+  function waitForSchedulerChange () {
+    return new Promise(resolve => schedulerWaiters.add(resolve))
+  }
+
+  function trackCallback (result) {
+    if (!result?.then) return
+    const promise = Promise.resolve(result)
+    activeCallbacks.add(promise)
+    promise
+      .catch(err => console.error('Timer callback error:', err))
+      .finally(() => {
+        activeCallbacks.delete(promise)
+        notifySchedulerChange()
+      })
+  }
 
   // Mock Implementations
   setTimerMock.mock.mockImplementation((cb, delay) => {
@@ -42,6 +66,7 @@ describe('Job Worker (Integration)', () => {
       triggerAt: virtualTime + delay
     }
     pendingTimers.push(timer)
+    notifySchedulerChange()
     return { unref: () => {} }
   })
 
@@ -53,6 +78,7 @@ describe('Job Worker (Integration)', () => {
         triggerAt: virtualTime + ms
       }
       pendingTimers.push(timer)
+      notifySchedulerChange()
     })
   })
 
@@ -60,12 +86,10 @@ describe('Job Worker (Integration)', () => {
   async function tick (ms) {
     virtualTime += ms
 
-    // Process all timers that are now due
-    // We loop because a timer callback might schedule another immediate timer (chained)
-    let processedAny = false
-
-    do {
-      processedAny = false
+    // Process all timers that are now due. A callback may perform real
+    // Meilisearch IO before it schedules its next virtual timer, so wait for
+    // that observable boundary instead of sleeping for an arbitrary duration.
+    while (true) {
       // Sort to maintain order
       pendingTimers.sort((a, b) => a.triggerAt - b.triggerAt)
 
@@ -83,34 +107,37 @@ describe('Job Worker (Integration)', () => {
       }
 
       pendingTimers = remaining
+      if (due.length === 0) break
+      const pendingCountBeforeCallbacks = pendingTimers.length
 
       for (const t of due) {
-        processedAny = true
-        // DO NOT AWAIT callback here to avoid deadlocks with promises waiting for time
         try {
-          const res = t.callback()
-          if (res && res.catch) res.catch(err => console.error('Timer callback error:', err))
+          trackCallback(t.callback())
         } catch (err) {
           console.error('Timer callback synchronous error:', err)
         }
       }
-    } while (processedAny && pendingTimers.some(t => t.triggerAt <= virtualTime))
 
-    // Allow IO to settle
-    await new Promise(resolve => setTimeout(resolve, 0))
+      await Promise.resolve()
+      while (activeCallbacks.size > 0 &&
+             pendingTimers.length === pendingCountBeforeCallbacks) {
+        await waitForSchedulerChange()
+      }
+    }
   }
 
   beforeEach(async () => {
     stopWorker = null
     pendingTimers = []
+    activeCallbacks = new Set()
+    schedulerWaiters = new Set()
     virtualTime = 1000000000000
 
-    // Only mock Date! This maps Date.now() to our virtualTime
-    // We DO NOT mock setTimeout, so global setimeout works for Meilisearch
+    // Only mock Date. Meilisearch keeps its real timers; the worker uses the
+    // injected timer helper above.
     mock.timers.enable({ apis: ['Date'], now: virtualTime })
 
     await mdb.index('jobs').deleteAllDocuments()
-    await new Promise(resolve => setTimeout(resolve, 200)) // Real wait
 
     job = {
       key: jobKey,
@@ -137,9 +164,6 @@ describe('Job Worker (Integration)', () => {
   it('should initialize and create record', async () => {
     stopWorker = await init([job])
 
-    // Real wait for DB
-    await new Promise(resolve => setTimeout(resolve, 200))
-
     const { result } = await getJobByKey(jobKey)
     assert.ok(result)
     assert.equal(result.startedAt, 0)
@@ -157,7 +181,6 @@ describe('Job Worker (Integration)', () => {
       endedAt: expiredTime,
       lockKey: 'old'
     }])
-    await new Promise(resolve => setTimeout(resolve, 200))
 
     stopWorker = await init([job])
 
@@ -165,16 +188,8 @@ describe('Job Worker (Integration)', () => {
     // Jitter is max 60s. Add 1s margin.
     await tickAndSync(60000 + 1000)
 
-    // Wait for DB read in maybeTriggerJob
-    await new Promise(resolve => setTimeout(resolve, 500))
-
-    // At this point, startJob has been called.
-    // It calls setTimer/wait(2000).
-    // We need to advance time 2000ms.
+    // Advance any short follow-up timer scheduled by the worker.
     await tickAndSync(3000)
-
-    // Then it checks lock.
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     assert.equal(job.run.mock.callCount(), 1)
   })
@@ -199,17 +214,13 @@ describe('Job Worker (Integration)', () => {
       heartbeatedAt: nowSec,
       lockKey: 'other'
     }])
-    await new Promise(resolve => setTimeout(resolve, 200))
 
     stopWorker = await init([job])
 
     // Trigger scheduled job
     await tickAndSync(60000 + 1000)
 
-    // Wait for DB read and startJob logic
-    await new Promise(resolve => setTimeout(resolve, 500))
     await tickAndSync(3000)
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     assert.equal(job.run.mock.callCount(), 1)
   })
@@ -225,20 +236,14 @@ describe('Job Worker (Integration)', () => {
       heartbeatedAt: nowSec - 10, // Healthy heartbeat
       lockKey: 'running-process'
     }])
-    await new Promise(resolve => setTimeout(resolve, 200))
 
     stopWorker = await init([job])
 
     // Trigger scheduled job check - jitter is max 60s
     await tickAndSync(60000 + 1000)
 
-    // Wait for DB read
-    await new Promise(resolve => setTimeout(resolve, 500))
-
-    // If it decided to start, it would have called startJob -> wait(2000).
-    // We advance time to see if it grabs lock.
+    // If it decided to start, advancing the virtual clock would expose it.
     await tickAndSync(3000)
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     // Should NOT have run because it considers the other process healthy
     assert.equal(job.run.mock.callCount(), 0)
@@ -261,7 +266,6 @@ describe('Job Worker (Integration)', () => {
       isProcessAlive: () => true
     })
     await tickAndSync(61000)
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     assert.equal(job.run.mock.callCount(), 0)
     const { result } = await getJobByKey(jobKey)
@@ -285,7 +289,6 @@ describe('Job Worker (Integration)', () => {
       isProcessAlive: pid => pid !== 4343
     })
     await tickAndSync(61000)
-    await new Promise(resolve => setTimeout(resolve, 800))
 
     assert.equal(job.run.mock.callCount(), 1)
     const { result } = await getJobByKey(jobKey)
@@ -303,16 +306,12 @@ describe('Job Worker (Integration)', () => {
       endedAt: 0,
       lockKey: 'none'
     }])
-    await new Promise(resolve => setTimeout(resolve, 200))
 
     stopWorker = await init([job])
 
     // Trigger
     await tickAndSync(60000 + 1000)
-    await new Promise(resolve => setTimeout(resolve, 500))
-    // startJob wait
     await tickAndSync(3000)
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     assert.equal(job.run.mock.callCount(), 1)
   })
@@ -331,15 +330,12 @@ describe('Job Worker (Integration)', () => {
       heartbeatedAt: nowSec - 250,
       lockKey: 'stalled'
     }])
-    await new Promise(resolve => setTimeout(resolve, 200))
 
     stopWorker = await init([job])
 
     await tickAndSync(60000 + 1000)
 
-    await new Promise(resolve => setTimeout(resolve, 500))
     await tickAndSync(3000)
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     assert.equal(job.run.mock.callCount(), 1)
   })
@@ -376,14 +372,12 @@ describe('Job Worker (Integration)', () => {
     assert.equal(locked.run.mock.callCount(), 0)
 
     const becomingLeader = leadershipHandler(true)
-    await new Promise(resolve => setTimeout(resolve, 0))
     await tickAndSync(0)
     assert.equal(locked.run.mock.callCount(), 0)
 
     releaseBarrier()
     await becomingLeader
     await tickAndSync(0)
-    await new Promise(resolve => setTimeout(resolve, 800))
     assert.equal(locked.run.mock.callCount(), 1)
 
     await leadershipHandler(false)
@@ -414,7 +408,6 @@ describe('Job Worker (Integration)', () => {
 
     stopWorker = await init([manualJob])
     await tickAndSync(0)
-    await new Promise(resolve => setTimeout(resolve, 500))
     assert.equal(manualJob.run.mock.callCount(), 0)
   })
 
@@ -444,14 +437,12 @@ describe('Job Worker (Integration)', () => {
 
     await leadershipHandler(true)
     await tickAndSync(0)
-    await new Promise(resolve => setTimeout(resolve, 800))
     assert.equal(longJob.run.mock.callCount(), 1)
     ownerIds.push((await getJobByKey(jobKey)).result.ownerId)
 
     await leadershipHandler(false)
     await leadershipHandler(true)
     await tickAndSync(0)
-    await new Promise(resolve => setTimeout(resolve, 800))
     assert.equal(longJob.run.mock.callCount(), 2)
     ownerIds.push((await getJobByKey(jobKey)).result.ownerId)
 
@@ -488,11 +479,9 @@ describe('Job Worker (Integration)', () => {
       assert.equal(barrierCalls, 1)
 
       await tickAndSync(10)
-      await new Promise(resolve => setTimeout(resolve, 800))
       assert.equal(barrierCalls, 2)
 
       await tickAndSync(0)
-      await new Promise(resolve => setTimeout(resolve, 800))
       assert.equal(retryJob.run.mock.callCount(), 1)
     } finally {
       errorMock.mock.restore()

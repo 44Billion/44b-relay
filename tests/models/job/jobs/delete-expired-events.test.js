@@ -73,15 +73,12 @@ describe('Job: Delete Expired Events', () => {
     }
 
     await mdb.index('events').addDocuments([expiredEvent, validEvent, infiniteEvent])
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Run job (queues deleteDocumentIfExists + deltaUsage ops)
     await deleteExpiredEventsJob.run()
 
     // Process the queued ops (deletes + usage updates)
     await runPendingOps()
-
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Assert (filter out __processingState__ doc written by processBatch)
     const { results: allResults } = await mdb.index('events').getDocuments()
@@ -118,15 +115,11 @@ describe('Job: Delete Expired Events', () => {
       sig: 'sig'
     }])
 
-    await new Promise(resolve => setTimeout(resolve, 100))
-
     // Run job
     await deleteExpiredEventsJob.run()
 
     // Process the queued deltaUsage ops
     await runPendingOps()
-
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Verify event was deleted
     const { results: events } = await mdb.index('events').getDocuments()
@@ -158,10 +151,8 @@ describe('Job: Delete Expired Events', () => {
       ownerType: 'pubkey'
     })))
 
-    await new Promise(resolve => setTimeout(resolve, 100))
     await deleteExpiredEventsJob.run()
     await runPendingOps()
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     const { results: eventsAfterCleanup } = await mdb.index('events').getDocuments()
     assert.equal(eventsAfterCleanup.filter(event => event.pubkey === pubkey).length, 0)
@@ -213,15 +204,11 @@ describe('Job: Delete Expired Events', () => {
       }
     ])
 
-    await new Promise(resolve => setTimeout(resolve, 100))
-
     // Run job
     await deleteExpiredEventsJob.run()
 
     // Process the queued deltaUsage ops
     await runPendingOps()
-
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Verify events were deleted
     const { results: events } = await mdb.index('events').getDocuments()

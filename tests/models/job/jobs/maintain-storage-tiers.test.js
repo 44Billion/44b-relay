@@ -65,14 +65,9 @@ describe('Job: Maintain Storage Tiers', () => {
       usedBytes: 100
     }])
 
-    // Wait
-    await new Promise(resolve => setTimeout(resolve, 100))
-
     // Run
     await maintainStorageTiersJob.default.run()
     await runPendingOps()
-
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Assert
     // storedEventOwner should be updated to Level 1
@@ -98,20 +93,28 @@ describe('Job: Maintain Storage Tiers', () => {
       source: 'maintainStorageTiers'
     }])
 
+    let releasePoll
+    let notifyPollingStarted
+    const pollStarted = new Promise(resolve => { notifyPollingStarted = resolve })
+    const pollGate = new Promise(resolve => { releasePoll = resolve })
     let jobFinished = false
-    const jobPromise = maintainStorageTiersJob.default.run().then(() => { jobFinished = true })
+    const jobPromise = maintainStorageTiersJob.default.run({
+      waitForPendingOps: async () => {
+        notifyPollingStarted()
+        await pollGate
+      }
+    }).then(() => { jobFinished = true })
 
-    // Wait a bit to ensure it reached the check loop
-    await new Promise(resolve => setTimeout(resolve, 500))
+    await pollStarted
 
     // Should still be waiting
     assert.equal(jobFinished, false, 'Job should be waiting for previous op to clear')
 
     // 3. Delete the op
     await mdb.index('pendingOps').deleteDocument(opKey)
+    releasePoll()
 
-    // Wait for the job to notice (it polls every 5s)
-    // We just await the promise
+    // Release the injected poll gate after the durable op is gone.
     await jobPromise
     assert.equal(jobFinished, true, 'Job should complete after op is cleared')
   })
@@ -136,8 +139,6 @@ describe('Job: Maintain Storage Tiers', () => {
       ownerType: 'pubkey',
       kind: 1, created_at: 100, tags: [], content: '', sig: ''
     }])
-
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Run job
     await maintainStorageTiersJob.default.run()
@@ -181,29 +182,8 @@ describe('Job: Maintain Storage Tiers', () => {
       kind: 1, created_at: 100, tags: [], content: '', sig: ''
     }])
 
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    // Run with background processor for pendingOps (needed for relegateEvents loop)
-    const runLoop = async () => {
-      try {
-        await runPendingOps()
-      } catch (e) {
-        if (e.code !== 'document_not_found') console.error(e)
-      } finally {
-        if (processor) processor = setTimeout(runLoop, 200)
-      }
-    }
-    let processor = setTimeout(runLoop, 200)
-
-    try {
-      await maintainStorageTiersJob.default.run()
-    } finally {
-      clearTimeout(processor)
-      processor = null
-      await runPendingOps() // Drain remaining
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 500)) // Wait for async queueOps/processing?
+    await maintainStorageTiersJob.default.run()
+    await runPendingOps()
 
     // Check if event was updated (since pendingOps should be processed)
     const event = await mdb.index('events').getDocument('ev1')
@@ -242,29 +222,8 @@ describe('Job: Maintain Storage Tiers', () => {
       kind: 1, created_at: 100, tags: [], content: 'vip event', sig: 'sig'
     }])
 
-    await new Promise(resolve => setTimeout(resolve, 100))
-
-    // Run with background processor
-    const runLoop = async () => {
-      try {
-        await runPendingOps()
-      } catch (e) {
-        if (e.code !== 'document_not_found') console.error(e)
-      } finally {
-        if (processor) processor = setTimeout(runLoop, 200)
-      }
-    }
-    let processor = setTimeout(runLoop, 200)
-
-    try {
-      await maintainStorageTiersJob.default.run()
-    } finally {
-      clearTimeout(processor)
-      processor = null
-      await runPendingOps() // Drain remaining
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 500))
+    await maintainStorageTiersJob.default.run()
+    await runPendingOps()
 
     // VIP event should still be owned by pubkey (NOT relegated to ip)
     const event = await mdb.index('events').getDocument('vip_ev1')

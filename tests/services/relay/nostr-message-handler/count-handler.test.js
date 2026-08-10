@@ -40,7 +40,6 @@ describe('CountHandler', () => {
     ]
 
     await index.addDocuments(records)
-    await new Promise(resolve => setTimeout(resolve, 500))
     trackIpActivityMock.mock.resetCalls()
   })
 
@@ -246,7 +245,6 @@ describe('CountHandler', () => {
       { ...eventToRecord(ptEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'pt' }
     ]
     await client.index('events').addDocuments(records)
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     const ws = createWs()
     const filters = [{ kinds: [1], search: 'language:pt' }]
@@ -270,7 +268,6 @@ describe('CountHandler', () => {
       { ...eventToRecord(frEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'fr' }
     ]
     await client.index('events').addDocuments(records)
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     const ws = createWs()
     const filters = [{ kinds: [1], search: 'language:pt language:en' }]

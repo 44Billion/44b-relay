@@ -23,7 +23,6 @@ describe('Job: Calc Popular Pubkeys', () => {
     try { await mdb.createIndex('maintenanceStates', { primaryKey: 'key' }) } catch {}
     if (docs.length > 0) {
       await index.addDocuments(docs)
-      await new Promise(resolve => setTimeout(resolve, 100))
     }
   }
 
@@ -32,8 +31,6 @@ describe('Job: Calc Popular Pubkeys', () => {
     try { await mdb.index('maintenanceStates').delete() } catch {}
     await mdb.createIndex('maintenanceStates', { primaryKey: 'key' })
     await mdb.index('maintenanceStates').updateSettings(maintenanceStateSchema.settings)
-    // Wait for settings to apply
-    await new Promise(resolve => setTimeout(resolve, 200))
 
     await mdb.index('requestedPubkeys').delete().catch(() => {})
     await mdb.createIndex('requestedPubkeys', { primaryKey: 'key' })
@@ -54,7 +51,6 @@ describe('Job: Calc Popular Pubkeys', () => {
 
     // Seed some requested pubkeys so we have work to do if it runs
     await mdb.index('requestedPubkeys').addDocuments([{ key: 'abc', count: 100 }])
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     await calcPopularPubkeys.run()
 
@@ -76,8 +72,6 @@ describe('Job: Calc Popular Pubkeys', () => {
     }))
 
     await mdb.index('requestedPubkeys').addDocuments(pubkeys)
-    // Wait for indexing
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Run
     await calcPopularPubkeys.run()
@@ -95,9 +89,6 @@ describe('Job: Calc Popular Pubkeys', () => {
     // level 5: 0.1 * 10 = 1
     // level 6: 0.5 * 10 = 5.
 
-    // Wait for indexing
-    await new Promise(resolve => setTimeout(resolve, 100))
-
     const { results } = await mdb.index('popularPubkeys').getDocuments({ limit: 10 })
     assert.ok(results.length > 0)
 
@@ -106,7 +97,6 @@ describe('Job: Calc Popular Pubkeys', () => {
     assert.ok(level1)
 
     // 3. Maintenance triggered (via triggerManualJob which uses the DB lock)
-    await new Promise(resolve => setTimeout(resolve, 200))
     const jobs = await mdb.index('jobs').getDocuments()
     const maintJob = jobs.results.find(j => j.key === 'maintainStorageTiers')
     assert.ok(maintJob, 'maintainStorageTiers job record should exist')
@@ -128,7 +118,6 @@ describe('Job: Calc Popular Pubkeys', () => {
     await mdb.createIndex(stagingUid, { primaryKey: 'key' })
     await mdb.index(stagingUid).updateSettings({ sortableAttributes: ['count'] })
     await mdb.index(stagingUid).addDocuments([{ key: 'deadbeef00000000000000000000000000000000000000000000000000000000', count: 50 }])
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Run
     await calcPopularPubkeys.run()
@@ -138,7 +127,6 @@ describe('Job: Calc Popular Pubkeys', () => {
     // It uses staging data.
     // So 'pk_staging' should impact results.
 
-    await new Promise(resolve => setTimeout(resolve, 100))
     const { results } = await mdb.index('popularPubkeys').getDocuments()
 
     // We have 1 doc.
@@ -166,7 +154,6 @@ describe('Job: Calc Popular Pubkeys', () => {
 
     // Create an empty staging index
     await mdb.createIndex(stagingUid, { primaryKey: 'key' })
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     // Run
     await calcPopularPubkeys.run()

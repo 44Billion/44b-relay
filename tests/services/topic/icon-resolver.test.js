@@ -122,7 +122,6 @@ describe('Icon Resolver', () => {
     // Access the internal health cache via in-process call
     // We can verify via resolverModule by triggering the 'fail' path
     // The health record is in the cache; we verify indirectly by checking persistence
-    await new Promise(resolve => setTimeout(resolve, 100))
     try {
       const doc = await mdb.index('iconProviderHealth').getDocument('mockProviderA')
       assert.ok(doc)
@@ -137,7 +136,6 @@ describe('Icon Resolver', () => {
     // The 'fail' tag causes providers to throw — verify lastError gets set
     await resolverModule.resolveIcon('fail', 'en')
 
-    await new Promise(resolve => setTimeout(resolve, 100))
     try {
       const doc = await mdb.index('iconProviderHealth').getDocument('mockProviderA')
       assert.ok(doc)
@@ -160,7 +158,6 @@ describe('Icon Resolver', () => {
 
     // Manually backdate erroredAt in the cached record to simulate it being old
     // We do this by calling _resetHealthCache and re-seeding from MeiliSearch with old date
-    await new Promise(resolve => setTimeout(resolve, 100))
     resolverModule._resetHealthCache()
     await mdb.index('iconProviderHealth').addDocuments([{
       name: 'mockProviderA',
@@ -178,7 +175,6 @@ describe('Icon Resolver', () => {
     // Record success — should clear last error since it's > ERROR_CLEAR_AFTER_MS
     await resolverModule.recordSuccess('mockProviderA')
 
-    await new Promise(resolve => setTimeout(resolve, 100))
     try {
       const doc = await mdb.index('iconProviderHealth').getDocument('mockProviderA')
       assert.ok(doc)
@@ -191,9 +187,6 @@ describe('Icon Resolver', () => {
 
   it('should persist health records to MeiliSearch', async () => {
     await resolverModule.resolveIcon('bitcoin', 'en')
-
-    // Wait a bit for async persistence
-    await new Promise(resolve => setTimeout(resolve, 100))
 
     try {
       const doc = await mdb.index('iconProviderHealth').getDocument('mockProviderA')

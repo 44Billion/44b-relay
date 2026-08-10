@@ -33,8 +33,6 @@ describe('ReqHandler', () => {
     ]
 
     await index.addDocuments(records)
-    // Wait for indexing
-    await new Promise(resolve => setTimeout(resolve, 500))
   })
 
   afterEach(() => {
@@ -187,7 +185,6 @@ describe('ReqHandler', () => {
       { ...eventToRecord(ptEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'pt' }
     ]
     await client.index('events').addDocuments(records)
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     const ws = createWs()
     const filters = [{ kinds: [1], search: 'language:pt' }]
@@ -215,7 +212,6 @@ describe('ReqHandler', () => {
       { ...eventToRecord(frEvent, { isContentSearchable: true }), popularityLevel: 6, language: 'fr' }
     ]
     await client.index('events').addDocuments(records)
-    await new Promise(resolve => setTimeout(resolve, 500))
 
     const ws = createWs()
     const filters = [{ kinds: [1], search: 'language:pt language:en' }]
