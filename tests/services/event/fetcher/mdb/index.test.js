@@ -68,6 +68,26 @@ describe('Event Fetcher (MDB)', () => {
     assert.equal(fetched[0].content, event1.content)
   })
 
+  it('should honor the parser maximum limit of 200', async () => {
+    const events = Array.from({ length: 220 }, (_, i) => ({
+      id: pad64((i + 1).toString(16)),
+      pubkey: VALID_PUBKEY,
+      created_at: 1000 + i,
+      kind: 1,
+      tags: [],
+      content: `event ${i}`,
+      sig: VALID_SIG
+    }))
+    await seedEvents(events)
+
+    const fetched = []
+    for await (const event of EventFetcher.run([{ kinds: [1], limit: 200 }])) {
+      fetched.push(event)
+    }
+
+    assert.equal(fetched.length, 200)
+  })
+
   it('should add tags to query correctly', async () => {
     const eventWithTag = {
       id: pad64('3'),

@@ -2,9 +2,17 @@ import { eventTags } from '#constants/event.js'
 import { isType } from '#helpers/shared.js'
 import { isKnownEventKind, getPublishedAt } from '#helpers/event.js'
 const MAX_IDS = 500
-const MAX_LIMIT = 200
+export const MAX_LIMIT = 200
 const isSingleLetterTagRegExp = /^#[A-Za-z]$/
 const isTagQuery = key => isSingleLetterTagRegExp.test(key)
+
+export function buildTagQuery (filter) {
+  return Object.fromEntries(
+    Object.entries(filter)
+      .filter(([key, values]) => isTagQuery(key) && Array.isArray(values) && values.length > 0)
+      .map(([key, values]) => [key.slice(1), values])
+  )
+}
 
 // We allow these broad filters now by returning less spammy events (of popularity <= 6)
 // These cover relay-based feed (just chosen kinds),

@@ -1,11 +1,13 @@
 import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import { sendCount, sendClosed } from '#helpers/message.js'
-import { parseSubscriptionFilters, isBroadFilter, buildPopularityFilter, applyPathExtensionsToFilter } from '#helpers/subscription.js'
+import { parseSubscriptionFilters, isBroadFilter, buildPopularityFilter, buildTagQuery, applyPathExtensionsToFilter } from '#helpers/subscription.js'
 import { blockHighFilterCount, applyCustomRelayRestrictionsToNostrFilter, adjustUntilFieldInFilters } from './req-handler.js'
 import { isType } from '#helpers/shared.js'
 import { countEvents, getEventByRef } from '#models/event/dao.js'
 import { idToRef, addressToRef } from '#models/event/mapper.js'
 import { eventKinds } from '#constants/event.js'
+
+const HEX_EVENT_ID = /^[0-9a-f]{64}$/i
 
 class CountHandler {
   static run ({ wss, ws, nostrMessage }) {
@@ -40,7 +42,11 @@ class CountHandler {
 
       try {
         const filtersForCounting = adjustUntilFieldInFilters({ ws, filters })
-        const { count, approximate, hll } = await countFilteredEvents({ ws, filters: filtersForCounting })
+        const { count, approximate, hll } = await countFilteredEvents({
+          ws,
+          filters: filtersForCounting,
+          hllFilters: filters
+        })
         sendCount({ ws, subscriptionId, count, approximate, hll })
       } catch (err) {
         console.log(err.stack)
@@ -56,7 +62,23 @@ async function maybeGetHll (filters) {
   if (filters.length !== 1) return
 
   const filter = filters[0]
-  if (Object.keys(filter).filter(key => key.startsWith('#')).length !== 1) return
+  if (!Array.isArray(filter.kinds)) return
+
+  const tagKeys = Object.keys(filter).filter(key => key.startsWith('#'))
+  if (tagKeys.length !== 1) return
+
+  const tagKey = tagKeys[0]
+  const tagValues = filter[tagKey]
+  if (!Array.isArray(tagValues) || tagValues.length !== 1) return
+
+  // Cached HLL counters only describe the canonical kinds + target-tag query.
+  // Internal broadness metadata does not change the matching event set.
+  const allowedKeys = new Set(['kinds', 'isBroad', tagKey])
+  if (Object.keys(filter).some(key => !allowedKeys.has(key))) return
+
+  const target = tagValues[0]
+  const idRef = () => HEX_EVENT_ID.test(target) ? idToRef(target) : undefined
+  const addressRef = () => isValidAddress(target) ? addressToRef({ address: target }) : undefined
 
   let { kinds } = filter
   if (kinds.length === 1) {
@@ -65,21 +87,13 @@ async function maybeGetHll (filters) {
       // { kinds: [1111], '#A': ['<rootEventAddress>'] }
       // { kinds: [1111], '#e': ['<parentCommentEventId>'] }
       case eventKinds.COMMENT: {
-        let mapperFn
-        let targetIdOrAddress
-        if (filter['#E']?.length === 1) {
-          mapperFn = idToRef
-          targetIdOrAddress = filter['#E'][0]
-        } else if (filter['#A']?.length === 1) {
-          mapperFn = addressToRef
-          targetIdOrAddress = filter['#A'][0]
-        } else if (filter['#e']?.length === 1) {
-          mapperFn = idToRef
-          targetIdOrAddress = filter['#e'][0]
-        } else return
+        let ref
+        if (tagKey === '#E' || tagKey === '#e') ref = idRef()
+        else if (tagKey === '#A') ref = addressRef()
+        if (!ref) return
 
         const { result: event } = await getEventByRef(
-          mapperFn(targetIdOrAddress), { fields: ['commentCounter'], withMeta: true }
+          ref, { fields: ['commentCounter'], withMeta: true }
         )
         return event?.meta?.commentCounter
       }
@@ -92,11 +106,12 @@ async function maybeGetHll (filters) {
       // as both replies and comments are the same thing in practice,
       // just different kinds for technical reasons
       case eventKinds.TEXT_NOTE: {
-        if (filter['#e']?.length !== 1) return
+        if (tagKey !== '#e') return
 
-        const rootEventId = filter['#e'][0]
+        const ref = idRef()
+        if (!ref) return
         const { result: event } = await getEventByRef(
-          idToRef(rootEventId), { fields: ['replyCounter'], withMeta: true }
+          ref, { fields: ['replyCounter'], withMeta: true }
         )
         return event?.meta?.replyCounter
       }
@@ -104,11 +119,12 @@ async function maybeGetHll (filters) {
       // (Generic) Repost integer counts (not counter) and quotes integer counts
       // should be summed up as one because UIs treat them as one when showing counts
       case eventKinds.REPOST: {
-        if (filter['#e']?.length !== 1) return
+        if (tagKey !== '#e') return
 
-        const rootEventId = filter['#e'][0]
+        const ref = idRef()
+        if (!ref) return
         const { result: event } = await getEventByRef(
-          idToRef(rootEventId), { fields: ['repostCounter'], withMeta: true }
+          ref, { fields: ['repostCounter'], withMeta: true }
         )
         return event?.meta?.repostCounter
       }
@@ -116,18 +132,13 @@ async function maybeGetHll (filters) {
       // { kinds: [16], '#e': ['<rootEventId>'] }
       // { kinds: [16], '#a': ['<rootEventId>'] }
       case eventKinds.GENERIC_REPOST: {
-        let mapperFn
-        let rootEventIdOrAddress
-        if (filter['#e']?.length === 1) {
-          mapperFn = idToRef
-          rootEventIdOrAddress = filter['#e'][0]
-        } else if (filter['#a']?.length === 1) {
-          mapperFn = addressToRef
-          rootEventIdOrAddress = filter['#a'][0]
-        } else return
+        let ref
+        if (tagKey === '#e') ref = idRef()
+        else if (tagKey === '#a') ref = addressRef()
+        if (!ref) return
 
         const { result: event } = await getEventByRef(
-          mapperFn(rootEventIdOrAddress), { fields: ['repostCounter'], withMeta: true }
+          ref, { fields: ['repostCounter'], withMeta: true }
         )
         return event?.meta?.repostCounter
       }
@@ -135,30 +146,48 @@ async function maybeGetHll (filters) {
   } else if (kinds.length === 2) {
     kinds = kinds.toSorted((a, b) => a - b)
 
-    // { '#q': ['<rootEventId or rootEventAddress>'], kinds: [1, 1111] }
+    // { '#q': ['<rootEventId>'], kinds: [1, 1111] }
     if (
       (kinds[0] !== eventKinds.TEXT_NOTE || kinds[1] !== eventKinds.COMMENT) ||
-      filter['#q']?.length !== 1 ||
-      Object.keys(filter).filter(key => key.startsWith('#')).length !== 1
+      tagKey !== '#q'
     ) return
 
-    const rootEventIdOrAddress = filter['#q'][0]
-    const mapperFn = rootEventIdOrAddress.length === 64 ? idToRef : addressToRef
+    // Quotes are counted only for event-id targets; address targets are not
+    // maintained by the saver.
+    const ref = idRef()
+    if (!ref) return
     const { result: event } = await getEventByRef(
-      mapperFn(rootEventIdOrAddress), { fields: ['quoteCounter'], withMeta: true }
+      ref, { fields: ['quoteCounter'], withMeta: true }
     )
     return event?.meta?.quoteCounter
   }
 }
 
-async function countFilteredEvents ({ ws, filters }) {
+function isValidAddress (address) {
+  if (typeof address !== 'string') return false
+  const firstSeparator = address.indexOf(':')
+  const secondSeparator = address.indexOf(':', firstSeparator + 1)
+  if (firstSeparator <= 0 || secondSeparator < 0) return false
+
+  const kind = address.slice(0, firstSeparator)
+  const pubkey = address.slice(firstSeparator + 1, secondSeparator)
+  const numericKind = Number(kind)
+  return /^(0|[1-9][0-9]*)$/.test(kind) &&
+    Number.isSafeInteger(numericKind) &&
+    HEX_EVENT_ID.test(pubkey)
+}
+
+async function countFilteredEvents ({ ws, filters, hllFilters = filters }) {
   let totalCount = 0
   let hll
 
   for (const filter of filters) {
     if (filter.limit === 0) continue
 
-    const query = { ...filter }
+    const query = {
+      ...filter,
+      tags: buildTagQuery(filter)
+    }
     // Popularity check for broad filters
     // as seen at services/event/fetcher/mdb/broad-strategy.js
     if (filter.isBroad && process.env.IS_INTEGRATION_TEST !== 'true') {
@@ -171,7 +200,7 @@ async function countFilteredEvents ({ ws, filters }) {
       totalCount += result
     }
   }
-  if (totalCount && !filters[0].includeSpam && !filters[0].isSpam) hll = await maybeGetHll(filters)
+  if (totalCount) hll = await maybeGetHll(hllFilters)
 
   trackIpActivity({ ip: ws.ip })
   return {

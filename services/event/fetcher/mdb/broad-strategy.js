@@ -1,5 +1,5 @@
 import { getEvents } from '#models/event/dao.js'
-import { buildPopularityFilter } from '#helpers/subscription.js'
+import { buildPopularityFilter, buildTagQuery } from '#helpers/subscription.js'
 
 export default class BroadStrategy {
   static doesWorkFor () { return true }
@@ -14,15 +14,10 @@ export default class BroadStrategy {
 
   async * run () {
     const { filter } = this
-    const tags = Object.fromEntries(
-      Object.entries(filter)
-        .filter(([k, v]) => /^#[a-zA-Z]$/.test(k) && Array.isArray(v) && v.length > 0)
-        .map(([k, v]) => [k.slice(1), v])
-    )
 
     const query = {
       ...filter,
-      tags
+      tags: buildTagQuery(filter)
     }
 
     // Popularity check for broad filters

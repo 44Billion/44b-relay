@@ -2,6 +2,7 @@ import mdb from '#services/db/mdb.js'
 import { eventToRecord, recordToEvent } from './mapper.js'
 import { queueDeleteEventsWithAccounting } from '#services/event/pending-workflows.js'
 import { checkpoint, rethrowAbort } from '#helpers/abort.js'
+import { MAX_LIMIT } from '#helpers/subscription.js'
 
 export async function getEventByRef (ref, options = {}) {
   return mdb.index('events').getDocument(ref, {
@@ -55,7 +56,13 @@ export async function getEvents (filter, { fields, withMeta = false } = {}) {
 
 export async function countEvents (filter) {
   return searchByNostrFilter(filter, { metadataOnly: true })
-    .then(v => ({ result: v.estimatedTotalHits, error: null, success: true }))
+    .then(v => ({
+      result: filter.limit === undefined
+        ? v.estimatedTotalHits
+        : Math.min(v.estimatedTotalHits, filter.limit),
+      error: null,
+      success: true
+    }))
     .catch(error => ({ result: null, error, success: false }))
 }
 
@@ -67,7 +74,7 @@ async function searchByNostrFilter ({
   topic, // nip50 extension — topic:<tag> filters against detected event topics
   sortTop // nip50 extension
 }, { metadataOnly = false, fields } = {}) {
-  limit = Math.min(limit || 20, 100)
+  limit = Math.min(limit ?? 20, MAX_LIMIT)
   let q = search
 
   if (q) {

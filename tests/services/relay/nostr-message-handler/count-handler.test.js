@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { idToRef } from '#models/event/mapper.js'
+import { idToRef, addressToRef } from '#models/event/mapper.js'
 
 // Mock dependencies
 mock.module('#services/rate-limiting/web-socket-request-limiter.js', {
@@ -122,6 +122,52 @@ describe('CountHandler', () => {
 
     const payload = JSON.parse(ws.send.mock.calls[0].arguments[0])
     assert.equal(payload[2].count, 0)
+  })
+
+  it('should respect a positive filter limit', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+
+    try {
+      const ws = createWs()
+      const message = ['COUNT', 'sub_limit1', { kinds: [1], limit: 1 }]
+
+      const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+      await handler.run()
+
+      const payload = JSON.parse(ws.send.mock.calls[0].arguments[0])
+      assert.equal(payload[2].count, 1)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
+  it('should count tag-only filters without trying to produce HLL', async () => {
+    const taggedEvent = {
+      id: '0000000000000000000000000000000000000000000000000000000000000004',
+      kind: 1,
+      pubkey: '000000000000000000000000000000000000000000000000000000000000000d',
+      created_at: 1003,
+      content: 'Tagged',
+      tags: [['t', 'count-handler-topic']],
+      sig: 'sig4'
+    }
+    await client.index('events').addDocuments([{
+      ...eventToRecord(taggedEvent),
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }])
+
+    const ws = createWs()
+    const message = ['COUNT', 'sub_tag_only', { '#t': ['count-handler-topic'] }]
+
+    const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const payload = JSON.parse(ws.send.mock.calls[0].arguments[0])
+    assert.equal(payload[0], 'COUNT')
+    assert.equal(payload[2].count, 1)
+    assert.ok(!('hll' in payload[2]))
   })
 
   it('should send CLOSED if subscriptionId is not a string', async () => {
@@ -423,6 +469,104 @@ describe('CountHandler', () => {
 
     const calls = ws.send.mock.calls
     const payload = JSON.parse(calls[0].arguments[0])
+    assert.equal(payload[2].count, 1)
+    assert.equal(payload[2].hll, hllValue)
+
+    const wsWithAuthor = createWs()
+    const nonCanonicalMessage = [
+      'COUNT',
+      'sub_hll_quote_with_author',
+      { kinds: [1, 1111], '#q': [rootId], authors: ['d'.repeat(64)] }
+    ]
+    const nonCanonicalHandler = new CountHandler({
+      wss: {},
+      ws: wsWithAuthor,
+      nostrMessage: nonCanonicalMessage
+    })
+    await nonCanonicalHandler.run()
+
+    const nonCanonicalPayload = JSON.parse(wsWithAuthor.send.mock.calls[0].arguments[0])
+    assert.equal(nonCanonicalPayload[2].count, 1)
+    assert.ok(!('hll' in nonCanonicalPayload[2]))
+  })
+
+  it('should return comment hll for an address target', async () => {
+    const rootAddress = `30023:${'a'.repeat(64)}:article`
+    const hllValue = 'comment-address-hll'
+    const rootRecord = {
+      ref: addressToRef({ address: rootAddress }),
+      id: 'b'.repeat(64),
+      kind: 30023,
+      pubkey: 'a'.repeat(64),
+      created_at: 1000,
+      content: '',
+      tags: [['d', 'article']],
+      sig: 'sig',
+      commentCounter: hllValue,
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+    const commentEvent = {
+      id: 'c'.repeat(64),
+      kind: 1111,
+      pubkey: 'd'.repeat(64),
+      created_at: 1001,
+      content: 'comment',
+      tags: [['A', rootAddress, '', 'root']],
+      sig: 'sig'
+    }
+    await client.index('events').addDocuments([
+      rootRecord,
+      { ...eventToRecord(commentEvent), popularityLevel: 6, ownerType: 'pubkey' }
+    ])
+
+    const ws = createWs()
+    const message = ['COUNT', 'sub_hll_comment_address', { kinds: [1111], '#A': [rootAddress] }]
+    const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const payload = JSON.parse(ws.send.mock.calls[0].arguments[0])
+    assert.equal(payload[2].count, 1)
+    assert.equal(payload[2].hll, hllValue)
+  })
+
+  it('should return generic repost hll for an address target', async () => {
+    const rootAddress = `30023:${'a'.repeat(64)}:article`
+    const hllValue = 'repost-address-hll'
+    const rootRecord = {
+      ref: addressToRef({ address: rootAddress }),
+      id: 'b'.repeat(64),
+      kind: 30023,
+      pubkey: 'a'.repeat(64),
+      created_at: 1000,
+      content: '',
+      tags: [['d', 'article']],
+      sig: 'sig',
+      repostCounter: hllValue,
+      popularityLevel: 6,
+      ownerType: 'pubkey'
+    }
+    const repostEvent = {
+      id: 'c'.repeat(64),
+      kind: 16,
+      pubkey: 'd'.repeat(64),
+      created_at: 1001,
+      content: '',
+      tags: [['a', rootAddress]],
+      sig: 'sig'
+    }
+    await client.index('events').addDocuments([
+      rootRecord,
+      { ...eventToRecord(repostEvent), popularityLevel: 6, ownerType: 'pubkey' }
+    ])
+
+    const ws = createWs()
+    const message = ['COUNT', 'sub_hll_repost_address', { kinds: [16], '#a': [rootAddress] }]
+    const handler = new CountHandler({ wss: {}, ws, nostrMessage: message })
+    await handler.run()
+
+    const payload = JSON.parse(ws.send.mock.calls[0].arguments[0])
+    assert.equal(payload[2].count, 1)
     assert.equal(payload[2].hll, hllValue)
   })
 })
