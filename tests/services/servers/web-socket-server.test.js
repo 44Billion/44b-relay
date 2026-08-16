@@ -1,6 +1,22 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { truncateWsMessage } from '#services/servers/web-socket-server.js'
+
+describe('web socket server limits', () => {
+  it('keeps maxPayload above the largest NIP-46 event cap', async () => {
+    const source = await readFile(
+      new URL('../../../services/servers/web-socket-server.js', import.meta.url),
+      'utf8'
+    )
+    // NIP-46 events may wrap a 128 KB follow/manifest and measure ~219 KB,
+    // so the handler cap is 256 KB; maxPayload must be bigger than that.
+    assert.match(source, /maxPayload: 512 \* 1024/)
+    assert.ok(
+      Number(/maxPayload: (\d+) \* 1024/.exec(source)?.[1]) * 1024 > 256 * 1024
+    )
+  })
+})
 
 describe('truncateWsMessage', () => {
   it('should truncate EVENT content to 70 chars and add total length', () => {

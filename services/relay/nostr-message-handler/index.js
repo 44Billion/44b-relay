@@ -114,6 +114,13 @@ export function limitNostrMessageLength ({ ws, nostrMessage }) {
           // A FOLLOWS event with 1000 p tags (NIP-02) can take up to ~128 KB
           // assuming each tag has a pubkey, relay URL, and petname.
           isInvalid = msgByteLength > 128 * 1024
+        } else if (event.kind === eventKinds.SIGNER_RPC) {
+          // NIP-46 events can carry any kind as an encrypted payload, e.g. a
+          // `sign_event` request wraps a full follow/manifest event (up to
+          // 128 KB) plus JSON-in-JSON escaping, NIP-44 padding/base64 and the
+          // Nostr envelope. Measured worst case ≈ 219 KB; allow 256 KB so the
+          // largest relay-accepted event can still be signed and exchanged.
+          isInvalid = msgByteLength > 256 * 1024
         } else {
           // https://github.com/hoytech/strfry/blob/master/strfry.conf#L21
           // maxEventSize = 65536

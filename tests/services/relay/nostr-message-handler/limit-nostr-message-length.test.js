@@ -57,6 +57,25 @@ describe('limitNostrMessageLength', () => {
     assert.strictEqual(result.isInvalid, false)
   })
 
+  it('should validate SIGNER_RPC (NIP-46) events up to 256KB', () => {
+    const ws = createWs()
+    const nostrMessage = ['EVENT', { kind: eventKinds.SIGNER_RPC, tags: [] }]
+    // A sign_event wrapping a 128 KB follow/manifest measures ~219 KB.
+    nostrMessage.byteLength = 219 * 1024
+
+    const result = limitNostrMessageLength({ ws, nostrMessage })
+    assert.strictEqual(result.isInvalid, false)
+  })
+
+  it('should invalidate SIGNER_RPC (NIP-46) events over 256KB', () => {
+    const ws = createWs()
+    const nostrMessage = ['EVENT', { kind: eventKinds.SIGNER_RPC, tags: [] }]
+    nostrMessage.byteLength = 256 * 1024 + 1
+
+    const result = limitNostrMessageLength({ ws, nostrMessage })
+    assert.strictEqual(result.isInvalid, true)
+  })
+
   it('should invalidate generic events over 4KB', () => {
     const ws = createWs()
     const nostrMessage = ['EVENT', { kind: 999, tags: [] }]

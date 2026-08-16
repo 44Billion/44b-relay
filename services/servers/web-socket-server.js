@@ -8,8 +8,11 @@ const wss = new WebSocketServer({
   noServer: true,
   // https://github.com/hoytech/strfry/blob/b80cda3a812af1b662223edad47eb70b053508b6/src/apps/relay/golpe.yaml#L58
   // Messages over this size produce an error event on the ws instance
-  // 1024*1024 (1 Mebibyte) plus an extra (max payload must be bigger than the max event size) may be good for follow lists
-  maxPayload: 131072, // 512 * 1024 // 64 * 1024 // 8 * 1024 // 136 * 1024 // 8 kb note plus 128 kb data image
+  // max payload must be bigger than the largest event size: NIP-46 (kind
+  // 24133) events may wrap a 128 KB follow/manifest payload and measure
+  // ~219 KB once encrypted, so their cap is 256 KB. 512 KB also covers the
+  // REQ author-filter formula limit (~321 KB).
+  maxPayload: 512 * 1024,
   perMessageDeflate: {
     zlibDeflateOptions: {
       // Use best speed (level 1) which gives ~73% reduction with large window
