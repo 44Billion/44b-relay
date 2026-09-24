@@ -49,6 +49,7 @@ const eventKindsToIgnoreIndexableTags = {
   [eventKinds.INTEREST_SET]: false,
   [eventKinds.RELEASE_ARTIFACT_SET]: true,
   [eventKinds.APP_CURATION_SET]: true,
+  [eventKinds.SITE_CURATION_SET]: true,
   [eventKinds.CALENDAR]: true,
   [eventKinds.STARTER_PACK]: true,
   [eventKinds.MEDIA_STARTER_PACK]: true,

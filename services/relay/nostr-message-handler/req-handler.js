@@ -39,10 +39,11 @@ class ReqHandler {
     // if (isIgnored) return
 
     if (filters.length > 0) {
-      const subscriptionReplaceRequestMoment = Date.now()
-      ws.nostr.subscriptions[subscriptionId] ??= {}
-      ws.nostr.subscriptions[subscriptionId].replaceAtMs = subscriptionReplaceRequestMoment
-      ws.nostr.subscriptions[subscriptionId].filters = filters
+      clearTimeout(ws.nostr.subscriptions[subscriptionId]?.cleanupTimeout)
+      const subscription = { filters }
+      ws.nostr.subscriptions[subscriptionId] = subscription
+      // Object identity also distinguishes replacements within the same millisecond.
+      const isCurrent = () => ws.nostr.subscriptions[subscriptionId] === subscription
 
       let isBlocked, message
       for (const filter of filters) {
@@ -50,7 +51,7 @@ class ReqHandler {
         applyPathExtensionsToFilter(filter, ws.nostr.pathExtensions)
         ;({ isBlocked, message } = applyCustomRelayRestrictionsToNostrFilter({ ws, filter, isBroad: filter.isBroad }))
         if (isBlocked) {
-          // hasn't awaited anything (not async), so won't check replaceAtMs (hasNoFutureSubscriptionReplaceRequest)
+          // No await has occurred, so no newer request could have replaced this subscription.
           deleteSubscription({ ws, subscriptionId })
           return sendClosed({ ws, subscriptionId, message })
         }
@@ -58,15 +59,19 @@ class ReqHandler {
       let sentEventCount = 0
       try {
         const filtersForFetching = adjustUntilFieldInFilters({ ws, filters })
-        ;({ sentEventCount = 0 } = await sendFilteredEvents({ ws, subscriptionId, filters: filtersForFetching }))
+        ;({ sentEventCount = 0 } = await sendFilteredEvents({ ws, subscriptionId, filters: filtersForFetching, isCurrent }))
       } catch (err) {
-        console.log(err.stack)
-      } finally {
-        await sendEose({ ws, subscriptionId })
-        // await keepTrackOfPubkey({ ws, action: 'subscribe' })
+        console.error('Failed to read subscription history:', err)
+        if (isCurrent()) {
+          deleteSubscription({ ws, subscriptionId })
+          sendClosed({ ws, subscriptionId, message: 'error: failed to read stored events' })
+        }
+        return
       }
-      const hasNoFutureSubscriptionReplaceRequest = ws.nostr.subscriptions[subscriptionId] && ws.nostr.subscriptions[subscriptionId].replaceAtMs === subscriptionReplaceRequestMoment
-      if (hasNoFutureSubscriptionReplaceRequest) {
+      if (!isCurrent()) return
+      // await keepTrackOfPubkey({ ws, action: 'subscribe' })
+      await sendEose({ ws, subscriptionId })
+      if (isCurrent()) {
         const nowSecs = Date.now() / 1000
         const liveFilters = filters.filter(v => v.until === undefined || v.until > nowSecs)
         const allRequestedEventsWereFound =
@@ -84,7 +89,7 @@ class ReqHandler {
         }
       }
     } else {
-      // hasn't awaited anything (not async), so won't check replaceAtMs (hasNoFutureSubscriptionReplaceRequest)
+      // No await has occurred, so no newer request could have replaced this subscription.
       deleteSubscription({ ws, subscriptionId })
       sendClosed({ ws, subscriptionId, message: 'invalid: no valid filters' })
     }
@@ -98,7 +103,7 @@ function deleteSubscription ({ ws, subscriptionId }) {
   if (Object.keys(ws.nostr.subscriptions).length === 0) disconnectWhenInactive(ws)
 }
 
-async function sendFilteredEvents ({ ws, subscriptionId, filters }) {
+async function sendFilteredEvents ({ ws, subscriptionId, filters, isCurrent }) {
   const generator = EventFetcher.run(filters)
   let sentEventCount = 0
   const interestedIn = getFilterInterests({ filters })
@@ -106,6 +111,7 @@ async function sendFilteredEvents ({ ws, subscriptionId, filters }) {
   // tb olhe os comments do fetcher e no saver (do deta) como apagar eventos desnecessarios?
   // acho que kda 24 de distancia, soma 1 dia. se tiver 3 dias, ok, senao, nops
   for await (const event of generator) {
+    if (!isCurrent()) return { sentEventCount }
     if (
       !uninterestedIn.kinds[event.kind] &&
       interestedIn.ids[event.id]

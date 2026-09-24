@@ -18,7 +18,7 @@ class Relay {
   decorateClient (ws, req) {
     const challenge = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
     ws.nostr = {
-      subscriptions: { /* [subId]: { filters, replaceAtMs } */ },
+      subscriptions: { /* [subId]: { filters, cleanupTimeout? }; object identity tracks replacements */ },
       challenge, /* , pubkey */
       lastActiveAtMs: Date.now(), /* , inactivityTimeout */
       ...(req.nip50PathExtensions && { pathExtensions: req.nip50PathExtensions })

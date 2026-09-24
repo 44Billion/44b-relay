@@ -30,18 +30,11 @@ export default class BroadStrategy {
       query.sortTop = true
     }
 
-    try {
-      // Dao handles defaults for fields if undefined
-      const { result: events, success } = await getEvents(query)
-
-      if (success && events) {
-        for (const event of events) {
-          yield event
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching events from MDB:', err)
-      // Yield nothing on error
+    // Never turn a failed read into an empty successful snapshot.
+    const { result: events, success, error } = await getEvents(query)
+    if (!success || !Array.isArray(events)) {
+      throw new Error('Failed to read stored events', { cause: error })
     }
+    yield * events
   }
 }
