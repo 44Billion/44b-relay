@@ -58,7 +58,8 @@ wss.on('connection', (ws, req) => {
   ws.ip = getIp(req)
   ws.isAlive = true
 
-  ws.addEventListener('pong', function heartbeat () { this.isAlive = true })
+  // ws exposes control frames through EventEmitter; addEventListener ignores pong.
+  ws.on('pong', function heartbeat () { this.isAlive = true })
   ws.addEventListener('error', error => { console.error('Oops! Received this error:', error) })
   ws.addEventListener('message', ({ data }) => {
     ws.isAlive = true
