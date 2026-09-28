@@ -24,6 +24,7 @@ export default {
     'updatedAt'
   ],
   settings: {
+    facetSearch: false,
     displayedAttributes: ['*'],
     searchableAttributes: [],
     filterableAttributes: ['key', 'eventId', 'ref', 'pubkey', 'state'],

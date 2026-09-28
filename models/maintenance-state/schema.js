@@ -9,6 +9,7 @@ export default {
     'maintenanceDoneFilter'
   ],
   settings: {
+    facetSearch: false,
     searchableAttributes: [],
     filterableAttributes: [
       'key',

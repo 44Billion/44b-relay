@@ -16,6 +16,7 @@ export default {
     'statsUpdatedAt'  // timestamp (ms) when count/neighbors were last updated
   ],
   settings: {
+    facetSearch: false,
     displayedAttributes: ['*'],
     searchableAttributes: [],
     filterableAttributes: [

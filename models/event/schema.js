@@ -56,6 +56,7 @@ export default {
   ],
   // https://www.meilisearch.com/docs/reference/api/settings#settings-object
   settings: {
+    facetSearch: false,
     displayedAttributes: [
       '*'
     ],

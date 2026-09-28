@@ -18,6 +18,7 @@ export default {
     'heartbeatedAt'
   ],
   settings: {
+    facetSearch: false,
     displayedAttributes: [
       '*'
     ],

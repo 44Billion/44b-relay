@@ -121,6 +121,73 @@ describe('Meilisearch Client', () => {
     }
   })
 
+  it('disables facet search on existing indexes while preserving queries and avoiding repeated migrations', async () => {
+    const fixtureType = 'facetSearchMigration'
+    const fixtures = [
+      {
+        uid: 'events', ids: ['facet-migration-a', 'facet-migration-b'],
+        documents: [
+          { ref: 'facet-migration-a', id: 'facet-id-a', kind: 1, pubkey: fixtureType, created_at: 100, ftsContent: 'facetmigrationbanana' },
+          { ref: 'facet-migration-b', id: 'facet-id-b', kind: 1, pubkey: fixtureType, created_at: 200, ftsContent: 'facetmigrationapple' }
+        ],
+        queries: [
+          ['', { filter: `pubkey = "${fixtureType}" AND created_at >= 100`, sort: ['created_at:desc'], facets: ['kind'] }],
+          ['facetmigrationbanana', { filter: `pubkey = "${fixtureType}"` }]
+        ]
+      },
+      {
+        uid: 'pendingOps', ids: ['facet-op-a', 'facet-op-b'],
+        documents: [
+          { key: 'facet-op-a', type: fixtureType, phase: 'queued', createdAt: 100, batchId: fixtureType, position: 0 },
+          { key: 'facet-op-b', type: fixtureType, phase: 'started', createdAt: 200, batchId: fixtureType, position: 1 }
+        ],
+        queries: [['', { filter: `type = "${fixtureType}"`, facets: ['phase'], sort: ['createdAt:asc'] }]]
+      },
+      {
+        uid: 'hashtagStats', ids: ['facet-tag-a', 'facet-tag-b'],
+        documents: [
+          { key: 'facet-tag-a', tag: fixtureType, lang: 'pt', count: 2 },
+          { key: 'facet-tag-b', tag: fixtureType, lang: 'en', count: 5 }
+        ],
+        queries: [['', { filter: `tag = "${fixtureType}" AND count >= 2`, facets: ['lang'], sort: ['count:desc'] }]]
+      }
+    ]
+    try {
+      for (const schema of schemas) await db.index(schema.uid).updateFacetSearch(true)
+      for (const fixture of fixtures) {
+        const index = db.index(fixture.uid)
+        await index.addDocuments(fixture.documents)
+        fixture.before = await Promise.all(fixture.queries.map(([q, options]) => index.search(q, options)))
+      }
+
+      await migrate(db, () => {})
+
+      for (const schema of schemas) {
+        assert.equal((await db.index(schema.uid).getSettings()).facetSearch, false, schema.uid)
+      }
+      for (const fixture of fixtures) {
+        const index = db.index(fixture.uid)
+        for (const [i, [q, options]] of fixture.queries.entries()) {
+          const result = await index.search(q, options)
+          assert.ok(result.hits.length > 0, `${fixture.uid}: fixture must match`)
+          assert.deepEqual(result.hits, fixture.before[i].hits, `${fixture.uid}: search/filter/sort preserved`)
+          assert.deepEqual(result.facetDistribution, fixture.before[i].facetDistribution, `${fixture.uid}: facet counts preserved`)
+        }
+      }
+      assert.deepEqual(fixtures[1].before[0].facetDistribution, { phase: { queued: 1, started: 1 } })
+      assert.deepEqual(fixtures[2].before[0].facetDistribution, { lang: { en: 1, pt: 1 } })
+      assert.equal(fixtures[0].before[1].hits.length, 1)
+      assert.equal(fixtures[0].before[1].hits[0].ref, 'facet-migration-a')
+
+      const repeatedMigrationLogs = []
+      await migrate(db, line => repeatedMigrationLogs.push(line))
+      assert.equal(repeatedMigrationLogs.some(line => line.includes('diverging')), false, 'an unchanged migration must not resubmit settings updates')
+    } finally {
+      for (const fixture of fixtures) await db.index(fixture.uid).deleteDocuments(fixture.ids)
+      await migrate(db, () => {})
+    }
+  })
+
   it('normalizes legacy pending operations with deterministic sort fields', async () => {
     const key = 'legacy-op-for-migration-test'
     await db.index('pendingOps').addDocuments([{

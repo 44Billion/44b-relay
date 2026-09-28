@@ -21,6 +21,7 @@ export default {
     'erroredAt'           // timestamp (ms) of the last failure that set lastError (or null)
   ],
   settings: {
+    facetSearch: false,
     displayedAttributes: ['*'],
     searchableAttributes: [],
     filterableAttributes: [

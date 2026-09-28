@@ -7,6 +7,7 @@ export default {
     'count'
   ],
   settings: {
+    facetSearch: false,
     searchableAttributes: [],
     filterableAttributes: [
       'firstSeenAt'

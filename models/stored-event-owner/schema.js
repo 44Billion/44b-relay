@@ -11,6 +11,7 @@ export default {
     'accountingTokens'
   ],
   settings: {
+    facetSearch: false,
     searchableAttributes: [],
     filterableAttributes: [
       'key',

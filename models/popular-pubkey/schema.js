@@ -9,6 +9,7 @@ export default {
     'relegatedFilter'
   ],
   settings: {
+    facetSearch: false,
     displayedAttributes: [
       '*'
     ],

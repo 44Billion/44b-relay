@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { publicationDatabaseCall, publicationTask } from '#services/diagnostics/publication.js'
 // https://www.meilisearch.com/docs/learn/advanced/known_limitations#large-datasets-and-internal-errors
 // Use ulimit or a similar tool to increase resource consumption limits before running Meilisearch. For example, call ulimit -Sn 3000 in a UNIX environment to raise the number of allowed open file descriptors to 3000.
@@ -454,33 +455,34 @@ export async function migrate (db, log = console.log) {
     async function updateDivergingSettings () {
       const currentIdxSettings = await db.index(uid).getSettings()
       let hasAnyDiverged = false
-      // We will consider just array values for now, cause we haven't set settings fields whose values are objects or strings
-      // see models/<name>/schema.js > .settings
-      for (const [key, valueArr] of Object.entries(settings)) {
+      for (const [key, value] of Object.entries(settings)) {
         let hasDiverged = false
-        const currentArr = currentIdxSettings[key] || []
+        const currentValue = currentIdxSettings[key]
 
-        // Order-sensitive keys: rankingRules, searchableAttributes.
-        // Order-insensitive keys: filterableAttributes, sortableAttributes, displayedAttributes, stopWords.
-        if (['filterableAttributes', 'sortableAttributes', 'displayedAttributes', 'stopWords'].includes(key)) {
-          const sortedValue = [...valueArr].sort()
-          const sortedCurrent = [...currentArr].sort()
-          hasDiverged = sortedValue.length !== sortedCurrent.length || sortedValue.some((v, i) => v !== sortedCurrent[i])
+        if (!Array.isArray(value)) {
+          // Preserve scalar values such as false; do not coerce them to [].
+          hasDiverged = !isDeepStrictEqual(value, currentValue)
         } else {
-          // Known Limitation: Meilisearch may return ['*'] for searchableAttributes even if set to [primaryKey]
-          if (key === 'searchableAttributes' &&
-                currentArr.length === 1 && currentArr[0] === '*' &&
-                valueArr.length === 1 && valueArr[0] === primaryKey) {
+          const currentArray = Array.isArray(currentValue) ? currentValue : []
+          // Order-sensitive: rankingRules, searchableAttributes.
+          if (['filterableAttributes', 'sortableAttributes', 'displayedAttributes', 'stopWords'].includes(key)) {
+            const sortedValue = [...value].sort()
+            const sortedCurrent = [...currentArray].sort()
+            hasDiverged = sortedValue.length !== sortedCurrent.length || sortedValue.some((v, i) => v !== sortedCurrent[i])
+          } else if (key === 'searchableAttributes' &&
+              currentArray.length === 1 && currentArray[0] === '*' &&
+              value.length === 1 && value[0] === primaryKey) {
+            // Preserve the existing compatibility exception for primary-key-only search.
             hasDiverged = false
           } else {
-            hasDiverged = valueArr.length !== currentArr.length || valueArr.some((v, i) => v !== currentArr[i])
+            hasDiverged = value.length !== currentArray.length || value.some((v, i) => v !== currentArray[i])
           }
         }
 
         if (hasDiverged) {
           log(`${uid} index had diverging ${key} setting. Updating...`)
           hasAnyDiverged = true
-          await db.index(uid)[`update${key[0].toUpperCase()}${key.slice(1)}`](valueArr)
+          await db.index(uid)[`update${key[0].toUpperCase()}${key.slice(1)}`](value)
           log(`Done updating ${key} setting`)
         }
       }

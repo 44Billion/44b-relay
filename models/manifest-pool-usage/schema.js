@@ -20,6 +20,7 @@ export default {
     'lastReconciliationToken'
   ],
   settings: {
+    facetSearch: false,
     displayedAttributes: ['*'],
     searchableAttributes: [],
     filterableAttributes: ['key', 'scope', 'pubkey'],
