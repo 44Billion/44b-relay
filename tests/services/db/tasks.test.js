@@ -1,3 +1,4 @@
+import { tracePublication, PUBLICATION_LOG_MARKER } from '#services/diagnostics/publication.js'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { waitForTaskTerminal } from '#services/db/mdb.js'
@@ -96,4 +97,21 @@ describe('definitive Meilisearch task waits', () => {
     assert.deepEqual(calls[0], ['getTasks', { limit: 1 }])
     assert.deepEqual(calls[1], ['waitForTerminal', 73, client])
   })
+})
+
+it('records terminal task timings without extra task queries or changing failures', async () => {
+  for (const status of ['succeeded', 'failed']) {
+    let queries = 0
+    const logs = []
+    const task = { uid: 88, batchUid: 17, indexUid: 'pendingOps', status, enqueuedAt: '2026-01-01T00:00:00Z', startedAt: '2026-01-01T00:00:10Z', finishedAt: '2026-01-01T00:00:11Z' }
+    const pending = tracePublication({ id: 'a'.repeat(64), kind: 3560 }, () => waitForTaskTerminal(88, {
+      client: { getTask: async () => { queries++; return task } }, requireSuccess: true
+    }), { thresholdMs: 0, log: line => logs.push(JSON.parse(line.slice(PUBLICATION_LOG_MARKER.length))) })
+    if (status === 'failed') await assert.rejects(pending, { name: 'MeiliSearchTaskFailedError' })
+    else assert.equal(await pending, task)
+    assert.equal(queries, 1)
+    assert.equal(logs[0].tasks[0].queueMs, 10000)
+    assert.equal(logs[0].tasks[0].executionMs, 1000)
+    assert.equal(logs[0].tasks[0].status, status)
+  }
 })

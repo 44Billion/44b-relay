@@ -25,7 +25,8 @@
     "test:integration": "bash tests/integration/run-suite.sh",
     "build:wordninja": "node lib/wordninja/build-dictionaries.js",
     "// download:mediapipe-model": "Kept for reference because `npm install @mediapipe/tasks-text` lib is currently web-only. Used @huggingface/transformers for now.",
-    "download:mediapipe-model": "node lib/mediapipe/download-model.js"
+    "download:mediapipe-model": "node lib/mediapipe/download-model.js",
+    "publication:diagnose": "node bin/publication/diagnose.js"
   },
   "engines": {
     "node": "24.8.0"

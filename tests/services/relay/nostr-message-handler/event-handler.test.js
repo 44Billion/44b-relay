@@ -130,6 +130,47 @@ describe('EventHandler', () => {
     id // arbitrary id for test tracking
   })
 
+  it('does not acknowledge until persistence and broadcast finish, and emits one diagnostic', async () => {
+    const savedThreshold = process.env.RELAY_PUBLICATION_SLOW_MS
+    process.env.RELAY_PUBLICATION_SLOW_MS = '0'
+    const logs = []
+    const consoleMock = mock.method(console, 'log', line => logs.push(line))
+    let persisted, broadcasted
+    let startedPersistence, startedBroadcast
+    const persistenceStarted = new Promise(resolve => { startedPersistence = resolve })
+    const broadcastStarted = new Promise(resolve => { startedBroadcast = resolve })
+    const persistence = new Promise(resolve => { persisted = resolve })
+    const broadcasting = new Promise(resolve => { broadcasted = resolve })
+    EventSaver.run.mock.mockImplementation(() => { startedPersistence(); return persistence })
+    broadcastMock.mock.mockImplementation(() => { startedBroadcast(); return broadcasting })
+    const ws = createWs('sender')
+    const event = { id: 'a'.repeat(64), kind: 3560, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'private message', pubkey: 'key' }
+    try {
+      const pending = EventHandler.run({ wss: createWss([ws]), ws, nostrMessage: ['EVENT', event] })
+      await persistenceStarted
+      assert.equal(ws.send.mock.callCount(), 0)
+      persisted({ isSuccess: true, isDuplicate: false, message: '' })
+      await broadcastStarted
+      assert.equal(ws.send.mock.callCount(), 0)
+      broadcasted(true)
+      await pending
+      assert.deepEqual(JSON.parse(ws.send.mock.calls[0].arguments[0]), ['OK', event.id, true, ''])
+      const diagnostic = logs.filter(line => line.startsWith('[relay-publication] '))
+      assert.equal(diagnostic.length, 1)
+      const record = JSON.parse(diagnostic[0].slice('[relay-publication] '.length))
+      assert.equal(record.accepted, true)
+      assert.ok(record.stages.persistence >= 0)
+      assert.ok(record.stages.broadcast >= 0)
+      assert.ok(record.stages.sendOk >= 0)
+      assert.doesNotMatch(diagnostic[0], /private message/)
+    } finally {
+      persisted({ isSuccess: true }); broadcasted(true)
+      consoleMock.mock.restore()
+      if (savedThreshold === undefined) delete process.env.RELAY_PUBLICATION_SLOW_MS
+      else process.env.RELAY_PUBLICATION_SLOW_MS = savedThreshold
+    }
+  })
+
   it('should process and relay valid event to matching subscription', async () => {
     // Setup Success Mock for Saver
     EventSaver.run.mock.mockImplementation(async () => ({ isSuccess: true, isDuplicate: false, message: '' }))

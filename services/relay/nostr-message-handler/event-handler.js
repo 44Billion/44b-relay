@@ -1,3 +1,4 @@
+import { tracePublication, publicationStage, publicationResult } from '#services/diagnostics/publication.js'
 import { isExpiredEvent, /* isReplaceableEvent, */ isEphemeralEvent, isValidEvent /* , getPublishedAt */ } from '#helpers/event.js'
 import { sendCommandResult, sendEvent, sendClosed } from '#helpers/message.js'
 import { nostrClientMessages } from '#constants/message.js'
@@ -29,50 +30,60 @@ class EventHandler {
     Object.assign(this, { wss, ws, nostrMessage })
   }
 
-  async run () {
+  run () {
+    return tracePublication(this.nostrMessage[1], () => this.runMeasured())
+  }
+
+  respond (result) {
+    publicationResult(result.isSuccess)
+    return publicationStage('sendOk', () => sendCommandResult(result))
+  }
+
+  async runMeasured () {
     const { ws, nostrMessage } = this
     const [, event = {}] = nostrMessage
     try {
       trackIpActivity({ ip: ws.ip })
-      let { isSuccess, message } = await isValidEvent({ event, clientMessage: nostrClientMessages.EVENT })
-      if (!isSuccess) return sendCommandResult({ ws, event, isSuccess, message })
+      let { isSuccess, message } = await publicationStage('validation', () => isValidEvent({ event, clientMessage: nostrClientMessages.EVENT }))
+      if (!isSuccess) return this.respond({ ws, event, isSuccess, message })
 
       let derivedMetadata
       if (event.kind === eventKinds.BINARY_DATA_CHUNK) {
         try {
           derivedMetadata = validateIrfsChunkEvent(event)
         } catch (error) {
-          return sendCommandResult({ ws, event, isSuccess: false, message: `invalid: ${error.message}` })
+          return this.respond({ ws, event, isSuccess: false, message: `invalid: ${error.message}` })
         }
       }
 
       // TODO: Check impact on performance then move from deta to mdb
       // const { isSpam } = await fightSpamOnNostrEvent(ws, event)
-      // if (isSpam) return sendCommandResult({ ws, event, isSuccess: false, message: 'blocked: your IP is involved with spam' })
+      // if (isSpam) return this.respond({ ws, event, isSuccess: false, message: 'blocked: your IP is involved with spam' })
 
       // if is duplicate, must start with 'duplicate:' see this and others at https://github.com/nostr-protocol/nips/blob/master/20.md
-      const eventLanguage = detectEventLanguage(event)
-      const eventHashtags = extractHashtags(event, { language: eventLanguage })
-      const eventTopics = await detectTopics({
-        language: eventLanguage,
-        hashtags: eventHashtags,
-        text: getEventText(event)
+      const { eventLanguage, eventHashtags, eventTopics } = await publicationStage('metadata', async () => {
+        const eventLanguage = detectEventLanguage(event)
+        const eventHashtags = extractHashtags(event, { language: eventLanguage })
+        const eventTopics = await detectTopics({
+          language: eventLanguage, hashtags: eventHashtags, text: getEventText(event)
+        })
+        return { eventLanguage, eventHashtags, eventTopics }
       })
 
       let shouldRelay // e.g.: don't relay duplicates
       ;({ isSuccess, shouldRelay = isSuccess, message } = await this.processNostrEvent({ ws, event, ip: ws.ip, eventLanguage, eventTopics, eventHashtags, derivedMetadata }))
 
       if (shouldRelay) {
-        const didBroadcast = await broadcast({ event, eventLanguage, eventTopics }, { timeoutMs: RELAY_IPC_TIMEOUT_MS })
+        const didBroadcast = await publicationStage('broadcast', () => broadcast({ event, eventLanguage, eventTopics }, { timeoutMs: RELAY_IPC_TIMEOUT_MS }))
         if (!didBroadcast) {
-          return sendCommandResult({ ws, event, isSuccess: false, message: 'error: relay IPC unavailable; retry' })
+          return this.respond({ ws, event, isSuccess: false, message: 'error: relay IPC unavailable; retry' })
         }
       }
 
-      return sendCommandResult({ ws, event, isSuccess, message })
+      return this.respond({ ws, event, isSuccess, message })
     } catch (error) {
       console.error('Error handling event:', error)
-      sendCommandResult({ ws, event, isSuccess: false, message: 'error: internal server error' })
+      return this.respond({ ws, event, isSuccess: false, message: 'error: internal server error' })
     }
   }
 
@@ -91,7 +102,7 @@ class EventHandler {
     // Accepted events are live-delivered through IPC, including local clients.
     // If IPC is unavailable, reject before persistence to avoid storing an
     // event that cross-worker subscribers never saw live.
-    if (!await waitUntilReady({ timeoutMs: RELAY_IPC_TIMEOUT_MS })) {
+    if (!await publicationStage('ipcReady', () => waitUntilReady({ timeoutMs: RELAY_IPC_TIMEOUT_MS }))) {
       return { isSuccess: false, shouldRelay: false, message: 'error: relay IPC unavailable; retry' }
     }
 
@@ -99,7 +110,7 @@ class EventHandler {
     // Better to relay for those who may have subscribed to (e.g.: online status update)
     // else if (isReplaceableEvent(event)) shouldRelay = false
 
-    ;({ isSuccess, isDuplicate, message } = await this.maybePersistEvent({ ws, event, ip, language: eventLanguage, topics: eventTopics, hashtags: eventHashtags, derivedMetadata }))
+    ;({ isSuccess, isDuplicate, message } = await publicationStage('persistence', () => this.maybePersistEvent({ ws, event, ip, language: eventLanguage, topics: eventTopics, hashtags: eventHashtags, derivedMetadata })))
     if (!isSuccess || isDuplicate) shouldRelay = false
     shouldRelay ??= true
 

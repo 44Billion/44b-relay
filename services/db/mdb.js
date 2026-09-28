@@ -1,3 +1,4 @@
+import { publicationDatabaseCall, publicationTask } from '#services/diagnostics/publication.js'
 // https://www.meilisearch.com/docs/learn/advanced/known_limitations#large-datasets-and-internal-errors
 // Use ulimit or a similar tool to increase resource consumption limits before running Meilisearch. For example, call ulimit -Sn 3000 in a UNIX environment to raise the number of allowed open file descriptors to 3000.
 //
@@ -194,6 +195,7 @@ export async function waitForTaskTerminal (taskOrUid, {
   let lastTask = submittedTask
   let warnedSlow = false
   let communicationFailures = 0
+  let totalCommunicationFailures = 0
 
   while (true) {
     throwIfTaskWaitAborted(signal)
@@ -203,6 +205,7 @@ export async function waitForTaskTerminal (taskOrUid, {
       communicationFailures = 0
 
       if (TERMINAL_TASK_STATUSES.has(task.status)) {
+        publicationTask(task, { waitMs: Date.now() - startedWaitingAt, communicationFailures: totalCommunicationFailures })
         if (requireSuccess && task.status !== 'succeeded') throw taskFailure(task)
         return task
       }
@@ -224,6 +227,7 @@ export async function waitForTaskTerminal (taskOrUid, {
       }
 
       communicationFailures++
+      totalCommunicationFailures++
       const retryInMs = Math.min(
         maxCommunicationBackoffMs,
         Math.max(250, intervalMs) * (2 ** Math.min(communicationFailures - 1, 10))
@@ -345,7 +349,7 @@ async function init () {
   // Also memo db.index(uid) calls (note it is not the same as .getIndex, which just get index metadata)
   db = Object.assign(createAutoWaitProxy(db, true), { constants, toMeiliValue })
 
-  function createAutoWaitProxy (target, useCache = false) {
+  function createAutoWaitProxy (target, useCache = false, indexName = null) {
     const cache = useCache ? new Map() : null
 
     return new Proxy(target, {
@@ -366,10 +370,11 @@ async function init () {
             if (cache.has(cacheKey)) return cache.get(cacheKey)
           }
 
+          const started = performance.now()
           const ret = val.apply(target, args)
 
           if (prop === 'index') {
-            const wrapped = createAutoWaitProxy(ret)
+            const wrapped = createAutoWaitProxy(ret, false, args[0])
             if (useCache) {
               const cacheKey = JSON.stringify(args)
               cache.set(cacheKey, wrapped)
@@ -378,14 +383,14 @@ async function init () {
           }
 
           if (ret && typeof ret.then === 'function') {
-            return ret.then(v => {
+            return publicationDatabaseCall(ret.then(v => {
               if (v && typeof v === 'object' && 'taskUid' in v) {
                 return waitForTaskTerminal(v, {
                   requireSuccess: true
                 })
               }
               return v
-            })
+            }), { index: indexName, method: prop, started })
           }
 
           return ret
