@@ -2,6 +2,30 @@ import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { limitNostrMessageLength } from '#services/relay/nostr-message-handler/index.js'
 import { eventKinds } from '#constants/event.js'
+import { MAX_EVENT_BYTES, getJsonlChunkByteSize, wrapEvent } from 'libp2r2p/private-channel'
+import { finalizeEvent } from 'libp2r2p/event'
+import { generateSecretKey, getPublicKey } from 'libp2r2p/key'
+import { encryptBase64 } from 'libp2r2p/nip44-v3'
+
+function messageForEvent (event) {
+  const nostrMessage = ['EVENT', event]
+  nostrMessage.byteLength = Buffer.byteLength(JSON.stringify(nostrMessage))
+  return nostrMessage
+}
+
+function privateEventOfSize (byteLength) {
+  const event = {
+    kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+    created_at: 1790689719,
+    tags: [['s', 'a'.repeat(64)], ['expiration', '1791294519']],
+    content: '',
+    pubkey: 'b'.repeat(64),
+    id: 'c'.repeat(64),
+    sig: 'd'.repeat(128)
+  }
+  event.content = 'A'.repeat(byteLength - Buffer.byteLength(JSON.stringify(event)))
+  return event
+}
 
 describe('limitNostrMessageLength', () => {
   const createWs = () => ({
@@ -74,6 +98,76 @@ describe('limitNostrMessageLength', () => {
 
     const result = limitNostrMessageLength({ ws, nostrMessage })
     assert.strictEqual(result.isInvalid, true)
+  })
+
+  for (const messageBytes of [3283, 55167, 65546]) {
+    it(`should accept a private broadcast message of ${messageBytes} bytes`, () => {
+      const ws = createWs()
+      const nostrMessage = messageForEvent(privateEventOfSize(messageBytes - 10))
+      assert.equal(nostrMessage.byteLength, messageBytes)
+      assert.equal(limitNostrMessageLength({ ws, nostrMessage }).isInvalid, false)
+      assert.equal(ws.send.mock.callCount(), 0)
+    })
+  }
+
+  it('should reject a private broadcast one byte over the limit with its event id', () => {
+    const ws = createWs()
+    const event = privateEventOfSize(MAX_EVENT_BYTES + 1)
+    const nostrMessage = messageForEvent(event)
+    assert.equal(nostrMessage.byteLength, 65547)
+    assert.equal(limitNostrMessageLength({ ws, nostrMessage }).isInvalid, true)
+    assert.deepEqual(JSON.parse(ws.send.mock.calls[0].arguments[0]), [
+      'OK', event.id, false, 'invalid: message is too long'
+    ])
+  })
+
+  it('should measure private broadcast tags in UTF-8 bytes', () => {
+    const ws = createWs()
+    const event = privateEventOfSize(MAX_EVENT_BYTES)
+    event.tags[0][1] = 'é' + event.tags[0][1].slice(1)
+    const nostrMessage = messageForEvent(event)
+    assert.equal(JSON.stringify(nostrMessage).length, 65546)
+    assert.equal(nostrMessage.byteLength, 65547)
+    assert.equal(limitNostrMessageLength({ ws, nostrMessage }).isInvalid, true)
+  })
+
+  it('should reject private broadcasts without string content', () => {
+    for (const content of [undefined, null, 123, [], {}]) {
+      const ws = createWs()
+      const nostrMessage = messageForEvent({ ...privateEventOfSize(1000), content })
+      assert.equal(limitNostrMessageLength({ ws, nostrMessage }).isInvalid, true)
+    }
+  })
+
+  it('should accept every encrypted fragment produced by libp2r2p for a large private message', async () => {
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    const senderSigner = {
+      getPublicKey: async () => pubkey,
+      signEvent: async event => finalizeEvent(event, secretKey),
+      nip44v3Encrypt: async (peer, kind, scope, plaintext) => encryptBase64(secretKey, peer, kind, scope, plaintext)
+    }
+    const storage = new Map()
+    const events = await wrapEvent({
+      senderSigner,
+      receivers: [getPublicKey(generateSecretKey())],
+      deletionPubkey: 'a'.repeat(64),
+      event: { kind: eventKinds.CHAT_MESSAGE, created_at: 1790689719, tags: [], content: 'x'.repeat(getJsonlChunkByteSize() * 2) },
+      temporaryStorageArea: {
+        getItem: key => storage.get(key) ?? null,
+        setItem: (key, value) => storage.set(key, value),
+        removeItem: key => storage.delete(key)
+      }
+    })
+
+    assert.ok(events.length > 1)
+    assert.ok(events.some(event => messageForEvent(event).byteLength === 55167))
+    for (const event of events) {
+      const ws = createWs()
+      assert.ok(Buffer.byteLength(JSON.stringify(event)) <= MAX_EVENT_BYTES)
+      assert.equal(limitNostrMessageLength({ ws, nostrMessage: messageForEvent(event) }).isInvalid, false)
+      assert.equal(ws.send.mock.callCount(), 0)
+    }
   })
 
   it('should invalidate generic events over 4KB', () => {

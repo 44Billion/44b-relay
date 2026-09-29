@@ -16,6 +16,10 @@ import {
 import { imageDataUrlRegExp } from '#constants/url.js'
 import { eventKinds } from '#constants/event.js'
 import { isTorExitNode } from '#helpers/tor.js'
+import { MAX_EVENT_BYTES as MAX_PRIVATE_CHANNEL_EVENT_BYTES } from 'libp2r2p/private-channel'
+
+// The library caps the serialized event; the relay measures the whole message.
+const MAX_PRIVATE_CHANNEL_MESSAGE_BYTES = MAX_PRIVATE_CHANNEL_EVENT_BYTES + Buffer.byteLength('["EVENT",]')
 
 class NostrMessageHandler {
   constructor ({ wss, ws, nostrMessage }) {
@@ -98,6 +102,10 @@ export function limitNostrMessageLength ({ ws, nostrMessage }) {
         } else if (event.kind === eventKinds.ENCRYPTED_DIRECT_MESSAGE) {
           // won't allow image data url
           isInvalid = typeof event.content !== 'string' || msgByteLength > 4 * 1024
+        } else if (event.kind === eventKinds.PRIVATE_CHANNEL_BROADCAST) {
+          // Includes NIP-44 v3 padding/base64, tags, signature and EVENT framing:
+          // 65,536 event bytes + 10 framing bytes, including full image chunks.
+          isInvalid = typeof event.content !== 'string' || msgByteLength > MAX_PRIVATE_CHANNEL_MESSAGE_BYTES
         } else if (event.kind === eventKinds.BINARY_DATA_CHUNK) {
           // Content and proof are strict Base93 and are validated after the
           // signature. This outer limit leaves room for 51,000 data bytes,
