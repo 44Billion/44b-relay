@@ -267,3 +267,19 @@ describe('Nostr Message Limiter', () => {
     })
   })
 })
+
+it('refills continuously and shares the global burst across anonymous connections', t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
+  const a = { ip: 'test-shared-ip', nostr: {} }
+  const b = { ip: a.ip, nostr: {} }
+  for (let i = 0; i < MESSAGE_GLOBAL_REQS_PER_WINDOW; i++) {
+    assert.equal(limiter.rateLimitNostrMessageByPubkey(i % 2 ? a : b).isRateLimited, false)
+  }
+  for (let i = 0; i < 10; i++) assert.equal(limiter.rateLimitNostrMessageByPubkey(a).isRateLimited, true)
+  t.mock.timers.tick(34)
+  assert.equal(limiter.rateLimitNostrMessageByPubkey(b).isRateLimited, false)
+  assert.equal(limiter.rateLimitNostrMessageByPubkey(a).isRateLimited, false)
+  assert.equal(limiter.rateLimitNostrMessageByPubkey(a).isRateLimited, true)
+  t.mock.timers.tick(2000)
+  for (let i = 0; i < MESSAGE_GLOBAL_REQS_PER_WINDOW; i++) assert.equal(limiter.rateLimitNostrMessageByPubkey(b).isRateLimited, false)
+})

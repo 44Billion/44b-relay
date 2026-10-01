@@ -24,6 +24,25 @@ function rateLimitByKey ({
   return { isRateLimited, nextWindow: rateLimitBucket[key].nextWindow }
 }
 
+// Refill continuously, as clients do. Rejected requests never create debt.
+const messageBuckets = new Map()
+export function rateLimitTokenBucket ({ key, capacity, windowMs }) {
+  const now = Date.now()
+  let bucket = messageBuckets.get(key)
+  if (!bucket) {
+    bucket = { tokens: capacity, updatedAt: now, timer: null }
+    messageBuckets.set(key, bucket)
+  }
+  bucket.tokens = Math.min(capacity, bucket.tokens + Math.max(0, now - bucket.updatedAt) * capacity / windowMs)
+  bucket.updatedAt = now
+  const isRateLimited = bucket.tokens < 1
+  if (!isRateLimited) bucket.tokens--
+  // After an idle refill period there is no state left to remember.
+  clearTimeout(bucket.timer)
+  bucket.timer = maybeUnref(setTimeout(() => messageBuckets.delete(key), windowMs))
+  return { isRateLimited, nextWindow: new Date(now + Math.ceil(Math.max(0, 1 - bucket.tokens) * windowMs / capacity)) }
+}
+
 function getIp (req) {
   return (req.ip ??= req.headers['x-forwarded-for']?.split?.(', ')?.[0]?.trim?.() ?? req.socket.remoteAddress ?? 'all')
 }

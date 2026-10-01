@@ -1,3 +1,4 @@
+import { sendNotice } from '#helpers/message.js'
 import { disconnectWhenInactive } from '#services/rate-limiting/web-socket-request-limiter.js'
 
 class CloseHandler {
@@ -12,6 +13,10 @@ class CloseHandler {
   async run () {
     const { ws, nostrMessage } = this
     const [, subscriptionId] = nostrMessage
+    if (nostrMessage.length !== 2 || typeof subscriptionId !== 'string') {
+      return sendNotice({ ws, message: 'invalid: malformed CLOSE' })
+    }
+    clearTimeout(ws.nostr.subscriptions[subscriptionId]?.cleanupTimeout)
     delete ws.nostr.subscriptions[subscriptionId]
     if (Object.keys(ws.nostr.subscriptions).length === 0) disconnectWhenInactive(ws)
   }

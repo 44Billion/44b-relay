@@ -1,10 +1,10 @@
-import { rateLimitByKey } from '#helpers/request.js'
+import { rateLimitByKey, rateLimitTokenBucket } from '#helpers/request.js'
 import { isType } from '#helpers/shared.js'
 import { eventKinds } from '#constants/event.js'
 
 const LIMIT_MULTIPLIER = process.env.IS_INTEGRATION_TEST === 'true' ? 1000 : 1
 
-export const MESSAGE_GLOBAL_REQS_PER_WINDOW = 60 * LIMIT_MULTIPLIER
+export const MESSAGE_GLOBAL_REQS_PER_WINDOW = 120 * LIMIT_MULTIPLIER
 export const MESSAGE_GLOBAL_WINDOW_SECONDS = 2
 
 export const AUTH_REQS_PER_WINDOW = 60 * LIMIT_MULTIPLIER
@@ -12,7 +12,7 @@ export const AUTH_BURST_REQS_PER_WINDOW = 6 * LIMIT_MULTIPLIER
 
 function rateLimitNostrMessageByPubkey (ws) {
   const { ip, nostr: { pubkey } } = ws
-  const { isRateLimited, nextWindow } = rateLimitByKey({ key: 'message::global::' + (pubkey ?? ip), reqsPerWindow: MESSAGE_GLOBAL_REQS_PER_WINDOW, windowSeconds: MESSAGE_GLOBAL_WINDOW_SECONDS })
+  const { isRateLimited, nextWindow } = rateLimitTokenBucket({ key: 'message::global::' + (pubkey ?? ip), capacity: MESSAGE_GLOBAL_REQS_PER_WINDOW, windowMs: MESSAGE_GLOBAL_WINDOW_SECONDS * 1000 })
 
   return { isRateLimited, nextWindow }
 }

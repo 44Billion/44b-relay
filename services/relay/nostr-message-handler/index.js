@@ -168,6 +168,9 @@ export function limitNostrMessageLength ({ ws, nostrMessage }) {
 // }
 
 function rateLimitNostrMessage ({ wss, ws, nostrMessage }) {
+  // CLOSE only releases resources; never charge or block it on work quotas.
+  if (nostrMessage[0] === nostrClientMessages.CLOSE) return { isRateLimited: false }
+
   const nostrClientMessage = nostrMessage[0]
 
   // Global rate limit check
@@ -218,13 +221,17 @@ function sendRateLimitResponse ({ ws, nostrMessage, reason, nextWindow }) {
   const torNote = isTorExitNode(ws.ip) ? ' (your IP is a shared Tor exit node, which may cause faster rate limiting)' : ''
   const fullMessage = `rate-limited: ${reason}${torNote}`
   // retry_after is the number of seconds to wait
-  const extra = nextWindow ? { retry_after: Math.ceil((nextWindow.getTime() - Date.now()) / 1000) } : undefined
+  const extra = nextWindow ? { retry_after: Math.max(1, Math.ceil((nextWindow.getTime() - Date.now()) / 1000)) } : undefined
   const nostrClientMessage = nostrMessage[0]
 
   switch (nostrClientMessage) {
     case nostrClientMessages.REQ:
     case nostrClientMessages.COUNT: {
       const subscriptionId = nostrMessage[1]
+      if (nostrClientMessage === nostrClientMessages.REQ && typeof subscriptionId === 'string') {
+        // CLOSED must also retire an earlier REQ with this ID.
+        CloseHandler.run({ ws, nostrMessage: [nostrClientMessages.CLOSE, subscriptionId] })
+      }
       return sendClosed({ ws, subscriptionId, message: fullMessage, extra })
     }
     default: {
