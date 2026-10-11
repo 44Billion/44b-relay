@@ -1,7 +1,16 @@
-import { test } from 'node:test'
+import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import NostrMessageHandler from '#services/relay/nostr-message-handler/index.js'
 import { rateLimitNostrMessageByPubkey, MESSAGE_GLOBAL_REQS_PER_WINDOW } from '#services/rate-limiting/nostr-message-limiter.js'
+
+// Keep the real limiter and CLOSE handler; admission failures never reach these handlers.
+for (const name of ['auth', 'event', 'req', 'count']) {
+  mock.module(`#services/relay/nostr-message-handler/${name}-handler.js`, {
+    defaultExport: { run: () => assert.fail('rate-limited work must not reach a handler') }
+  })
+}
+mock.module('#services/rate-limiting/web-socket-request-limiter.js', { namedExports: { disconnectWhenInactive: () => {} } })
+mock.module('#helpers/tor.js', { namedExports: { isTorExitNode: () => false } })
+const { default: NostrMessageHandler } = await import('#services/relay/nostr-message-handler/index.js')
 
 test('CLOSE releases a real subscription and its timer even when the shared work budget is exhausted', t => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 10000 })
@@ -15,7 +24,8 @@ test('CLOSE releases a real subscription and its timer even when the shared work
   assert.equal(ws.nostr.subscriptions.limited, undefined, 'rejected renewal really closes the old subscription')
   assert.equal(sent.at(-1)[0], 'CLOSED')
   assert.match(sent.at(-1)[2], /^rate-limited:/)
-  assert.ok(sent.at(-1)[3].retry_after > 0)
+  assert.equal(sent.at(-1).length, 4)
+  assert.equal(sent.at(-1)[3], '17')
   const count = sent.length
   new NostrMessageHandler({ wss, ws, nostrMessage: ['CLOSE', 'active'] }).run()
   assert.equal(ws.nostr.subscriptions.active, undefined)

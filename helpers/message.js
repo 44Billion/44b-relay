@@ -1,14 +1,14 @@
 import { nostrServerMessages } from '#constants/message.js'
 
 function sendNotice ({ ws, message }) { return ws.send(JSON.stringify([nostrServerMessages.NOTICE, message ?? ''])) }
-function sendCommandResult ({ ws, event, isSuccess, message, extra }) {
+function sendCommandResult ({ ws, event, isSuccess, message, params }) {
   const msg = [nostrServerMessages.OK, event?.id ?? '', isSuccess, message ?? '']
-  if (extra) msg.push(extra)
+  if (params !== undefined) msg.push(params)
   return ws.send(JSON.stringify(msg))
 }
-function sendClosed ({ ws, subscriptionId, message, extra }) {
+function sendClosed ({ ws, subscriptionId, message, params }) {
   const msg = [nostrServerMessages.CLOSED, subscriptionId, message ?? '']
-  if (extra) msg.push(extra)
+  if (params !== undefined) msg.push(params)
   return ws.send(JSON.stringify(msg))
 }
 function sendAuth ({ ws, challenge }) { return ws.send(JSON.stringify([nostrServerMessages.AUTH, challenge])) }

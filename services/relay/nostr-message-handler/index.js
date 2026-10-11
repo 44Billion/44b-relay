@@ -220,8 +220,8 @@ function rateLimitNostrMessage ({ wss, ws, nostrMessage }) {
 function sendRateLimitResponse ({ ws, nostrMessage, reason, nextWindow }) {
   const torNote = isTorExitNode(ws.ip) ? ' (your IP is a shared Tor exit node, which may cause faster rate limiting)' : ''
   const fullMessage = `rate-limited: ${reason}${torNote}`
-  // retry_after is the number of seconds to wait
-  const extra = nextWindow ? { retry_after: Math.max(1, Math.ceil((nextWindow.getTime() - Date.now()) / 1000)) } : undefined
+  // Rate-limited params is a positive decimal string of milliseconds to wait.
+  const params = nextWindow ? String(Math.max(1, nextWindow.getTime() - Date.now())) : undefined
   const nostrClientMessage = nostrMessage[0]
 
   switch (nostrClientMessage) {
@@ -232,13 +232,13 @@ function sendRateLimitResponse ({ ws, nostrMessage, reason, nextWindow }) {
         // CLOSED must also retire an earlier REQ with this ID.
         CloseHandler.run({ ws, nostrMessage: [nostrClientMessages.CLOSE, subscriptionId] })
       }
-      return sendClosed({ ws, subscriptionId, message: fullMessage, extra })
+      return sendClosed({ ws, subscriptionId, message: fullMessage, params })
     }
     default: {
       const event = (nostrClientMessage === nostrClientMessages.EVENT || nostrClientMessage === nostrClientMessages.AUTH)
         ? (nostrMessage[1] ?? {})
         : {}
-      return sendCommandResult({ ws, event, isSuccess: false, message: fullMessage, extra })
+      return sendCommandResult({ ws, event, isSuccess: false, message: fullMessage, params })
     }
   }
 }
