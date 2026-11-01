@@ -2,7 +2,12 @@ import { tracePublication, publicationStage, publicationResult } from '#services
 import { isExpiredEvent, /* isReplaceableEvent, */ isEphemeralEvent, isValidEvent /* , getPublishedAt */ } from '#helpers/event.js'
 import { sendCommandResult, sendEvent, sendClosed } from '#helpers/message.js'
 import { nostrClientMessages } from '#constants/message.js'
-import { OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS, eventKinds } from '#constants/event.js'
+import {
+  MAX_EVENT_FUTURE_OFFSET_SECONDS,
+  OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS,
+  RELAY_CLOCK_SKEW_SECONDS,
+  eventKinds
+} from '#constants/event.js'
 import { webSocketReadyState } from '#constants/web-socket.js'
 import { doesMatchASubscriptionFilter } from '#helpers/subscription.js'
 import { isAppEvent } from '#helpers/app.js'
@@ -19,7 +24,7 @@ import { broadcast, waitUntilReady } from '#services/ipc/cross-process-broadcast
 import { validateIrfsChunkEvent } from '#services/event/irfs-chunk-validator.js'
 
 const RELAY_IPC_TIMEOUT_MS = 2000
-const TAG_DEFINED_EPHEMERAL_CLOCK_SKEW_SECONDS = 60
+const TAG_DEFINED_EPHEMERAL_GRACE_SECONDS = RELAY_CLOCK_SKEW_SECONDS
 
 class EventHandler {
   static run ({ wss, ws, nostrMessage }) {
@@ -94,7 +99,7 @@ class EventHandler {
 
     const isTagDefinedEphemeral = isEphemeralEvent(event, { includeLegacyKindRanges: false })
     const tagDefinedEphemeralExpired = isTagDefinedEphemeral &&
-      Date.now() / 1000 >= event.created_at + TAG_DEFINED_EPHEMERAL_CLOCK_SKEW_SECONDS
+      Date.now() / 1000 >= event.created_at + TAG_DEFINED_EPHEMERAL_GRACE_SECONDS
     if (tagDefinedEphemeralExpired || (!isTagDefinedEphemeral && isExpiredEvent(event))) {
       return { isSuccess: true, shouldRelay: false, message: 'expired: the event is already expired' }
     }
@@ -155,12 +160,12 @@ class EventHandler {
         return { isBlocked: true, message: 'restricted: we do not publish past events not signed by yourself.' }
       }
     }
-    const TWO_DAYS_AHEAD = Math.ceil(Date.now() / 1000) + 60 * 60 * 24 * 2
+    const maxFutureCreatedAt = Math.ceil(Date.now() / 1000) + MAX_EVENT_FUTURE_OFFSET_SECONDS
     if (
       // Allow posting in the future to work as scheduled posts, but with a limit
-      event.created_at > TWO_DAYS_AHEAD // ||
-      // getPublishedAt(event) > TWO_DAYS_AHEAD
-    ) return { isBlocked: true, message: 'invalid: the event created_at field is too far in the future (>2days) and was not stored.' }
+      event.created_at > maxFutureCreatedAt // ||
+      // getPublishedAt(event) > maxFutureCreatedAt
+    ) return { isBlocked: true, message: 'invalid: the event created_at field is too far in the future (>2days+10min) and was not stored.' }
 
     if (this.isBlockedEventKind(event)) return { isBlocked: true, message: 'invalid: event kind not allowed' }
 

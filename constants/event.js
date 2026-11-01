@@ -1,7 +1,10 @@
 import { eventKinds } from 'libp2r2p/kind'
 
+// Relay/client date checks tolerate up to ten minutes of clock skew.
+const RELAY_CLOCK_SKEW_SECONDS = 60 * 10
 // Kind-5 events use this same window for local retention and unauthenticated publishing.
-const OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS = 60 * 10
+const OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS = RELAY_CLOCK_SKEW_SECONDS
+const MAX_EVENT_FUTURE_OFFSET_SECONDS = 60 * 60 * 24 * 2 + RELAY_CLOCK_SKEW_SECONDS
 
 // these are 1:1 pubkey - event kind
 // so that data don't get lost below newer content / deleted
@@ -64,6 +67,8 @@ const MANIFEST_KINDS = new Set([
 
 export {
   OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS,
+  MAX_EVENT_FUTURE_OFFSET_SECONDS,
+  RELAY_CLOCK_SKEW_SECONDS,
   eventKinds,
   // eventKindTo1To1Table,
   eventTags,

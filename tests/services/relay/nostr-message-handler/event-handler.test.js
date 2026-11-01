@@ -1,6 +1,10 @@
 import { describe, it, before, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS, eventKinds } from '#constants/event.js'
+import {
+  MAX_EVENT_FUTURE_OFFSET_SECONDS,
+  OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS,
+  eventKinds
+} from '#constants/event.js'
 
 // 1. Mock Rate Limiter
 mock.module('#services/rate-limiting/web-socket-request-limiter.js', {
@@ -891,6 +895,36 @@ describe('EventHandler', () => {
     assert.equal(wsReceiver.send.mock.calls.length, 0)
   })
 
+  it('should accept future events through two days plus clock skew and reject later dates', t => {
+    const nowMs = 1_700_000_000_000
+    t.mock.timers.enable({ apis: ['Date'], now: nowMs })
+    const handler = new EventHandler({
+      wss: createWss([]),
+      ws: createWs('future-boundary'),
+      nostrMessage: []
+    })
+    const atLimit = Math.ceil(nowMs / 1000) + MAX_EVENT_FUTURE_OFFSET_SECONDS
+    const event = {
+      kind: 1,
+      created_at: atLimit,
+      tags: [],
+      pubkey: 'pubkey1',
+      id: 'event_future_limit',
+      content: 'future'
+    }
+
+    assert.deepEqual(handler.applyCustomRelayRestrictionsToNostrEvent({ event }), {
+      isBlocked: false,
+      message: ''
+    })
+    assert.deepEqual(handler.applyCustomRelayRestrictionsToNostrEvent({
+      event: { ...event, created_at: atLimit + 1 }
+    }), {
+      isBlocked: true,
+      message: 'invalid: the event created_at field is too far in the future (>2days+10min) and was not stored.'
+    })
+  })
+
   it('should call broadcast when shouldRelay is true (non-ephemeral)', async () => {
     EventSaver.run.mock.mockImplementation(async () => ({ isSuccess: true, isDuplicate: false, message: '' }))
     getPopularityLevel.mock.mockImplementation(() => 1)
@@ -940,12 +974,13 @@ describe('EventHandler', () => {
     assert.equal(EventSaver.run.mock.calls.length, 0)
   })
 
-  it('should relay but not persist a fresh tag-defined ephemeral event', async () => {
+  it('should relay but not persist a tag-defined ephemeral event inside the ten-minute grace', async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 })
     getPopularityLevel.mock.mockImplementation(() => 1)
 
     const wsSender = createWs('sender')
     const wss = createWss([wsSender])
-    const createdAt = Math.floor(Date.now() / 1000)
+    const createdAt = Math.floor(Date.now() / 1000) - (10 * 60 - 1)
     const event = {
       kind: 500,
       created_at: createdAt,
@@ -962,10 +997,11 @@ describe('EventHandler', () => {
     assert.equal(EventSaver.run.mock.calls.length, 0)
   })
 
-  it('should stop relaying a tag-defined ephemeral event after its grace window', async () => {
+  it('should stop relaying a tag-defined ephemeral event after its ten-minute grace', async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 })
     const wsSender = createWs('sender')
     const wss = createWss([wsSender])
-    const createdAt = Math.floor(Date.now() / 1000) - 61
+    const createdAt = Math.floor(Date.now() / 1000) - 10 * 60
     const event = {
       kind: 500,
       created_at: createdAt,
