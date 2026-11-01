@@ -148,14 +148,21 @@ class EventHandler {
 
   applyCustomRelayRestrictionsToNostrEvent ({ event }) {
     const { ws } = this
+    const isOldEvent = event.created_at < (Math.floor(Date.now() / 1000) - OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS)
     if (
       // App events are an exception until we implement AUTH on nappup lib
       // (app uploader CLI)
       !isAppEvent(event) &&
-      event.created_at < (Math.floor(Date.now() / 1000) - OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS) &&
+      isOldEvent &&
       // Annoying integration test tell use its a fail if we don't let it save 1 week ago events
       process.env.IS_INTEGRATION_TEST !== 'true'
     ) {
+      // A private-channel 3560 is a disposable transport wrapper. Its channel
+      // key is intentionally distinct from the account identity, so requesting
+      // AUTH for a stale wrapper is both misleading and operationally costly.
+      if (event.kind === eventKinds.PRIVATE_CHANNEL_BROADCAST) {
+        return { isBlocked: true, message: 'invalid: the private-channel envelope is too old and was not stored.' }
+      }
       if (!isAuthenticated({ ws })) return { isBlocked: true, message: 'auth-required: the event created_at field is too old and was not stored.' }
       else if (event.pubkey !== ws.nostr.pubkey) {
         return { isBlocked: true, message: 'restricted: we do not publish past events not signed by yourself.' }

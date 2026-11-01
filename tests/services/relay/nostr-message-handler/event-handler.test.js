@@ -326,6 +326,36 @@ describe('EventHandler', () => {
     }
   })
 
+  it('should reject stale private-channel wrappers as invalid with or without AUTH', async () => {
+    const originalEnv = process.env.IS_INTEGRATION_TEST
+    process.env.IS_INTEGRATION_TEST = 'false'
+    try {
+      const now = Math.floor(Date.now() / 1000)
+      for (const authenticated of [false, true]) {
+        const wss = createWss([])
+        const ws = createWs(`private-channel-${authenticated}`)
+        if (authenticated) ws.nostr.pubkey = 'channel_pubkey'
+        const event = {
+          kind: eventKinds.PRIVATE_CHANNEL_BROADCAST,
+          created_at: now - OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS - 1,
+          tags: [],
+          pubkey: 'channel_pubkey',
+          id: `private_channel_stale_${authenticated}`,
+          content: ''
+        }
+
+        await new EventHandler({ wss, ws, nostrMessage: ['EVENT', event] }).run()
+
+        const rejection = JSON.parse(ws.send.mock.calls[0].arguments[0])
+        assert.deepEqual(rejection.slice(0, 3), ['OK', event.id, false])
+        assert.equal(rejection[3], 'invalid: the private-channel envelope is too old and was not stored.')
+      }
+      assert.equal(EventSaver.run.mock.calls.length, 0)
+    } finally {
+      process.env.IS_INTEGRATION_TEST = originalEnv
+    }
+  })
+
   // it('should NOT relay if restricted reaction', async () => {
   //   const wsSender = createWs('sender')
   //   const wsReceiver = createWs('receiver')
