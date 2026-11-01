@@ -3,6 +3,7 @@ import { isExpiredEvent, /* isReplaceableEvent, */ isEphemeralEvent, isValidEven
 import { sendCommandResult, sendEvent, sendClosed } from '#helpers/message.js'
 import { nostrClientMessages } from '#constants/message.js'
 import {
+  FUTURE_EVENT_LIVE_DELIVERY_OFFSET_SECONDS,
   MAX_EVENT_FUTURE_OFFSET_SECONDS,
   OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS,
   RELAY_CLOCK_SKEW_SECONDS,
@@ -202,7 +203,7 @@ async function sendToClientsWithAMatchingFilter ({ wss, event, eventLanguage, ev
   // Better to relay for those who may have subscribed to (e.g.: online status update)
   // if (isReplaceableEvent(event)) return
 
-  const maxUntil = Math.floor(Date.now() / 1000) + 10 * 60
+  const maxUntil = Math.floor(Date.now() / 1000) + FUTURE_EVENT_LIVE_DELIVERY_OFFSET_SECONDS
   const isFutureEvent = event.created_at > maxUntil
 
   const skipPopularityGate = shouldBypassPopularityGate(event)

@@ -5,6 +5,9 @@ const RELAY_CLOCK_SKEW_SECONDS = 60 * 10
 // Kind-5 events use this same window for local retention and unauthenticated publishing.
 const OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS = RELAY_CLOCK_SKEW_SECONDS
 const MAX_EVENT_FUTURE_OFFSET_SECONDS = 60 * 60 * 24 * 2 + RELAY_CLOCK_SKEW_SECONDS
+// Future live delivery and read filters intentionally use the same skew budget.
+const FUTURE_EVENT_LIVE_DELIVERY_OFFSET_SECONDS = RELAY_CLOCK_SKEW_SECONDS
+const FUTURE_FILTER_MAX_OFFSET_SECONDS = RELAY_CLOCK_SKEW_SECONDS
 
 // these are 1:1 pubkey - event kind
 // so that data don't get lost below newer content / deleted
@@ -66,6 +69,8 @@ const MANIFEST_KINDS = new Set([
 ])
 
 export {
+  FUTURE_EVENT_LIVE_DELIVERY_OFFSET_SECONDS,
+  FUTURE_FILTER_MAX_OFFSET_SECONDS,
   OLD_EVENT_AUTH_REQUIRED_AFTER_SECONDS,
   MAX_EVENT_FUTURE_OFFSET_SECONDS,
   RELAY_CLOCK_SKEW_SECONDS,

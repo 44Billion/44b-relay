@@ -1,5 +1,6 @@
 import { describe, it, before, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
+import { RELAY_CLOCK_SKEW_SECONDS } from '#constants/event.js'
 
 // 1. Mock Rate Limiter
 mock.module('#services/rate-limiting/web-socket-request-limiter.js', {
@@ -126,5 +127,47 @@ describe('AuthHandler', () => {
     assert.equal(ws.nostr.pubkey, undefined)
     const msg = JSON.parse(ws.send.mock.calls[0].arguments[0])
     assert.deepEqual(msg, ['OK', 'event4', false, 'invalid: wrong event kind'])
+  })
+
+  it('should accept AUTH timestamps at the clock-skew boundary and reject older ones', async t => {
+    const nowMs = 1_700_000_000_000
+    t.mock.timers.enable({ apis: ['Date'], now: nowMs })
+    const nowSeconds = Math.floor(nowMs / 1000)
+
+    for (const offset of [-RELAY_CLOCK_SKEW_SECONDS, RELAY_CLOCK_SKEW_SECONDS]) {
+      const ws = createWs()
+      const event = {
+        kind: 22242,
+        created_at: nowSeconds + offset,
+        tags: [
+          ['challenge', 'test-challenge'],
+          ['relay', 'ws://test.relay.com']
+        ],
+        pubkey: 'pubkey123',
+        id: `auth-boundary-${offset}`
+      }
+      await new AuthHandler({ ws, nostrMessage: ['AUTH', event] }).run()
+      assert.equal(ws.nostr.pubkey, 'pubkey123')
+    }
+
+    const ws = createWs()
+    const event = {
+      kind: 22242,
+      created_at: nowSeconds - RELAY_CLOCK_SKEW_SECONDS - 1,
+      tags: [
+        ['challenge', 'test-challenge'],
+        ['relay', 'ws://test.relay.com']
+      ],
+      pubkey: 'pubkey123',
+      id: 'auth-past-skew'
+    }
+    await new AuthHandler({ ws, nostrMessage: ['AUTH', event] }).run()
+    assert.equal(ws.nostr.pubkey, undefined)
+    assert.deepEqual(JSON.parse(ws.send.mock.calls[0].arguments[0]), [
+      'OK',
+      'auth-past-skew',
+      false,
+      "restricted: couldn't authenticate"
+    ])
   })
 })

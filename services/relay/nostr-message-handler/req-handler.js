@@ -1,7 +1,7 @@
 import { getFilterInterests, uninterestedIn, trackRequestedPubkeys } from '#services/event/tracker/mdb/requested-pubkeys.js'
 import { trackIpActivity } from '#services/event/tracker/mdb/ip-activity.js'
 import { trackRequestedEvents } from '#services/event/tracker/mdb/requested-events.js'
-import { RELAY_OWNED_KINDS } from '#constants/event.js'
+import { FUTURE_FILTER_MAX_OFFSET_SECONDS, RELAY_OWNED_KINDS } from '#constants/event.js'
 import { addressToRef } from '#models/event/mapper.js'
 import { sendEvent, sendEose, sendClosed } from '#helpers/message.js'
 // import { isAuthenticated, requestAuthentication } from '#services/relay/authenticator.js'
@@ -198,7 +198,7 @@ export function applyCustomRelayRestrictionsToNostrFilter ({ /* ws, */ filter, i
 }
 
 export function adjustUntilFieldInFilters ({ ws, filters }) {
-  const maxUntil = Math.floor(Date.now() / 1000) + 10 * 60 // 10 min buffer
+  const maxUntil = Math.floor(Date.now() / 1000) + FUTURE_FILTER_MAX_OFFSET_SECONDS
   return filters.map(filter => {
     if (
       filter.authors?.length === 1 &&
